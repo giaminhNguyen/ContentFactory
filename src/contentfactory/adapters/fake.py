@@ -1,0 +1,173 @@
+"""Fake adapter cho Phase 1: chạy end-to-end mà không cần engine thật.
+
+Chèn lỗi / độ trễ qua job.params["fake"][<điểm>] (xem `hook`):
+  {"sleep_s": 30, "attempt": 1}              ngủ (huỷ được) chỉ ở attempt 1, để test kill/resume
+  {"fail_until_attempt": 2, "error_class": "TRANSIENT", "code": "X"}   lỗi cho tới hết attempt 2
+Điểm: source, story, tts_chunk_<n>, render_youtube, render_tiktok, publish.
+Audio là WAV thật (stdlib `wave`) để QA/ghép/cắt part có ý nghĩa; video/thumbnail chỉ là byte giả.
+"""
+from __future__ import annotations
+
+import hashlib
+import shutil
+import wave
+from pathlib import Path
+
+from ..contracts import ErrorClass, StageContext, StageError
+from ..fsutil import atomic_write, atomic_write_bytes, atomic_write_json, atomic_write_text, sha256_file
+
+RATE = 8000
+
+
+def hook(ctx: StageContext, point: str) -> None:
+    cfg = (ctx.params.get("fake") or {}).get(point)
+    if not cfg:
+        return
+    if cfg.get("sleep_s") and cfg.get("attempt") in (None, ctx.attempt):
+        ctx.log("fake_sleep", point=point, seconds=cfg["sleep_s"])
+        ctx.cancel.wait(cfg["sleep_s"])
+    if ctx.attempt <= cfg.get("fail_until_attempt", 0):
+        raise StageError(ErrorClass(cfg.get("error_class", "TRANSIENT")), cfg.get("code", "FAKE_FAILURE"),
+                         f"injected at {point}, attempt {ctx.attempt}")
+
+
+def record_call(ctx: StageContext, name: str) -> None:
+    with open(ctx.stage_dir / "calls.log", "a", encoding="utf-8", newline="\n") as f:
+        f.write(f"{name} attempt={ctx.attempt}\n")
+
+
+def _write_wav(path: Path, frames: bytes) -> None:
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(frames)
+
+
+def _read_frames(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as w:
+        return w.readframes(w.getnframes())
+
+
+def _silence(seconds: float) -> bytes:
+    return b"\x00\x00" * int(RATE * seconds)
+
+
+HEALTH = {"ok": True, "fake": True}
+
+
+class FakeSource:
+    def process(self, src, out_dir: Path, ctx: StageContext):
+        hook(ctx, "source")
+        record_call(ctx, "source")
+        title = ctx.params.get("title") or "Truyện thử nghiệm"
+        transcript = out_dir / "transcript.txt"
+        atomic_write_text(transcript, f"Bản ghi giả lập cho nguồn: {src['value']}\n")
+        meta = out_dir / "metadata.json"
+        atomic_write_json(meta, {"title": title, "language": ctx.params.get("language", "vi"),
+                                 "description": f"Mô tả thử nghiệm cho {title}", "source": dict(src)})
+        return {"title": title, "language": ctx.params.get("language", "vi"), "transcript": transcript, "metadata": meta}
+
+    def health(self) -> dict:
+        return HEALTH
+
+
+class FakeStory:
+    def generate(self, bundle, profile: dict, out_dir: Path, ctx: StageContext):
+        hook(ctx, "story")
+        record_call(ctx, "story")
+        n = int(profile.get("paragraphs", 6))
+        paras = [f"Đoạn {k}. Nhân vật chính bước đi trong đêm khuya và nghĩ về {bundle['title']}. "
+                 f"Mọi chuyện chỉ mới bắt đầu ở điểm thứ {k}, và không ai biết điều gì đang chờ phía trước. "
+                 f"Gió thổi qua con hẻm nhỏ, mang theo mùi mưa cũ và tiếng bước chân xa dần." for k in range(1, n + 1)]
+        story = out_dir / "story.txt"
+        atomic_write_text(story, "\n\n".join(paras) + "\n")
+        return {"story": story, "stats": {"paragraphs": n}}
+
+    def health(self) -> dict:
+        return HEALTH
+
+
+class FakeTTS:
+    engine_id = "fake"
+
+    def capabilities(self) -> dict:
+        return {"max_chars": 600, "languages": ["vi"], "speed": False, "ssml": False, "sample_rate": RATE}
+
+    def synthesize(self, segment, profile: dict, out_path: Path, ctx: StageContext):
+        hook(ctx, f"tts_chunk_{segment['index']}")
+        record_call(ctx, f"tts_chunk_{segment['index']}")
+        secs = max(0.2, len(segment["text"]) / 400)
+        atomic_write(out_path, lambda tmp: _write_wav(tmp, _silence(secs)))
+        return {"index": segment["index"], "duration_sec": secs}
+
+    def health(self) -> dict:
+        return HEALTH
+
+
+class FakeAudio:
+    def qa(self, audio: Path):
+        try:
+            with wave.open(str(audio), "rb") as w:
+                dur = w.getnframes() / w.getframerate()
+        except (wave.Error, EOFError, OSError):
+            return {"ok": False, "duration_sec": 0.0, "issues": ["UNDECODABLE"]}
+        return {"ok": dur > 0, "duration_sec": round(dur, 3), "issues": [] if dur > 0 else ["ZERO_DURATION"]}
+
+    def assemble(self, chunks, pauses_ms, out: Path, ctx: StageContext) -> dict:
+        data = b"".join(_read_frames(c) + _silence(p / 1000) for c, p in zip(chunks, pauses_ms))
+        _write_wav(out, data)
+        return {"duration_sec": len(data) / 2 / RATE}
+
+    def build_youtube_audio(self, master: Path, watermark: Path | None, out: Path, ctx: StageContext) -> dict:
+        data = (_read_frames(watermark) if watermark else b"") + _read_frames(master)
+        atomic_write(out, lambda tmp: _write_wav(tmp, data))
+        return {"duration_sec": round(len(data) / 2 / RATE, 3), "watermark": bool(watermark)}
+
+    def build_tiktok_parts(self, master: Path, speed: float, target_part_sec: float, out_dir: Path,
+                           ctx: StageContext) -> list[Path]:
+        # Fake: KHÔNG đổi tốc độ thật, chỉ chia theo độ dài nguồn tương ứng target*speed (ffmpeg atempo ở Phase 5).
+        data = _read_frames(master)
+        step = max(2, int(RATE * target_part_sec * speed) * 2)
+        step -= step % 2
+        parts = []
+        for i, off in enumerate(range(0, len(data), step), 1):
+            p = out_dir / f"part_{i:02d}.wav"
+            atomic_write(p, lambda tmp, o=off: _write_wav(tmp, data[o:o + step]))
+            parts.append(p)
+        return parts
+
+    def health(self) -> dict:
+        return HEALTH
+
+
+class FakeRender:
+    def render_video(self, req, ctx: StageContext) -> dict:
+        pid = req["profile"]["id"]
+        hook(ctx, f"render_{pid}")
+        record_call(ctx, f"render_{pid}:{req['output'].name}")
+        sha = sha256_file(req["audio"])[:12]
+        atomic_write_bytes(req["output"], f"FAKE-MP4|profile={pid}|audio_sha={sha}\n".encode())
+        return {"warnings": []}
+
+    def render_thumbnail(self, req, ctx: StageContext) -> Path:
+        record_call(ctx, "thumbnail")
+        atomic_write_bytes(req["output"], f"FAKE-JPG|{req['title']}|{req['channel_name']}\n".encode())
+        return req["output"]
+
+    def health(self) -> dict:
+        return HEALTH
+
+
+class FakePublish:
+    platform = "youtube"
+
+    def publish(self, req, ctx: StageContext):
+        hook(ctx, "publish")
+        record_call(ctx, "publish")
+        vid = "fake-" + hashlib.sha1(req["idempotency_key"].encode()).hexdigest()[:10]   # cùng key => cùng video
+        return {"state": "completed", "remote_id": vid, "remote_url": f"https://youtube.invalid/watch?v={vid}",
+                "warnings": []}
+
+    def health(self) -> dict:
+        return HEALTH

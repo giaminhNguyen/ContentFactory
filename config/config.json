@@ -1,0 +1,7 @@
+{
+  "adapters": {
+    "source": "fake", "story": "fake", "tts": "fake", "audio": "fake",
+    "render": "fake", "publish": "fake", "output": "builtin"
+  },
+  "limits": { "default": 2, "gpu": 1 }
+}

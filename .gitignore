@@ -5,3 +5,7 @@ modules/*/
 workspace/
 output/
 runtime/
+
+# Python
+__pycache__/
+*.pyc

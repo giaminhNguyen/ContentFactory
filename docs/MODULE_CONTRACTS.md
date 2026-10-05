@@ -2,6 +2,7 @@
 
 > Hợp đồng giữa orchestrator và các module. Neo vào HANDOFF (§3 artifact + manifest + state, §20) và `CURRENT_SYSTEM_AUDIT.md`.
 > Ngôn ngữ đặc tả: chữ ký kiểu Python (`typing.Protocol`) để đọc dễ; **hợp đồng thật là artifact trên đĩa + manifest JSON**, không phải lời gọi hàm. Ngôn ngữ cài đặt orchestrator mặc định là Python (`DECISIONS.md` D-02).
+> **Phase 1:** chữ ký chuẩn nằm ở `src/contentfactory/contracts.py` (được test). Các khối code bên dưới là đặc tả ý định từ Phase 0; chỗ nào khác với code thì **code đúng**, danh sách khác biệt ở §10.
 
 ## 0. Quy ước chung
 
@@ -9,12 +10,14 @@
 
 ```text
 workspace/job_<id>/
-  source/    story/    tts/    audio/    render/    temp/
-  manifest.json
+  source/  story/  tts/  audio/  render/{youtube,tiktok}/  output/  publish/  temp/
+  manifest.json   job.log.jsonl
 ```
 
 - Mọi module **chỉ đọc/ghi trong workspace của job** (và đọc pool/channel asset được cấu hình). Không module nào đọc `output/`.
-- Module nhận/trả `ArtifactRef`; artifact ghi **atomic** (`*.part` → rename).
+- **Adapter làm việc với `Path`** trong workspace; chỉ orchestrator "niêm phong" thành `ArtifactRef` (sha256, bytes) khi checkpoint stage. Handler khai báo `ArtifactDraft(path, kind, meta)`.
+- **Adapter PHẢI ghi output atomic** (ghi `*.part` rồi rename): path tồn tại ⇔ file hoàn chỉnh. Handler dựa vào đó để dùng lại output có sẵn khi resume (chunk TTS, video render, part TikTok).
+- Stage chỉ nhận artifact thuộc `kind` mà stage khai báo trong `requires` và chỉ được sinh `kind` khai báo trong `produces` (orchestrator từ chối kind lạ hoặc thiếu).
 
 ```python
 class ArtifactRef(TypedDict):
@@ -44,7 +47,7 @@ class StageError(Exception):
 
 ### 0.3 Idempotency và cache
 
-Mỗi lời gọi stage có `stage_key = sha256(canonical_json(inputs_sha256 + params + profile_version))`. Cùng `stage_key` + artifact đã tồn tại và hợp lệ ⇒ **bỏ qua, trả artifact cũ**. Dùng làm `idempotency_key` cho ContentFlow worker và yt_uploader. Đổi watermark/video/thumbnail **không** đổi `stage_key` của TTS (HANDOFF §6.7, §10).
+Mỗi lời gọi stage có `stage_key = sha256(canonical_json(inputs_sha256 + params + profile_version))`. Cùng `stage_key` + artifact đã tồn tại và hợp lệ ⇒ **bỏ qua, trả artifact cũ** (**Phase 1 chỉ tính và ghi `stage_key`** vào `stage_runs`/manifest; bỏ qua theo cache liên job chưa làm, vì job tuyến tính và artifact bất biến sau checkpoint nên resume đã đủ). Dùng làm `idempotency_key` cho ContentFlow worker và yt_uploader. Đổi watermark/video/thumbnail **không** đổi `stage_key` của TTS (HANDOFF §6.7, §10).
 
 ### 0.4 Cancel, deadline, progress
 
@@ -306,37 +309,63 @@ output/<project>/
   4. `story.txt` copy từ artifact đã qua validator bất biến (§2).
   5. Không chứa cache, chunk audio, sync, temp.
   6. Verify sha256 sau copy; lỗi → `RESOURCE`/`TRANSIENT`, giữ nguyên workspace.
-- **Tên `<project>`** = `<yyyymmdd>_<slug ASCII không dấu>` (D-07), cấu hình ở `config/output.yaml`.
+- **Tên `<project>`** = `<yyyymmdd>_<slug ASCII không dấu>` (D-07), cấu hình ở `config/config.json` → `output.name_template`.
 
 ---
 
-## 8. Manifest nội bộ (đối chiếu HANDOFF §18)
+## 8. Manifest nội bộ (đối chiếu HANDOFF §18) — đã triển khai ở Phase 1
+
+`workspace/job_<id>/manifest.json` là **dẫn xuất từ DB** (DB là nguồn sự thật), ghi atomic sau mỗi lần stage kết thúc và dựng lại khi orchestrator khởi động:
 
 ```json
 {
-  "schema": 1, "job_id": "story-001", "state": "OUTPUT_READY",
-  "versions": {
-    "orchestrator": "<sha>",
-    "modules": {"ContentFlow": "<sha>", "oh-story-claudecode": "<sha>", "yt_uploader": "<sha>"}
-  },
-  "profiles": {"story": "...@v", "tts": "...@v", "render_youtube": "...@v", "render_tiktok": "...@v"},
-  "channel": "channel_a", "source_pool": "gameplay",
+  "schema": 1, "job_id": "000001", "state": "PUBLISHED", "failed_stage": null, "last_error": null,
+  "params": {"input": {}, "language": "vi", "tiktok": {"speed": 2.0, "target_part_sec": 600}},
+  "modules": {"ContentFlow": "<sha>", "oh-story-claudecode": "<sha>", "yt_uploader": "<sha>"},
+  "created": "...", "updated": "...",
   "stages": {
-    "source": {"stage_key": "...", "artifacts": [ArtifactRef], "started": "...", "ended": "...", "attempts": 1},
-    "story": {}, "tts": {}, "audio": {}, "render_youtube": {}, "render_tiktok": {}, "publish_youtube": {}
+    "source": {"status": "succeeded", "attempts": 1, "stage_key": "...", "started": "...", "ended": "...",
+               "data": {}, "artifacts": [{"path": "source/transcript.txt", "kind": "transcript", "sha256": "...", "bytes": 1, "meta": {}}]},
+    "story": {}, "tts": {}, "audio": {}, "render_youtube": {}, "render_tiktok": {}, "output": {}, "publish": {}
   },
   "nondeterministic": ["render.background_selection"]
 }
 ```
 
-## 9. Trạng thái job (từ HANDOFF §15) và ai chịu trách nhiệm
+`modules` đọc từ `modules.lock`. Chưa có: hash của profile (chưa có profile thật), SHA của orchestrator.
 
-| Trạng thái | Do | Ghi chú |
-|---|---|---|
-| NEW → SOURCE_READY | SourceProcessor | |
-| STORY_RUNNING → STORY_READY | StoryAdapter (+ validator bất biến) | |
-| TTS_PLANNING → TTS_RENDERING → MASTER_AUDIO_READY | TTS Manager + TTSAdapter + AudioProcessor | |
-| YOUTUBE_RENDER_READY → YOUTUBE_RENDERING / TIKTOK_RENDER_READY → TIKTOK_RENDERING | AudioProcessor + RenderAdapter | nhánh YouTube và TikTok độc lập |
-| OUTPUT_READY | OutputPublisher | người dùng đã có gói output |
-| UPLOADING → PUBLISHED | PublishAdapter (**YouTube**) | TikTok dừng ở OUTPUT_READY |
-| `*_FAILED:<stage>` | orchestrator | giữ `StageError.error_class` để quyết định retry |
+## 9. Trạng thái job và ai chịu trách nhiệm — đã triển khai ở Phase 1
+
+Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `queue_state` của stage kế ("X_READY" = xong bước trước, đang xếp hàng cho bước sau). Bảng stage nằm ở `src/contentfactory/jobs/pipeline.py` (nguồn sự thật, có test).
+
+| Stage | queue → running → done | Module/adapter | Đầu vào → đầu ra (artifact kind) |
+|---|---|---|---|
+| source | NEW → SOURCE_PROCESSING → SOURCE_READY | SourceProcessor | — → transcript, metadata |
+| story | SOURCE_READY → STORY_RUNNING → STORY_READY | StoryAdapter + validator bất biến | transcript, metadata → story_text |
+| tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTSAdapter + AudioProcessor | story_text → audio_master |
+| audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master → audio_youtube, audio_tiktok |
+| render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | RenderAdapter (GPU) | audio_youtube, metadata → video_youtube, thumbnail |
+| render_tiktok | TIKTOK_RENDER_READY → TIKTOK_RENDERING → OUTPUT_READY | RenderAdapter (GPU) | audio_tiktok → video_tiktok |
+| output | OUTPUT_READY → OUTPUT_PUBLISHING* → UPLOAD_READY | OutputPublisher | story_text, metadata, video_*, thumbnail → output_package |
+| publish | UPLOAD_READY → UPLOADING* → PUBLISHED | PublishAdapter (**YouTube**) | video_youtube, thumbnail, metadata, story_text → publish_result |
+
+`*` = state thêm so với danh sách tối thiểu của Phase 1 (cần để mỗi stage có một running state). Terminal: `PUBLISHED`, `FAILED`.
+
+**FAILED** là một state kèm `failed_stage` + `last_error` (lớp lỗi theo `ErrorClass`), không phải một state riêng cho mỗi stage: retry thủ công đưa job về `queue_state` của đúng stage đó. TikTok không có bước đăng (D-06): nhánh TikTok kết thúc bằng file trong output.
+
+Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lần ghi DB): `queue→running`, `running→done`, `running→queue` (retry có backoff / bị ngắt / dừng có chủ đích), `running→FAILED`, `FAILED→queue_state`.
+
+## 10. Khác biệt Phase 1 so với đặc tả Phase 0 ở trên
+
+| Mục | Đặc tả Phase 0 | Code Phase 1 | Lý do |
+|---|---|---|---|
+| Kiểu dữ liệu adapter | `ArtifactRef` vào/ra | `Path` vào/ra; handler trả `ArtifactDraft`; orchestrator niêm phong | Adapter không phải hash/ghi DB; sha256 tính đúng một lần tại checkpoint |
+| `TTSAdapter.synthesize` | trả `ChunkResult{audio: ArtifactRef}` | nhận `out_path`, trả `{index, duration_sec}` | TTS Manager (handler) kiểm soát tên chunk và resume |
+| `AudioProcessor` | theo `ArtifactRef` | theo `Path`; `qa()` trả `AudioQAReport` | như trên |
+| `StoryAdapter.generate` | `(SourceBundle, profile, ctx)` | `(SourceBundle{title,language,transcript:Path}, profile, out_dir, ctx)` | adapter biết chỗ ghi |
+| `OutputPublisher.publish` | `(job, manifest, cfg)` | `(OutputRequest, ctx)` với đường dẫn artifact | Module không đọc DB/manifest, chỉ nhận artifact |
+| `RenderAdapter` | có `sync_source`, `status` | chỉ `render_video`, `render_thumbnail`, `health` | Source Sync và reconcile thuộc Phase 5 |
+| `PublishAdapter` | có `find()` | chỉ `publish`, `health` | tra cứu sau crash thuộc Phase 6; Phase 1 dựa vào `idempotency_key = stage_key` |
+| `TTSAdapter` | có `capabilities()` đầy đủ | `capabilities()` trả dict tự do | schema chính thức thuộc Phase 4 |
+| `StageContext` | có `secrets`, `deadline_s`, `on_progress` | có `params`, `inputs`, `config`, `cancel`, `log`, `stage_key`, `attempt` | thêm khi có nhu cầu thật |
+| Tên stage | `*_PLANNING/*_RENDERING`, `MASTER_AUDIO_READY` | theo danh sách Phase 1 (§9) | yêu cầu Phase 1; tương ứng `TTS_RUNNING`, `AUDIO_READY` |

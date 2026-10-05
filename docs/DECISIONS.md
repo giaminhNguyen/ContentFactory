@@ -37,7 +37,7 @@
 
 ### D-07 ✅ Tên `output/<project>/` = `<yyyymmdd>_<slug>`
 - `slug` lấy từ tiêu đề truyện: bỏ dấu tiếng Việt, chữ thường, ASCII, `-` thay khoảng trắng, tối đa 60 ký tự (an toàn cho Windows và công cụ không xử lý Unicode). Trùng tên thì hậu tố `-2`, `-3`, không ghi đè. Tiêu đề gốc có dấu nằm trong `project.json`/`title.txt`.
-- Mẫu tên đặt ở `config/output.yaml`, không hardcode.
+- Mẫu tên đặt ở `config/config.json` → `output.name_template`, không hardcode.
 
 ### D-08 ✅ Chấp nhận nền video ngẫu nhiên không tái tạo y hệt
 - **Bối cảnh:** `rng` có ở `video_utils.choose_next_clip` nhưng không lộ ra `render_video`/`media_core`/worker (đã kiểm). Không có đường adapter để seed.
@@ -64,7 +64,38 @@
 
 ### D-15 ✅ Đồng thời render mặc định = 1 job NVENC, theo tài nguyên máy
 - **Bằng chứng:** máy chính là GTX 1650 4 GB (`nvidia-smi`), NVENC có, VRAM nhỏ. HANDOFF §14 muốn async nhưng là chồng **stage khác nhau** (story/TTS/render/upload), không nhân đôi stage nặng cùng loại.
-- **Quyết định:** giới hạn đồng thời theo loại tài nguyên trong `config/resources.yaml`: render GPU = 1, TTS theo `max_concurrency` của engine, upload theo `--concurrency` của yt_uploader (mặc định 2). `doctor` đọc GPU thật để đề xuất giá trị; nâng lên sau khi đo (R12).
+- **Quyết định:** giới hạn đồng thời theo loại tài nguyên trong `config/config.json` → `limits`: render GPU = 1, TTS theo `max_concurrency` của engine, upload theo `--concurrency` của yt_uploader (mặc định 2). `doctor` đọc GPU thật để đề xuất giá trị; nâng lên sau khi đo (R12).
+
+### D-16 ✅ Trong một job các stage chạy tuyến tính; song song nằm giữa các job
+- **Bối cảnh:** HANDOFF §3 vẽ nhánh YouTube và TikTok song song. Hai nhánh cùng dùng GPU, mà D-15 giới hạn 1 render GPU; state của một job chỉ là một giá trị.
+- **Quyết định:** job đi `render_youtube → render_tiktok` tuần tự. Pipeline vẫn bất đồng bộ theo HANDOFF §14: job N đang render trong khi job N+1 chạy TTS và job N-1 đang upload (mỗi stage có hàng đợi riêng, giới hạn theo tài nguyên).
+- **Xem lại nếu:** có nhiều GPU hoặc muốn nhánh TikTok chạy sớm. Cần tách state theo nhánh (đổi `jobs`, không đổi contract).
+
+### D-17 ✅ Phase 1 chỉ dùng stdlib: Python ≥ 3.10, `sqlite3`, `unittest`, config JSON
+- **Bằng chứng:** máy có Python 3.10 (và 3.13), không có `pytest`, không có `tomllib` (3.11+). `setup` máy mới không nên phụ thuộc gói ngoài khi chưa cần.
+- **Quyết định:** config ở `config/config.json` (đã sửa các chỗ nhắc `.yaml` trong D-07, D-15). Các ví dụ YAML của HANDOFF (`channel.yaml`, TTS profile) sẽ được đọc khi tới Phase 4/5; chọn PyYAML hay JSON lúc đó. Test chạy bằng `python -m unittest discover -s tests -t .` (pytest cũng chạy được nếu có).
+
+### D-18 ✅ Phát hiện tiến trình chết bằng lease + heartbeat; resume tự động
+- **Quyết định:** claim job ghi `lease_owner`/`lease_until` (mặc định 30 s, heartbeat 10 s). Orchestrator mới (hoặc cùng orchestrator) thấy lease hết hạn thì đánh dấu stage_run `interrupted` và xếp job về `queue_state` **của đúng stage đó**. Không kiểm PID (không tin cậy trên Windows khi thiếu thư viện, và không dùng được khi máy khởi động lại).
+- **Hệ quả:** sau crash/kill, resume trễ tối đa `lease_s`. Dừng **có chủ đích** (Ctrl-C/`stop`) thì handler hợp tác nhận `CancelToken`, trả `CANCELLED` và job được **trả về hàng ngay**, không chờ lease và không tốn retry.
+- **Chống vòng lặp chết:** lần bị ngắt không tính vào ngân sách retry, nhưng sau `max_interruptions` (mặc định 5) lần liên tiếp thì job vào `FAILED` (`INTERRUPTED_REPEATEDLY`).
+- **Đã kiểm chứng:** test kill tiến trình thật (TerminateProcess) giữa stage và giữa chunk TTS.
+
+### D-19 ✅ Chính sách retry theo lớp lỗi
+- Chỉ `TRANSIENT` tự retry: backoff 2/10/60 s, tối đa 3 lần (`retry.*` trong config). `RESOURCE`, `POLICY`, `AUTH`, `AMBIGUOUS` → `FAILED` ngay, chờ người sửa rồi `retry`. Exception không lường trước → `POLICY/UNEXPECTED` (retry mù một lỗi lập trình là vô nghĩa).
+- `retry` thủ công chỉ đưa **đúng stage lỗi** về hàng đợi, reset ngân sách retry; artifact các stage trước giữ nguyên (có test so sánh sha256 + mtime). Số `attempt` của stage luôn tăng dần để log/manifest truy vết được.
+
+### D-20 ✅ Cấu trúc `src/contentfactory/…` và luật import do test cưỡng chế
+- **Quyết định:** đặt `orchestrator/ jobs/ adapters/ source/ story/ tts/ audio/ render/ publish/ output/` dưới namespace `contentfactory` (tên `jobs`, `audio`, `render`… quá chung chung để làm package top-level). Các package module chỉ được import `contracts` và `fsutil`; **chỉ `orchestrator` biết module cụ thể** và tiêm adapter vào handler (vd stage `tts` nhận cả `TTSAdapter` và `AudioProcessor` mà không import package `audio`).
+- **Cưỡng chế:** `tests/test_architecture.py` quét AST; module gọi chéo nhau thì test đỏ.
+
+### D-21 ✅ Tên state Phase 1 và ánh xạ sang HANDOFF §15
+- Dùng đúng danh sách Phase 1, thêm 3 running state để mỗi stage đều có `queue → running → done`: `AUDIO_PROCESSING`, `OUTPUT_PUBLISHING`, `UPLOADING`.
+- Ánh xạ: `TTS_PLANNING`+`TTS_RENDERING` → `TTS_RUNNING`; `MASTER_AUDIO_READY` → `AUDIO_READY`. `FAILED` là một state kèm `failed_stage` + `last_error` thay cho "failure state theo từng stage" của HANDOFF §15 (retry đúng chỗ vẫn đạt được nhờ `failed_stage`). Bảng đầy đủ ở `MODULE_CONTRACTS.md` §9.
+
+### D-22 ✅ Checkpoint là một transaction SQLite; manifest là bản dẫn xuất
+- Artifact + stage_run + chuyển state commit cùng một transaction (`JobStore.succeed`); chỉ owner của lease mới commit được (kết quả của tiến trình đã mất lease bị bỏ). Manifest ghi lại từ DB sau mỗi stage và dựng lại khi khởi động nên crash giữa commit và ghi file không để lại manifest sai.
+- Đầu vào mỗi stage được kiểm lại **theo kích thước** (rẻ với file GB); sha256 tính một lần lúc niêm phong.
 
 ## 2. Câu hỏi còn mở
 
@@ -90,3 +121,12 @@ Không còn câu hỏi nào chặn Phase 1. D-03, D-04, D-07 đã được chố
 | §15/§16 | Ghi: `UPLOADING/PUBLISHED` chỉ áp dụng YouTube; TikTok = xuất file | A15 |
 | §18 | Ghi: nền video ngẫu nhiên không tái tạo y hệt | A20 |
 | §21 | Bổ sung: ngôn ngữ đích `vi` (D-04); Story = S2 direct LLM (D-03); tên output (D-07); đồng thời render (D-15) | |
+
+## 4. Giới hạn đã biết sau Phase 1
+
+- Dừng có chủ đích dựa vào handler **hợp tác** (kiểm `ctx.cancel`); handler không hợp tác sẽ chặn shutdown cho tới khi xong hoặc bị kill (rồi quay về cơ chế lease).
+- Chưa có: `cancel` job, `rerun --from <stage>` (cần cho "đổi watermark chỉ build lại nhánh YouTube", Phase 5/7), cache-hit liên job theo `stage_key` (đã tính và lưu, chưa dùng), CLI ưu tiên job.
+- Chưa có `doctor.ps1`, `setup.ps1`, `update.ps1`, `start.ps1` (HANDOFF §19) — chuyển sang Phase 2 (doctor/setup bản đầu) và Phase 7.
+- Thay gói output của chính job khi retry là `rmtree` rồi `rename` (cửa sổ ngắn không có gói); gói vẫn không bao giờ ở trạng thái nửa vời.
+- Chỉ kiểm thử trên Windows (kill bằng TerminateProcess). Nhiều orchestrator trên cùng DB được kiểm bằng 2 luồng trong một tiến trình và bằng kill/resume, chưa kiểm bằng 2 tiến trình chạy đồng thời.
+- Fake adapter không đổi tốc độ audio thật (chỉ chia part theo `target×speed`), video/thumbnail chỉ là byte giả.

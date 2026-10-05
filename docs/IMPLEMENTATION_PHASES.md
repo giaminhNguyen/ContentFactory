@@ -8,11 +8,11 @@ Mỗi phase có **đầu ra kiểm chứng được**; chưa đạt thì chưa s
 
 Đầu ra: 5 tài liệu trong `docs/`, `modules.lock`, commit. Các quyết định mở (D-03 Story = S2, D-04 ngôn ngữ = `vi`, D-07 tên output) đã được chốt bằng mặc định suy ra từ code/môi trường; xem `DECISIONS.md`.
 
-## Phase 1 — Khung orchestrator + walking skeleton
+## Phase 1 — Khung orchestrator + walking skeleton ✅ (đã xong)
 
-**Làm:** repo layout (`orchestrator/ config/ scripts/ runtime/ workspace/ output/ modules/`), SQLite schema job + stage + attempt, state machine theo HANDOFF §15, workspace + manifest + `stage_key` + cache, `ErrorClass`, runner có cancel/retry theo `error_class`, `ArtifactRef` ghi atomic, `doctor` bản đầu (ffmpeg, NVENC, `media_worker health`, thư mục, DB), `modules.lock` + `setup.ps1` (clone theo SHA).
-Adapter giả: `FixtureStoryAdapter`, `FakeTTS` (tạo sóng sin/âm im theo độ dài text), `FakeRender`, `FakePublish`, `OutputPublisher` thật.
-**Xong khi:** một lệnh chạy job giả từ NEW tới OUTPUT_READY, sinh đúng cây `output/<project>/…`; kill giữa chừng rồi chạy lại chỉ làm lại stage dở; xóa `output/` không phá workspace/DB (HANDOFF §17).
+**Đã làm:** `src/contentfactory/` (orchestrator, jobs, adapters, source, story, tts, audio, render, publish, output), SQLite job store, state machine + stage table, hàng đợi theo stage có giới hạn tài nguyên, checkpoint nguyên tử, retry theo lớp lỗi, resume sau kill (lease + heartbeat), dừng êm, structured logging (JSONL chung + riêng từng job), manifest dẫn xuất, workspace riêng từng job, `OutputPublisher` thật, fake adapter cho cả 7 contract, CLI `python -m contentfactory {submit,run,status,retry}`, `scripts/run_fake_job.py`, 31 test (stdlib `unittest`, ~13 s). Chi tiết quyết định: `DECISIONS.md` D-16…D-22; hợp đồng: `MODULE_CONTRACTS.md` §9–§10.
+**Kiểm chứng:** job fake đi hết `NEW → PUBLISHED`; kill tiến trình thật giữa stage và giữa chunk TTS, chạy lại thì resume đúng stage (chunk xong không tổng hợp lại); stage lỗi không làm mất artifact stage trước, retry chỉ chạy lại stage lỗi; xóa `output/` không ảnh hưởng pipeline; test kiến trúc cấm module import nhau. Đã thử phá code có chủ đích (3 lỗi) và test bắt được cả 3.
+**Hoãn sang phase sau:** `doctor`/`setup`/`update`/`start` (Phase 2 bản đầu, Phase 7 đầy đủ), `rerun --from`, cache-hit theo `stage_key`, `cancel` job. Danh sách giới hạn: `DECISIONS.md` §4.
 
 ## Phase 2 — Spike rủi ro (song song được, không phụ thuộc nhau)
 
