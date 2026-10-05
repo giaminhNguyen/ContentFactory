@@ -7,6 +7,14 @@ modules/*/
 /output/
 /runtime/
 
+# Cấu hình/dữ liệu riêng của từng máy (Phase 7): không commit
+/config/config.local.json
+/config/secrets.local.env
+/channels/
+/tts_profiles/
+/tools/
+/.venv/
+
 # Python
 __pycache__/
 *.pyc

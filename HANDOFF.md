@@ -2,6 +2,7 @@
 
 > Handoff kiến trúc đã chốt từ quá trình trao đổi.
 > **Cập nhật (tích hợp Subtitle_supperVip):** Source/Subtitle nay là một `SourceAdapter` có nhiều provider, `Subtitle_supperVip` là provider chính, ContentFactory vẫn là orchestrator duy nhất giữ state. Xem **§2A Current Integrations** và **§4A Source / Subtitle**. Các điểm đã lệch khỏi bản thiết kế đầu tiên được chỉnh trực tiếp trong tài liệu này; lý do và bằng chứng nằm ở `docs/` (`CURRENT_SYSTEM_AUDIT.md`, `DECISIONS.md`).
+> **Cập nhật (Phase 7):** UX mặc định là Auto Mode: `cf go <URL> --channel K` (preset kênh nhớ TTS profile/pool/render/watermark/publishing; ưu tiên `params > preset > mặc định`; mọi lựa chọn tự động được ghi vào `params.auto`). Xem D-82…D-87, `README.md` (hướng dẫn người dùng).
 > Mục tiêu: một pipeline duy nhất biến một nguồn truyện/video đầu vào thành **1 video YouTube hoàn chỉnh** và **nhiều video TikTok theo part**, trong khi hệ thống dễ thay module, dễ debug, dễ setup máy mới và không bắt người dùng phải hiểu chi tiết kỹ thuật.
 
 ---
@@ -1177,13 +1178,15 @@ ContentFactory/
   output/
 ```
 
+> **Trạng thái:** **đã triển khai ở Phase 7** (`docs/DECISIONS.md` D-82…D-87). Khác thiết kế ban đầu: `doctor` là lệnh CLI (`cf doctor [--json]`) chứ không phải `doctor.ps1`; thêm `cf.cmd`/`cf.ps1` (launcher), `cf go`, `cf demo`; `setup`/`update`/`start` có `.ps1` mỏng gọi lõi Python (`orchestrator/setup_env.py`). Cấu hình máy ở `config/config.local.json` + `config/secrets.local.env` (không commit); `channels/`, `tts_profiles/`, `tools/`, `.venv/` cũng không commit.
+
 Scripts:
 
 ```text
-setup.ps1
-update.ps1
-doctor.ps1
-start.ps1
+setup.ps1     # máy mới: clone module (theo modules.lock), venv, ffmpeg, build yt-uploader, credential, doctor (idempotent, -DryRun/-Yes/-Force)
+update.ps1    # git pull, module về đúng SHA, cài lại dependency khi đổi, migration DB, doctor
+start.ps1     # dịch vụ nền: tự bật uploader, Source Sync, auto resume, cleanup
+cf.cmd / cf.ps1   # cf go <url> --channel K [--open], cf status/open/resume/retry/doctor/channels/channel-init/demo
 ```
 
 `doctor` kiểm tra tối thiểu:
@@ -1198,6 +1201,8 @@ start.ps1
 - YouTube credentials;
 - storage;
 - database.
+
+Thực tế (D-85): doctor còn kiểm Python, git, Node, quyền ghi, ffmpeg filter (`loudnorm/alimiter/rubberband`), thumbnail assets, từng pool, từng kênh (preset hợp lệ), và **cảnh báo khi TTS là bản giả**; mỗi mục lỗi kèm cách sửa.
 
 Version từng repo/module phải pin theo commit/version để máy mới reproducible.
 

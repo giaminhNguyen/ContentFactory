@@ -36,6 +36,8 @@ from .handlers import HANDLERS
 from .log import EventLog
 from .monitor import DiskProbe, NetworkProbe, ResourceMonitor
 from ..jobs.sequences import SequenceManager
+from . import auto as AU
+from . import cleanup as CL
 from . import channels as CH
 from .pools import PoolSyncService
 from .registry import build_adapters
@@ -69,6 +71,7 @@ class Orchestrator:
         self.monitor.input_check = self.monitor.input_check or self._inputs_ok
         self.monitor.adapters_health = self.monitor.adapters_health or self._adapters_health
         self._last_tick = 0.0
+        self._last_cleanup = 0.0
         self.pool_sync = PoolSyncService(self)
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
 
@@ -126,7 +129,14 @@ class Orchestrator:
         """Tạo job. `mode` ∈ P.MODES (FULL, SUBTITLE_ONLY, STORY_ONLY, THROUGH_TTS, TTS_ONLY, VIDEO_ONLY) hoặc đặt trực tiếp
         `start_stage`/`target_stage`. `inputs` = artifact đưa từ ngoài vào (kind -> đường dẫn | [đường dẫn] | dict cho metadata);
         `from_job` = dùng lại artifact của job khác. Spec không hợp lệ bị từ chối NGAY (không tạo job nửa vời)."""
-        merged = _merge(copy.deepcopy(self.cfg["job_defaults"]), copy.deepcopy(params))
+        # Channel preset (Auto Mode): job_defaults < preset của kênh/tự chọn < params người dùng nhập. Kênh đọc MỘT lần, chốt vào snapshot (D-41, D-46).
+        chan_id = str(params.get("channel") or self.cfg["job_defaults"].get("channel") or "default")
+        channel = CH.load_channel(self.cfg, chan_id)
+        preset, decisions = AU.preset_params(self.cfg, channel, params, self.adapters)
+        merged = _merge(_merge(copy.deepcopy(self.cfg["job_defaults"]), copy.deepcopy(preset)), copy.deepcopy(params))
+        decisions += AU.select_pools(self.cfg, merged, channel, self.adapters)
+        if decisions:
+            merged["auto"] = decisions                                                   # minh bạch: cái gì được tự chọn và vì sao (không ảnh hưởng stage_key)
         if mode is not None:
             if mode not in P.MODES:
                 raise _spec_error(f"mode không hợp lệ: {mode!r}; hợp lệ: {sorted(P.MODES)}")
@@ -138,7 +148,6 @@ class Orchestrator:
             raise _spec_error("; ".join(plan.errors), errors=plan.errors)
         resolved = bool(self.cfg.data.get("auto_resume_default", True)) if auto_resume is None else bool(auto_resume)
         snap = build_snapshot(self.cfg, auto_resume=resolved, start_stage=plan.start_stage, target_stage=plan.target_stage)
-        channel = CH.load_channel(self.cfg, str(merged.get("channel") or "default"))     # Channel Config: đọc MỘT lần, chốt vào snapshot (D-41, D-46)
         snap["semantic"]["channel_config"] = channel
         if not merged.get("watermark") and channel.get("watermark") and Path(channel["watermark"]).is_file():
             merged["watermark"] = channel["watermark"]                                  # watermark là channel asset (HANDOFF §10)
@@ -152,6 +161,8 @@ class Orchestrator:
             self.store.discard_job(job_id)
             shutil.rmtree(job_dir(self.cfg.path("workspace"), job_id), ignore_errors=True)
             raise
+        for d in decisions:
+            self.log.emit("auto_decision", job_id=job_id, **d)
         self.log.emit("job_created", job_id=job_id, start_stage=plan.start_stage, target_stage=plan.target_stage,
                       auto_resume=resolved, imports=sorted({i["kind"] for i in items}), plan_run=plan.run, plan_skip=plan.skip)
         self._manifest(job_id)
@@ -319,6 +330,7 @@ class Orchestrator:
                     self.log.emit("lease_recovered", "warning", job_id, action=action)
                     self._manifest(job_id)
                 self._monitor_tick()
+                self._cleanup_tick()
                 self._schedule(executor, futures)
                 # until_idle: thoát khi không còn job ACTIVE; job bị giữ không giữ tiến trình lại (dùng --forever để theo dõi)
                 if until_idle and not futures and self.store.nonterminal_count() == 0:
@@ -334,6 +346,21 @@ class Orchestrator:
             self.log.emit("orchestrator_stopped", owner=self.owner)
 
     # -- nội bộ -------------------------------------------------------------------------------
+    def cleanup(self, dry_run: bool = False) -> dict:
+        """Auto Cleanup (D-83): dọn trung gian/cache/workspace cũ; không bao giờ đụng output/ của người dùng."""
+        return CL.run(self, dry_run=dry_run)
+
+    def _cleanup_tick(self) -> None:
+        cfg = self.cfg.data.get("cleanup", {})
+        now = time.time()
+        if not cfg.get("enabled", True) or now - self._last_cleanup < float(cfg.get("interval_s", 600)):
+            return
+        self._last_cleanup = now
+        try:
+            self.cleanup()
+        except Exception as e:                               # noqa: BLE001 - dọn dẹp lỗi không được làm sập scheduler
+            self.log.emit("cleanup_error", "warning", error=repr(e))
+
     def _heartbeat(self, stop: threading.Event) -> None:
         while not stop.wait(self.cfg["heartbeat_s"]):
             try:

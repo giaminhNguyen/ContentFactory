@@ -255,6 +255,11 @@ class TTSManager:
     def _cache_hit(self, cache_dir: Path, key: str) -> tuple[Path, dict] | None:
         d = cache_dir / key[:2]
         meta = self._valid_meta(d / f"{key}.wav", d / f"{key}.json", key)
+        if meta:
+            try:
+                os.utime(d / f"{key}.wav")                        # đánh dấu vừa dùng: Auto Cleanup xóa file dùng lâu nhất trước (LRU theo mtime)
+            except OSError:
+                pass
         return (d / f"{key}.wav", meta) if meta else None
 
     @staticmethod

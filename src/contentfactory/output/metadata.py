@@ -23,7 +23,7 @@ PUBLISHING_KEYS = {"privacy": str, "tags": list, "category": (str, type(None)), 
 
 def default_channel(channel_id: str) -> dict:
     return {"id": channel_id, "name": channel_id, "title_template": DEFAULT_TITLE_TEMPLATE, "description_template": DEFAULT_DESCRIPTION_TEMPLATE,
-            "thumbnail": {}, "publishing": {}, "sequence": {"last_used": 0}, "watermark": None, "loaded_from": None}
+            "thumbnail": {}, "publishing": {}, "sequence": {"last_used": 0}, "watermark": None, "preset": {}, "loaded_from": None}
 
 
 def normalize_channel(raw: dict | None, channel_id: str) -> dict:
@@ -37,6 +37,11 @@ def normalize_channel(raw: dict | None, channel_id: str) -> dict:
                 errs.append(f"{k} phải là chuỗi không rỗng")
             else:
                 out[k] = raw[k]
+    pre = raw.get("preset")
+    if pre is not None:
+        errs += validate_preset(pre)
+        if isinstance(pre, dict):
+            out["preset"] = pre
     for k in ("thumbnail", "publishing", "sequence"):
         if k in raw:
             if not isinstance(raw[k], dict):
@@ -60,6 +65,25 @@ def normalize_channel(raw: dict | None, channel_id: str) -> dict:
         raise StageError(ErrorClass.POLICY, "INVALID_CHANNEL_CONFIG", f"channel '{channel_id}': " + "; ".join(errs), {"errors": errs},
                          resource="input")
     return out
+
+
+PRESET_KEYS = {"tts_profile": (str, type(None)), "tts": dict, "language": str, "pools": dict, "render": dict, "audio": dict, "tiktok": dict}
+
+
+def validate_preset(pre) -> list[str]:
+    """Channel preset (Auto Mode): thứ kênh nhớ để người dùng không phải chọn lại mỗi lần. Trả danh sách lỗi."""
+    if not isinstance(pre, dict):
+        return ["preset phải là object"]
+    errs = [f"preset.{k}: khóa không hợp lệ; hợp lệ: {sorted(PRESET_KEYS)}" for k in pre if k not in PRESET_KEYS]
+    errs += [f"preset.{k} sai kiểu" for k, t in PRESET_KEYS.items() if k in pre and not isinstance(pre[k], t)]
+    for k in ("pools", "render"):
+        for sub in (pre.get(k) or {}):
+            if sub not in ("youtube", "tiktok"):
+                errs.append(f"preset.{k}.{sub}: chỉ hỗ trợ youtube | tiktok")
+    for sub, v in (pre.get("pools") or {}).items():
+        if not isinstance(v, str) or not v:
+            errs.append(f"preset.pools.{sub} phải là tên pool")
+    return errs
 
 
 def check_template(tpl: str, where: str = "template") -> None:

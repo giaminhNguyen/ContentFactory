@@ -84,10 +84,10 @@ Không bắt đầu Publishing (Phase 6).
 **Chưa kiểm chứng / chưa làm:** upload thật lên YouTube (cần OAuth client + tài khoản Google), nén thumbnail trên ảnh thật, playlist/schedule với daemon thật, vòng đời daemon (Phase 7), TikTok chỉ xuất file (D-06), `rerender --from` cho job đã xong (phiên bản mới = job mới `from_job` + `start_stage=output`). Mặc định `adapters.publish` vẫn là `fake`.
 Không bắt đầu Phase 7.
 
-## Phase 7 — Pipeline bất đồng bộ và vận hành
+## Phase 7 — Auto Mode / UX cho người lười / setup máy mới ✅ (đã xong; TTS thật và upload thật chưa chạy)
 
-**Làm:** worker pool theo stage (HANDOFF §14), giới hạn đồng thời theo tài nguyên (GPU/đĩa, R12), nhiều job song song với workspace riêng, `update.ps1`, `doctor` đầy đủ (HANDOFF §19), CLI/UI tối thiểu (form Input/Channel/TTS/Pool + RUN).
-**Xong khi:** ≥3 job chạy chồng stage mà không tranh chấp; máy mới `git clone → setup → start` chạy được.
+**Đã làm (D-82…D-87):** `cf go <url> --channel K` (một lệnh), channel preset (TTS profile, pool, render, tiktok, audio, watermark, publishing), Auto Resume/Retry (có từ 2.9; `go` chờ + chỉ dẫn), Auto Cleanup, Auto Naming (làm sạch hình thức), Auto TTS profile, Auto pool, `doctor`, `setup.ps1`, `update.ps1`, `start.ps1`, `cf demo`, CLI cơ bản vs `--advanced`, E2E URL → gói output.
+**Chưa làm:** ≥3 job chồng stage ở quy mô thật (đo), giám sát daemon uploader, thông báo, UI, Linux/macOS, TTS thật (Phase 8), upload thật.
 
 ## Phase 8 — Engine TTS thật + Auto-Profile bằng AI (HANDOFF §7–8)
 

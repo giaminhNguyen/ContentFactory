@@ -26,6 +26,12 @@ DEFAULTS: dict = {
     "limits": {"default": 2, "gpu": 1},
     # Publishing (Phase 6; D-76…): channels/<id>/channel.json = Channel Config; title_policy: warn (mặc định: cảnh báo khi dùng tiêu đề nguồn) | require
     "channels_dir": "channels",
+    "tts_profiles_dir": "tts_profiles",                       # profile TTS đã onboard (annotated JSON); Auto Mode chọn tự động theo ngôn ngữ/engine
+    # Auto Mode (Phase 7): cấu hình của MÁY, áp dụng lúc tạo job (kết quả chốt vào params/snapshot của job)
+    "auto": {"tts_profile_selection": True, "pool_selection": True},
+    # Auto Cleanup: dọn trung gian của job đã đăng, cache quá cỡ, workspace cũ. KHÔNG BAO GIỜ đụng output/ (của người dùng)
+    "cleanup": {"enabled": True, "interval_s": 600, "intermediates_after_publish": True, "artifact_keep_days": 14, "failed_keep_days": 30,
+                "cache_gb": {"tts": 20, "source": 5}},
     "publishing": {"title_policy": "warn", "defaults": {"privacy": "private", "category": None, "tags": [], "playlists": []}},                     # đồng thời theo tài nguyên (D-15)
     # retry (D-40): backoff có jitter, sàn/trần, ưu tiên Retry-After; quá ngưỡng thì GIỮ job thay vì ngủ trong hàng đợi
     "retry": {"max_attempts": 3, "backoff_s": [2, 10, 60], "max_interruptions": 5, "jitter": 0.2, "cap_s": 300,
@@ -78,9 +84,10 @@ class Config:
 def load_config(root: Path, overrides: dict | None = None) -> Config:
     root = Path(root).resolve()
     data = copy.deepcopy(DEFAULTS)
-    f = root / "config" / "config.json"
-    if f.exists():
-        _merge(data, json.loads(f.read_text(encoding="utf-8")))
+    for name in ("config.json", "config.local.json"):      # config.local.json: cấu hình của MÁY do setup ghi (không commit), đè lên config.json
+        f = root / "config" / name
+        if f.exists():
+            _merge(data, json.loads(f.read_text(encoding="utf-8-sig")))
     if overrides:
         _merge(data, overrides)
     return Config(root, data)

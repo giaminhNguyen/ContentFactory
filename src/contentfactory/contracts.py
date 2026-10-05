@@ -326,6 +326,23 @@ class OutputPublisher(Protocol):
 
 
 # ---- project / channel (D-43…D-47) -----------------------------------------------------------
+def clean_title(raw: str, max_chars: int = 80) -> str:
+    """Auto Naming: làm sạch tiêu đề video NGUỒN thành project.title tạm (bỏ URL, emoji/ký hiệu, hashtag, gạch dưới, dấu trang trí ở hai đầu, cắt ở ranh giới từ).
+    Chỉ làm sạch hình thức, KHÔNG diễn giải lại nội dung; title_source vẫn là source_default (cảnh báo còn nguyên)."""
+    import re
+    import unicodedata
+    s = unicodedata.normalize("NFC", raw or "")
+    s = re.sub(r"https?://\S+", " ", s)
+    s = "".join(c for c in s if unicodedata.category(c) not in ("So", "Sk", "Cs", "Cc", "Cf"))
+    s = re.sub(r"(^|\s)#\w+", " ", s).replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip(" -–—|:;,.·•~*+/\\\"'`")
+    if len(s) > max_chars:
+        cut = s[:max_chars]
+        s = cut.rsplit(" ", 1)[0] if " " in cut[max_chars // 2:] else cut
+        s = s.strip(" -–—|:;,.")
+    return s or (raw or "").strip() or "untitled"
+
+
 def project_of(ctx: StageContext, meta: dict) -> dict:
     """Thông tin project cho stage render (thumbnail), output, publish. `project.title` là field chính duy nhất: lấy từ
     params.project.title (title_source user|story); chưa đặt thì dùng tiêu đề của video NGUỒN (source_default = placeholder, có cảnh báo ở Metadata Builder)."""
@@ -333,7 +350,7 @@ def project_of(ctx: StageContext, meta: dict) -> dict:
     title = str(p.get("title") or "").strip()
     src = str(p.get("title_source") or "user") if title else "source_default"
     if not title:
-        title = str(meta.get("title") or "").strip() or "untitled"
+        title = clean_title(str(meta.get("title") or "")) or "untitled"       # Auto Naming (placeholder: vẫn có cảnh báo source_default)
     ch = ctx.config.get("channel_config") or {}
     cid = ch.get("id") or ctx.params.get("channel") or "default"
     if src == "source_default" and (ctx.config.get("publishing") or {}).get("title_policy") == "require":
