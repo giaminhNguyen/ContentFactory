@@ -1,7 +1,7 @@
 # MODULE_CONTRACTS
 
 > Hợp đồng giữa orchestrator và các module. Neo vào HANDOFF (§3 artifact + manifest + state, §20) và `CURRENT_SYSTEM_AUDIT.md`.
-> Ngôn ngữ đặc tả: chữ ký kiểu Python (`typing.Protocol`) để đọc dễ; **hợp đồng thật là artifact trên đĩa + manifest JSON**, không phải lời gọi hàm. Ngôn ngữ cài đặt orchestrator chưa chốt (xem `DECISIONS.md` D-02).
+> Ngôn ngữ đặc tả: chữ ký kiểu Python (`typing.Protocol`) để đọc dễ; **hợp đồng thật là artifact trên đĩa + manifest JSON**, không phải lời gọi hàm. Ngôn ngữ cài đặt orchestrator mặc định là Python (`DECISIONS.md` D-02).
 
 ## 0. Quy ước chung
 
@@ -100,7 +100,7 @@ class SourceProcessor(Protocol):
 ```python
 class StoryProfile(TypedDict):
     id: str; version: str
-    language: str                  # PHẢI khai báo; xem DECISIONS D-04
+    language: str                  # PHẢI khai báo, mặc định "vi" (DECISIONS D-04)
     target_chars: int | None
     genre: str | None
     params: dict                   # tùy engine
@@ -120,10 +120,10 @@ class StoryAdapter(Protocol):
 - **Bất biến đầu ra (validator tất định chạy sau mọi implementation):** `story.txt` không chứa dòng khớp `^(第.+章|Chapter\s*\d+|Section\s*\d+|Part\s*\d+|Chương\s*\d+)`, không còn marker kỹ thuật (`<!--`, `[[`, `TODO`…), không rỗng, ngôn ngữ đúng `profile.language`, tỉ lệ lặp n-gram dưới ngưỡng.
 - **Lỗi:** engine cần xác nhận người (gate tương tác không auto-trả lời được) → `POLICY`/`AMBIGUOUS` code `NEEDS_HUMAN`; hết quota LLM → `TRANSIENT`/`RESOURCE`.
 - **Resume:** continuity nằm trong `workspace/story/` nên retry tiếp được ở section dang dở (HANDOFF §14: trong một branch, generation phải tuần tự theo state).
-- **Triển khai ứng viên** (chưa chốt, xem DECISIONS D-03):
-  - `OhStoryCliAdapter`: một workspace/job, `/story-setup` deploy, điều khiển `story-long-write` qua `claude -p`, tự trả lời gate, poll `追踪/`, rồi Assembler gộp `正文/*.md` bỏ dòng tiêu đề đầu. Tiếng Trung only (A4).
-  - `DirectLLMStoryAdapter`: orchestrator tự gọi LLM theo section với state continuity riêng (có thể tham khảo `skills/story-long-write` làm tài liệu nguồn nhưng không phụ thuộc runtime của nó).
-  - `FixtureStoryAdapter`: đọc `story.txt` có sẵn — dùng cho Phase 1 để dựng pipeline end-to-end không cần Story thật.
+- **Triển khai** (đã chốt, DECISIONS D-03/D-04):
+  - `DirectLLMStoryAdapter` (**chính**): orchestrator tự gọi LLM theo section với blueprint và state continuity riêng trong `workspace/job_x/story/`, ngôn ngữ theo `profile.language` (mặc định `vi`). Tham khảo `skills/story-long-write` làm tài liệu phương pháp, không phụ thuộc runtime của nó.
+  - `FixtureStoryAdapter`: đọc `story.txt` có sẵn — dùng ở Phase 1 để dựng pipeline end-to-end và cho test.
+  - `OhStoryCliAdapter` (điều khiển `story-long-write` qua `claude -p`): **không xây** — chỉ tiếng Trung, không headless (A3–A4). Chỉ xét lại nếu cần kênh truyện tiếng Trung.
 
 ## 3. TTSAdapter
 
@@ -306,7 +306,7 @@ output/<project>/
   4. `story.txt` copy từ artifact đã qua validator bất biến (§2).
   5. Không chứa cache, chunk audio, sync, temp.
   6. Verify sha256 sau copy; lỗi → `RESOURCE`/`TRANSIENT`, giữ nguyên workspace.
-- **Quy tắc đặt tên `<project>`** chưa chốt (HANDOFF §21), xem DECISIONS D-07.
+- **Tên `<project>`** = `<yyyymmdd>_<slug ASCII không dấu>` (D-07), cấu hình ở `config/output.yaml`.
 
 ---
 

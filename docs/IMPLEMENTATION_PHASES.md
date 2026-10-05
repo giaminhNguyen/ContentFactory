@@ -6,7 +6,7 @@ Mỗi phase có **đầu ra kiểm chứng được**; chưa đạt thì chưa s
 
 ## Phase 0 — Audit ✅ (đã xong)
 
-Đầu ra: 5 tài liệu trong `docs/`, `modules.lock`, commit. Dừng chờ quyết định D-03/D-04.
+Đầu ra: 5 tài liệu trong `docs/`, `modules.lock`, commit. Các quyết định mở (D-03 Story = S2, D-04 ngôn ngữ = `vi`, D-07 tên output) đã được chốt bằng mặc định suy ra từ code/môi trường; xem `DECISIONS.md`.
 
 ## Phase 1 — Khung orchestrator + walking skeleton
 
@@ -18,16 +18,16 @@ Adapter giả: `FixtureStoryAdapter`, `FakeTTS` (tạo sóng sin/âm im theo đ�
 
 | Spike | Mục tiêu | Tiêu chí kết luận |
 |---|---|---|
-| 2a Story | Thử S1 (`claude -p` + oh-story) và S2 (direct LLM) trên cùng một nguồn nhỏ | Ra `story.txt` hợp lệ (qua validator bất biến), chi phí/thời gian ước tính, độ ổn định qua ≥3 lần chạy → chốt D-03 |
+| 2a Story (S2) | Prototype `DirectLLMStoryAdapter` tiếng Việt trên một nguồn nhỏ: blueprint → vài section → continuity → assemble | Ra `story.txt` tiếng Việt hợp lệ (qua validator bất biến), chi phí/thời gian/token ước tính, ổn định qua ≥3 lần chạy; nếu không đạt thì ghi lại và điều chỉnh thiết kế section/continuity (không quay lại S1) |
 | 2b ContentFlow thật | Cài Pillow/pytest, chạy test ContentFlow; gọi `media_worker` render thật 1–2 phút audio với frame 9:16 mặc định; thử NVENC | Có video; test pass/fail ghi lại (R14); đo thời gian |
 | 2c yt_uploader thật | Build, tạo OAuth client, `login`, upload video test `private` lên kênh thử, đặt thumbnail, `idempotency_key` lặp lại | Có `video_id`; hành vi quota/private thật được ghi (R4) |
 
-**Xong khi:** D-03 được quyết định bằng số liệu; hai adapter Render/Publish biết chắc chạy được hay không trên máy thật.
+**Xong khi:** có số liệu chi phí/ổn định cho S2; hai adapter Render/Publish biết chắc chạy được hay không trên máy thật. Spike 2c bỏ qua (kèm cảnh báo `doctor`) nếu chưa có OAuth client + kênh thử; các spike còn lại không bị chặn.
 
 ## Phase 3 — SourceProcessor + Story thật
 
-**Làm:** SourceProcessor (URL → transcript/metadata/tùy chọn analysis), StoryAdapter bản đã chọn ở Phase 2, Story Assembler, validator bất biến (§2 MODULE_CONTRACTS), báo cáo continuity.
-**Xong khi:** một URL thật ra `story.txt` không header, đúng ngôn ngữ, qua validator; resume story giữa chừng hoạt động.
+**Làm:** SourceProcessor (URL → transcript/metadata/tùy chọn analysis), `DirectLLMStoryAdapter` (S2) hoàn chỉnh, Story Assembler, validator bất biến (§2 MODULE_CONTRACTS), báo cáo continuity.
+**Xong khi:** một URL thật ra `story.txt` không header, đúng ngôn ngữ `vi`, qua validator; resume story giữa chừng hoạt động.
 
 ## Phase 4 — TTS
 

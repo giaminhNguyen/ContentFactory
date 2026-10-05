@@ -60,7 +60,7 @@ Việc phải làm nhưng nằm ngoài code ContentFlow:
 
 ### 3.3 oh-story-claudecode → StoryAdapter (**khoảng cách lớn nhất**)
 
-Thực tế (A1–A7): không có Story module tự động. Có ba hướng; **chưa chốt** (DECISIONS D-03/D-04):
+Thực tế (A1–A7): không có Story module tự động. Ba hướng đã cân nhắc; **đã chốt S2** (DECISIONS D-03, với ngôn ngữ đích `vi` theo D-04):
 
 | Hướng | Mô tả | Ưu | Nhược |
 |---|---|---|---|
@@ -68,7 +68,7 @@ Thực tế (A1–A7): không có Story module tự động. Có ba hướng; **
 | **S2. `DirectLLMStoryAdapter`** | Orchestrator tự gọi LLM theo section, giữ state continuity riêng, tham khảo skill làm tài liệu | Kiểm soát ngôn ngữ, định dạng đầu ra, headless thật | Phải xây continuity/blueprint; không tái dùng được code cũ |
 | **S3. Hybrid** | S2 ở giai đoạn đầu; S1 cho thể loại/ngôn ngữ phù hợp sau | Giảm rủi ro | Hai đường code |
 
-Khuyến nghị: **đóng băng `StoryAdapter` contract, dựng pipeline bằng `FixtureStoryAdapter`, rồi làm spike S1 vs S2 (Phase 2) trước khi cam kết.** Lý do: mọi stage phía sau chỉ cần `story.txt` hợp lệ; rủi ro lớn nhất không nên chặn các phần còn lại.
+**Quyết định: S2.** S1 loại vì chỉ tiếng Trung (bộ cấm từ, detector, đếm chữ hardcode) trong khi đích là tiếng Việt; oh-story được giữ làm tài liệu phương pháp, không làm runtime. Contract `StoryAdapter` đóng băng và pipeline dựng bằng `FixtureStoryAdapter` ở Phase 1, nên mọi stage phía sau chỉ cần `story.txt` hợp lệ và không bị chặn bởi Story thật.
 
 ### 3.4 Các phần mới (không có trong 3 project)
 
@@ -81,8 +81,8 @@ SourceProcessor, TTS (adapter/profile/segment planner/manager/QA), AudioProcesso
 | 1 | Source Sync từ orchestrator | Shim gọi `sync_videos` | Thêm job type `sync` vào `media_worker` (đồng nhất giao thức); sửa ghi `.part` + atomic profile |
 | 2 | Profile YouTube/TikTok | Frame + `config_overrides` ở orchestrator | Không |
 | 3 | Tốc độ ×2, cắt part, watermark | AudioProcessor | Không |
-| 4 | Gộp chapter thành `story.txt` | StoryAdapter/Assembler | Không (S1) |
-| 5 | Điều khiển story không tương tác | `claude -p` + auto-answer (S1) hoặc bỏ runtime (S2) | Upstream có thể bổ sung chế độ headless; khó và ngoài phạm vi |
+| 4 | Gộp section thành `story.txt` | StoryAdapter/Assembler (S2 tự sinh section nên không còn tiêu đề chương của oh-story để gỡ) | Không |
+| 5 | Điều khiển story không tương tác | Bỏ runtime oh-story, dùng S2 (D-03) | Không cần; upstream headless nằm ngoài phạm vi |
 | 6 | Seed nền ngẫu nhiên | **Không có đường adapter** (rng không lộ ra qua API). Chấp nhận không tái tạo y hệt (D-08) | Đưa `rng`/`seed` từ `video_utils.choose_next_clip` lên `render_video`/worker `params` |
 | 7 | Thumbnail ≤ 2 MiB | Adapter nén lại JPG | Không |
 | 8 | Chọn kênh YouTube | Một account/kênh | yt_uploader: dùng `channel_id` thật (không bắt buộc) |
@@ -96,9 +96,9 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 
 | ID | Rủi ro | Mức | Nguồn | Giảm thiểu |
 |---|---|---|---|---|
-| R1 | **Story module không như HANDOFF mô tả**: `story-branch` không sinh truyện; không headless; không nhận transcript | **Cao** | A1–A3 | Contract tách rời; fixture adapter; spike S1/S2 sớm; quyết định ở D-03 |
-| R2 | **Ngôn ngữ**: Story chỉ tiếng Trung, trong khi TTS/ContentFlow có dấu hiệu hướng tiếng Việt (kiểm glyph tiếng Việt, môi trường có skill VieNeu-TTS); HANDOFF không nêu ngôn ngữ | **Cao** | A4 | Chốt ngôn ngữ đích trước Phase 2 (D-04) |
-| R3 | Điều khiển story qua `claude -p` mong manh, tốn chi phí, có cổng chờ người | Cao (nếu chọn S1) | A3, §2.6 audit | Giới hạn thử nghiệm; S2 là đường thay thế |
+| R1 | **Story module không như HANDOFF mô tả**: `story-branch` không sinh truyện; không headless; không nhận transcript. Chọn S2 (D-03) nghĩa là **tự xây** blueprint/continuity | **Cao** | A1–A3 | Contract tách rời; fixture adapter; spike S2 ở Phase 2a; validator bất biến |
+| R2 | **Ngôn ngữ**: oh-story chỉ tiếng Trung, đích là tiếng Việt (D-04, suy ra từ ContentFlow/môi trường). **Đã giảm** nhờ bỏ runtime oh-story; còn lại rủi ro chất lượng văn Việt do LLM và độ phủ của TTS tiếng Việt | Trung | A4 | Profile theo ngôn ngữ; validator ngôn ngữ; nghe thử ở Phase 4 |
+| R3 | ~~Điều khiển story qua `claude -p` mong manh~~ — **không còn áp dụng** (S1 không xây, D-03). Thay bằng: chi phí/độ ổn định gọi LLM nhiều section liên tục cho truyện dài | Trung | A3 | Chia section có checkpoint; resume; đo chi phí ở 2a |
 | R4 | **yt_uploader chưa từng chạy với Google thật**; OAuth client thủ công; quota ~6 upload/ngày (ngoài repo, chưa xác nhận); project chưa audit có thể ép private; job `failed` không tự retry | Trung–Cao | A14 | Test thật sớm (Phase 2/6) với kênh thử; policy retry ở orchestrator; ghi quota vào `doctor` |
 | R5 | **Thumbnail không chạy được** ở checkout hiện tại (thiếu `template.png`/font; font fallback Windows); output 1648×928 có thể >2 MiB giới hạn uploader | Trung | A13 | Cung cấp asset; kiểm kích thước và nén; kiểm font tiếng Việt |
 | R6 | **Chưa có profile 16:9**; ContentFlow chỉ được dùng với frame 9:16 | Trung | A8 | Tạo frame 16:9 + test thật ở Phase 5 |
