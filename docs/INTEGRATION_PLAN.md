@@ -14,7 +14,7 @@
 ```text
                         ContentFactory (orchestrator, SQLite + workspace/)
   ┌───────────────────────────────────────────────────────────────────────────────┐
-  │ SourceProcessor(mới) → StoryAdapter ──→ TTS Manager + TTSAdapter(mới)         │
+  │ SourceAdapter → TranscriptProcessor → StoryAdapter ─→ TTS Manager + TTSAdapter│
   │                                          → AudioProcessor(mới, ffmpeg)        │
   │                    ┌─────────────────────────────┴────────────────────────┐   │
   │               YouTube audio (+watermark)                    TikTok audio ×2, split│
@@ -25,8 +25,8 @@
   │                    │                                                       │   │
   │              PublishAdapter(YouTube)                                       │   │
   └─────────┬──────────────┬───────────────────┬─────────────────────────────────┘
-            │              │                   │
-   claude -p / LLM     python -m media_worker   HTTP 127.0.0.1:8973
+     │         │              │                   │
+  Subtitle_supperVip  claude -p     python -m media_worker   HTTP 127.0.0.1:8973
    (oh-story,      + source_sync shim       yt-uploader serve --headless
     story-branch)         (ContentFlow)            (yt_uploader)
 ```
@@ -73,9 +73,25 @@ Thực tế (A1–A7): oh-story không phải module tự động; story-branch 
 
 Phương án dự phòng chưa xây: S2 `DirectLLMStoryAdapter` (tự gọi LLM theo section) nếu kiểm chứng thật cho thấy oh-story không dùng được cho tiếng Việt (D-23).
 
+### 3.3b Subtitle_supperVip → SourceAdapter (đã làm; kiểm chứng với YouTube thật)
+
+ContentFactory là orchestrator duy nhất. Subtitle_supperVip chỉ cung cấp **code acquisition**; nó **không** được chạy như một dịch vụ (API/worker/DB/UI của nó không nằm trong pipeline).
+
+| Việc | Cách |
+|---|---|
+| Gọi module | `source/bridge/supervip_bridge.py` chạy bằng **Python env riêng** có `youtube-transcript-api` (`supervip.python`, hoặc `backend/.venv`); import `app.services.subtitles` và (khi có `YOUTUBE_API_KEY`) `YouTubeDataClient._video_details`. Chạy ở thư mục tạm, `PYTHONDONTWRITEBYTECODE=1`: không nạp `.env`/DB/`data/` của module, không ghi vào cây của nó |
+| Chọn track | bridge chạy 3 pass bằng chính `fetch_selected` của module: manual (ngôn ngữ ưu tiên) → auto → manual bất kỳ; không dịch máy |
+| Raw | `serialize(snippets, "json")` của module → `subtitle_raw.json` (module không giữ timedtext gốc) |
+| Provider khác | `YtDlpProvider` (fallback + bổ sung title/mô tả), `LocalSubtitleProvider`, `PlainTextProvider` — cùng `SourceProvider` |
+| Điều phối | `ProviderChain` (SourceAdapter): thứ tự provider, fallback, cache chung theo `(nguồn, ngôn ngữ ưu tiên)`, khóa theo khóa cache, dấu vân tay trong workspace |
+| Sau đó | Transcript Processor của ContentFactory (parse có timestamp → structured → dựng câu/đoạn → clean) → Story |
+| Sửa module? | **Không.** Không patch, không fork |
+
+Phương án đã loại: chạy API/worker của module và gọi HTTP — nó chỉ nhận URL kênh (không nhận video lẻ), cần Data API key để resolve kênh, và tạo state machine thứ hai (D-29, D-30).
+
 ### 3.4 Các phần mới (không có trong 3 project)
 
-SourceProcessor, TTS (adapter/profile/segment planner/manager/QA), AudioProcessor, orchestrator (SQLite state, workspace, manifest), OutputPublisher, scripts `setup/update/doctor/start`. Đây là khối lượng công việc chính (xem `IMPLEMENTATION_PHASES.md`).
+TTS (adapter/profile/segment planner/manager/QA), AudioProcessor, orchestrator (SQLite state, workspace, manifest), OutputPublisher, scripts `setup/update/doctor/start`. Đây là khối lượng công việc chính (xem `IMPLEMENTATION_PHASES.md`).
 
 ## 4. Adapter thay vì sửa source cũ
 
@@ -89,6 +105,7 @@ SourceProcessor, TTS (adapter/profile/segment planner/manager/QA), AudioProcesso
 | 6 | Seed nền ngẫu nhiên | **Không có đường adapter** (rng không lộ ra qua API). Chấp nhận không tái tạo y hệt (D-08) | Đưa `rng`/`seed` từ `video_utils.choose_next_clip` lên `render_video`/worker `params` |
 | 7 | Thumbnail ≤ 2 MiB | Adapter nén lại JPG | Không |
 | 8 | Chọn kênh YouTube | Một account/kênh | yt_uploader: dùng `channel_id` thật (không bắt buộc) |
+| 10 | Chạy được một video lẻ qua Subtitle_supperVip | bridge gọi hàm thuần của module (không dùng API/worker) | Upstream có thể thêm CLI/endpoint cho một video; không bắt buộc |
 | 9 | Sửa tài liệu lệch code | Ghi trong audit | `yt_uploader/IMPLEMENTATION_STATUS.md` (lỗi thời), `ContentFlow/README.md` (nhắc `thumbnail_tool`), `oh-story` docs (ghi 13 skill) |
 
 Nguyên tắc: các patch upstream ở cột 4 là **tùy chọn**; kế hoạch chạy được mà không cần chúng.
@@ -115,6 +132,12 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 | R14 | Test ContentFlow chưa chạy; không có bằng chứng toàn bộ pass trên máy này | Thấp–Trung | §3.7 audit | Chạy test trong spike ContentFlow sau khi cài Pillow/pytest |
 | R15 | Tài liệu trong module lỗi thời (README, IMPLEMENTATION_STATUS) gây hiểu nhầm | Thấp | | Tin code, không tin doc; audit này là nguồn tham chiếu |
 | R16 | Hai runtime (Python + Go daemon) cần quản vòng đời tiến trình | Thấp | | `start.ps1` + `doctor` kiểm `/health` |
+| R17 | Module dựa vào `youtube-transcript-api` (endpoint không công khai, không ổn định; IP có thể bị chặn) | Trung | fallback `yt-dlp`; lỗi `YOUTUBE_BLOCKED` (RESOURCE); cache phụ đề dùng chung; không retry mù khi bị chặn |
+| R18 | Module phân loại lỗi thư viện bằng tên lớp/chuỗi message ⇒ vỡ khi thư viện đổi | Trung | test chạy **code thật của module** với stub thư viện; lỗi lạ được xếp TRANSIENT thay vì nuốt |
+| R19 | Cần Python env riêng cho module (README: 3.12+; máy này chỉ có 3.10/3.13); `dev.ps1` lỗi ở đây | Thấp–Trung | `supervip.python` cấu hình được; `health()` báo thiếu; `doctor`/`setup` ở phase sau |
+| R20 | Cây làm việc của module có thay đổi chưa commit (README, dev.ps1, start.ps1), nhánh `Update`; remote không clone được từ máy này ⇒ pin SHA không tái tạo 100% | Thấp | code backend khớp HEAD; ghi chú trong `modules.lock` |
+| R21 | Metadata đầy đủ cần `YOUTUBE_API_KEY` + quota; thiếu thì title phải lấy qua yt-dlp | Thấp | `ProviderChain` bổ sung title; fallback cuối là video id |
+| R22 | Bridge gọi cả hàm private (`_video_details`) và hàm nội bộ của module ⇒ đổi nội bộ có thể vỡ bridge | Thấp–Trung | test bridge với code thật của module; bridge chỉ import `app.services.*` |
 
 ## 6. Kiểm tra nhất quán với HANDOFF
 

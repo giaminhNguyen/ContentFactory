@@ -14,7 +14,8 @@ from contentfactory.orchestrator.registry import build_adapters
 from contentfactory.orchestrator.config import load_config
 from contentfactory.orchestrator.runner import Orchestrator
 from contentfactory.jobs import pipeline as P
-from contentfactory.source.processor import YouTubeSourceProcessor
+from contentfactory.source.chain import ProviderChain
+from contentfactory.source.providers import YtDlpProvider
 from contentfactory.story import stage as story_stage
 from contentfactory.story.validate import validate_story_text
 from tests.fakes import URL, FakeYtDlp, ScriptedOhStory, make_ctx, stub_deploy
@@ -278,7 +279,7 @@ class SourceToStoryPipelineTest(RootCase):
 
     def orchestrator(self, yt, runner):
         orc = Orchestrator(load_config(self.root))
-        orc.adapters["source"] = YouTubeSourceProcessor({}, self.root / "runtime" / "cache", yt)
+        orc.adapters["source"] = ProviderChain([YtDlpProvider(ytdlp=yt)], self.root / "runtime" / "cache" / "source")
         orc.adapters["story"] = StoryBranchAdapter({"max_follow_ups": 2}, Path("oh-story"), runner=runner,
                                                    deploy_fn=stub_deploy)
         return orc

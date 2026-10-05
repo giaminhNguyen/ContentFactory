@@ -58,6 +58,7 @@ class Orchestrator:
         return stage
 
     def run(self, until_idle: bool = True, stop: threading.Event | None = None) -> None:
+        self.cancel = CancelToken()                 # token riêng cho mỗi lần run: instance dùng lại được sau khi đã dừng
         for j in self.store.list_jobs():            # manifest là dẫn xuất: dựng lại nếu crash giữa commit và ghi file
             if j["state"] not in P.TERMINAL:
                 self._manifest(j["id"])
@@ -118,7 +119,7 @@ class Orchestrator:
             self.store.set_run_key(claim.run_id, key)
             ctx = StageContext(job_id=job_id, stage=stage.name, attempt=claim.attempt, stage_key=key,
                                workspace=jd, stage_dir=jd / stage.workdir, params=claim.params, inputs=inputs,
-                               config={"output_dir": str(self.cfg.path("output"))},
+                               config={"output_dir": str(self.cfg.path("output")), "source": self.cfg.data.get("source", {})},
                                cancel=self.cancel, log=log)
             log("stage_started", stage_key=key[:12])
             t0 = time.time()

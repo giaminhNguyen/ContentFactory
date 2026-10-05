@@ -84,3 +84,18 @@ def normalize_cues(raw: list[RawCue]) -> list[Cue]:
 
 def parse_subtitle(text: str) -> list[Cue]:
     return normalize_cues(parse_cues(text))
+
+
+def parse_snippets(items: list[dict]) -> list[Cue]:
+    """Định dạng `json` của Subtitle_supperVip/youtube-transcript-api: [{text, start, duration}].
+    Một snippet có thể chứa '\\n' (caption hai dòng); đi qua cùng bộ chuẩn hóa như VTT/SRT."""
+    raw = [RawCue(float(x["start"]), float(x["start"]) + float(x.get("duration") or 0), str(x.get("text", "")).split("\n"))
+           for x in items]
+    return normalize_cues(raw)
+
+
+FORMATS = ("srt", "vtt", "json", "txt")
+
+
+def format_from_suffix(suffix: str) -> str | None:
+    return {".srt": "srt", ".vtt": "vtt", ".json": "json", ".txt": "txt"}.get(suffix.lower())

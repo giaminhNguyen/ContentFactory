@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 
 from .subtitles import Cue
 
-PARSER_VERSION = "1"
+PARSER_VERSION = "2"
 TERMINAL = re.compile(r"[.!?…。！？]+[\"'”’»)\]]*$")
 ELLIPSIS = re.compile(r"(\.{3}|…)[\"'”’»)\]]*$")
 
@@ -170,6 +170,46 @@ def build_structured(cues: list[Cue], cfg: ReconstructConfig, provenance: dict) 
                       "punctuation_added": sum(s["punctuation_added"] for s in sentences),
                       "duration_sec": round(cues[-1].end - cues[0].start, 3) if cues else 0.0},
             "clean_sha256": hashlib.sha256(clean.encode("utf-8")).hexdigest()}
+
+
+def build_structured_plain(text: str, cfg: ReconstructConfig, provenance: dict) -> dict:
+    """Văn bản thuần KHÔNG có timestamp (PlainTextProvider / file .txt): cùng schema, thời gian là None."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    blocks = [b for b in re.split(r"\n\s*\n", text) if b.strip()]
+    if len(blocks) == 1 and "\n" in blocks[0].strip():
+        lines = [l.strip() for l in blocks[0].splitlines() if l.strip()]
+        # đa số dòng tự kết thúc câu => mỗi dòng là một đoạn; ngược lại là văn bản bị ngắt dòng cứng => nối lại
+        blocks = lines if sum(bool(TERMINAL.search(l)) for l in lines) >= 0.6 * len(lines) else [" ".join(lines)]
+    sentences: list[dict] = []
+    paragraphs: list[dict] = []
+    for block in blocks:
+        clean = _tidy(block)
+        pieces = _split_inside(clean)
+        start, chars = len(sentences), 0
+        for n, (a, b) in enumerate(pieces):
+            piece, added = clean[a:b], False
+            if n == len(pieces) - 1 and cfg.restore_punctuation and not TERMINAL.search(piece):
+                piece, added = piece + ".", True
+            sentences.append({"i": len(sentences), "start": None, "end": None, "text": piece, "gap_before": None,
+                              "cue_range": None, "interpolated_time": False, "punctuation_added": added,
+                              "capitalized": False, "internal_pauses": []})
+            chars += len(piece)
+            if chars >= cfg.paragraph_max_chars and n < len(pieces) - 1:      # đoạn quá dài: ngắt ở ranh giới câu
+                paragraphs.append({"i": len(paragraphs), "sentence_range": [start, len(sentences) - 1],
+                                   "start": None, "end": None, "gap_before": None})
+                start, chars = len(sentences), 0
+        paragraphs.append({"i": len(paragraphs), "sentence_range": [start, len(sentences) - 1],
+                           "start": None, "end": None, "gap_before": None})
+    for p in paragraphs:
+        for s in sentences[p["sentence_range"][0]: p["sentence_range"][1] + 1]:
+            s["paragraph"] = p["i"]
+    clean_out = clean_text({"sentences": sentences, "paragraphs": paragraphs}) if sentences else ""
+    return {"schema": 1, "provenance": {**provenance, "parser_version": PARSER_VERSION, "config": asdict(cfg),
+                                        "config_hash": cfg.hash()},
+            "cues": [], "sentences": sentences, "paragraphs": paragraphs,
+            "stats": {"cues": 0, "sentences": len(sentences), "paragraphs": len(paragraphs),
+                      "punctuation_added": sum(s["punctuation_added"] for s in sentences), "duration_sec": None},
+            "clean_sha256": hashlib.sha256(clean_out.encode("utf-8")).hexdigest()}
 
 
 def clean_text(structured: dict) -> str:

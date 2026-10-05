@@ -1,9 +1,10 @@
 """Dựng adapter từ config. Chỉ orchestrator được import module cụ thể; module không import nhau.
 
 Tên adapter trong config["adapters"][<loại>]:
-  "fake" | "builtin" | "youtube" (source) | "story_branch" (story) | "package.module:ClassName" (adapter của phase sau).
+  "fake" | "builtin" | "provider_chain" (source) | "story_branch" (story) | "package.module:ClassName" (adapter của phase sau).
 Đổi sang adapter thật chỉ cần sửa config; ví dụ:
-  {"adapters": {"source": "youtube", "story": "story_branch"}}
+  {"adapters": {"source": "provider_chain", "story": "story_branch"}}
+`provider_chain` đọc danh sách provider ở config["source"]["providers"] (supervip, ytdlp, local, text).
 """
 from __future__ import annotations
 
@@ -13,8 +14,22 @@ from pathlib import Path
 from ..adapters import fake
 from ..adapters.story_branch import StoryBranchAdapter
 from ..output.publisher import BuiltinOutputPublisher
-from ..source.processor import YouTubeSourceProcessor
+from ..source.chain import ProviderChain
+from ..source.providers import LocalSubtitleProvider, PlainTextProvider, SubtitleSupperVipProvider, YtDlpProvider
 from .config import Config
+
+
+def _source_chain(cfg: Config) -> ProviderChain:
+    src = cfg.data.get("source", {})
+    available = {"supervip": lambda: SubtitleSupperVipProvider(cfg.data.get("supervip", {}), cfg.root),
+                 "ytdlp": lambda: YtDlpProvider(cfg.data.get("youtube", {})),
+                 "local": LocalSubtitleProvider, "text": PlainTextProvider}
+    unknown = [n for n in src.get("providers", []) if n not in available]
+    if unknown:
+        raise ValueError(f"source.providers có tên không tồn tại: {unknown}; hợp lệ: {sorted(available)}")
+    return ProviderChain([available[n]() for n in src.get("providers", [])], cfg.path("runtime") / "cache" / "source",
+                         {"languages": src.get("languages", ["vi", "en"]),
+                          "allow_translation": src.get("allow_translation", False)})
 
 
 def _factories(cfg: Config) -> dict:
@@ -24,7 +39,7 @@ def _factories(cfg: Config) -> dict:
         oh_root = cfg.root / oh_root
     return {
         ("source", "fake"): fake.FakeSource,
-        ("source", "youtube"): lambda: YouTubeSourceProcessor(cfg.data.get("youtube", {}), cfg.path("runtime") / "cache"),
+        ("source", "provider_chain"): lambda: _source_chain(cfg),
         ("story", "fake"): fake.FakeStory,
         ("story", "story_branch"): lambda: StoryBranchAdapter(sb, oh_root),
         ("tts", "fake"): fake.FakeTTS, ("audio", "fake"): fake.FakeAudio, ("render", "fake"): fake.FakeRender,

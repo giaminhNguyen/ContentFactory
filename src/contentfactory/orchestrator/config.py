@@ -14,8 +14,13 @@ DEFAULTS: dict = {
     "retry": {"max_attempts": 3, "backoff_s": [2, 10, 60], "max_interruptions": 5},
     "lease_s": 30.0, "heartbeat_s": 10.0, "poll_s": 0.5,
     "output": {"name_template": "{date}_{slug}"},           # D-07
-    "youtube": {"preferred_langs": ["vi", "en"], "yt_dlp_cmd": ["yt-dlp"], "yt_dlp_args": [],
-                "reconstruct": {}},                         # ghi đè ReconstructConfig (sentence_gap, paragraph_gap, ...)
+    # Source: ProviderChain thử lần lượt các provider (supervip = Subtitle_supperVip là provider chính, ytdlp = fallback)
+    "source": {"providers": ["supervip", "ytdlp", "local", "text"], "languages": ["vi", "en"],
+               "allow_translation": False,
+               "reconstruct": {}},                          # ghi đè ReconstructConfig (sentence_gap, paragraph_gap, ...)
+    "supervip": {"backend_dir": "modules/Subtitle_supperVip/backend", "python": None,
+                 "youtube_api_key_env": "YOUTUBE_API_KEY", "timeout_s": 120, "env": {}},
+    "youtube": {"yt_dlp_cmd": ["yt-dlp"], "yt_dlp_args": []},   # chỉ cho YtDlpProvider (fallback)
     "story_branch": {"permission_mode": "acceptEdits", "max_turns": 80, "max_follow_ups": 4,
                      "chapters_per_batch": 3, "max_budget_usd_per_turn": None},
     "job_defaults": {"language": "vi", "channel": "default",

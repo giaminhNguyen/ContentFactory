@@ -68,33 +68,84 @@ Mỗi adapter có `health() -> HealthReport{ok, details, fix_hint}` để `docto
 
 ---
 
-## 1. SourceProcessor
+## 1. Source: SourceAdapter, SourceProvider, Transcript Processor
 
-**Trách nhiệm:** biến *input người dùng* (URL YouTube, file transcript, text…) thành bộ artifact chuẩn hóa cho Story. **Không có trong 3 project (A2) ⇒ module mới (Phase 2: `source/`).**
+**Trách nhiệm:** biến *input người dùng* (URL YouTube, file phụ đề, văn bản) thành bộ artifact chuẩn hóa cho Story. Chia hai phần, **mỗi phần có một chủ sở hữu**:
+
+```text
+input -> SourceAdapter (ProviderChain) -> SourceResult -> Transcript Processor -> artifact -> Story
+          thu thập phụ đề thô               (acquisition)     xử lý transcript (ContentFactory)
+```
 
 ```python
-class SourceInput(TypedDict):
-    kind: str            # youtube_url | transcript_file | text | local_folder
-    value: str
+class SourceInput(TypedDict):          # kind, value bắt buộc; title, language tùy chọn
+    kind: str                          # youtube_url | transcript_file | text
+    value: str                         # URL, đường dẫn file, hoặc chính văn bản
 
-class SourceResult(TypedDict):          # tất cả là Path trong workspace; orchestrator niêm phong thành artifact
-    title: str; language: str
-    subtitle_raw: Path                  # phụ đề gốc, nguyên byte
-    structured: Path                    # cue/câu/đoạn kèm start, end, text, gap_before
-    transcript: Path                    # clean transcript, không timestamp
-    metadata: Path                      # title, language, source{url, video_id, channel, duration, subtitle{lang,kind}}
-    stats: dict
+class SourceResult(TypedDict, total=False):
+    source_url: str
+    source_type: str                   # youtube | local_subtitle | plain_text
+    provider: str                      # supervip | ytdlp | local | text | ...
+    video_id: str | None
+    title: str | None
+    description: str | None            # mô tả CỦA NGUỒN; không dùng làm mô tả video của ta (D-31)
+    language: str | None               # ngôn ngữ của phụ đề/văn bản nguồn
+    raw_subtitle_path: Path            # đúng như provider trả về, nguyên byte
+    subtitle_format: str               # srt | vtt | json | txt
+    subtitle_kind: str                 # manual | auto | translated | unknown
+    has_timestamps: bool
+    metadata: dict
+    status: str                        # ok | error
+    error: dict | None                 # StageError.to_dict()
+    attempts: list[dict]               # nhật ký từng provider đã thử (chẩn đoán)
+    origin: str                        # network | cache | job
 
-class SourceProcessor(Protocol):
-    def process(self, src: SourceInput, out_dir: Path, ctx: StageContext) -> SourceResult: ...
+class SourceProvider(Protocol):        # một cách thu thập cụ thể; raise StageError khi lỗi
+    name: str
+    def supports(self, kind: str) -> bool: ...
+    def available(self) -> bool: ...
+    def acquire(self, src, work_dir, ctx, prefs) -> SourceResult: ...
+    def describe(self, src, ctx) -> dict: ...      # metadata bổ sung hoặc {}
+    def health(self) -> dict: ...
+
+class SourceAdapter(Protocol):         # điểm vào của stage; ProviderChain là cài đặt
+    def acquire(self, src, out_dir, ctx) -> SourceResult: ...
     def health(self) -> dict: ...
 ```
 
-- **Artifact của stage:** `subtitle_raw`, `transcript_structured`, `transcript`, `metadata` (D-27). `metadata` **không** có `description` của video gốc.
-- **`structured.json`:** `cues[{i,start,end,text,gap_before}]`, `sentences[{i,start,end,text,gap_before,cue_range,interpolated_time,punctuation_added,capitalized,internal_pauses[{offset,gap}],paragraph}]`, `paragraphs[{i,sentence_range,start,end,gap_before}]`, `provenance{video_id,lang,kind,raw_sha256,parser_version,config,config_hash}`, `stats`, `clean_sha256`.
-- **Lỗi:** URL không phải YouTube / id sai / không có phụ đề / video không khả dụng → `POLICY` (`NOT_YOUTUBE_URL`, `BAD_VIDEO_ID`, `NO_SUBTITLES`, `VIDEO_UNAVAILABLE`); yêu cầu đăng nhập → `AUTH`; thiếu yt-dlp → `RESOURCE` (`YTDLP_MISSING`); lỗi mạng/429/timeout → `TRANSIENT`.
-- **Idempotency (không tải/làm lại khi còn hợp lệ):** raw theo `raw/download.json.sha256` (+ cache `runtime/cache/youtube/<video_id>/…` dùng chung giữa job); structured theo `provenance`; clean theo `clean_sha256`.
-- **Triển khai:** `YouTubeSourceProcessor` (D-25). Chưa có: phụ đề local file / ASR / `analysis.json` (nhân vật, chuỗi sự kiện).
+**Provider hiện có**
+
+| Provider | Nguồn | Định dạng raw | Ghi chú |
+|---|---|---|---|
+| `SubtitleSupperVipProvider` (`supervip`) | YouTube URL | `json` (snippet `{text,start,duration}`) | provider **chính**; bridge subprocess gọi code của Subtitle_supperVip; cần Python env riêng; metadata đầy đủ khi có `YOUTUBE_API_KEY` |
+| `YtDlpProvider` (`ytdlp`) | YouTube URL | `vtt`/`srt` | fallback; bổ sung title/mô tả khi provider chính thiếu |
+| `LocalSubtitleProvider` (`local`) | `transcript_file` | `srt`/`vtt`/`json`/`txt` | copy nguyên byte |
+| `PlainTextProvider` (`text`) | `text` | `txt` | không timestamp |
+
+**ProviderChain (cài đặt `SourceAdapter`)**
+- Thứ tự provider theo config (`source.providers`); provider `available() == False` bị bỏ qua và ghi vào `attempts`.
+- Lỗi một provider ⇒ thử provider kế, **trừ** lỗi dứt khoát về video/đầu vào (`NOT_YOUTUBE_URL`, `BAD_VIDEO_ID`, `VIDEO_UNAVAILABLE`, `FILE_NOT_FOUND`, `UNSUPPORTED_FORMAT`, `EMPTY_SUBTITLE`). Hết provider: ném lỗi `TRANSIENT` nếu có provider nào lỗi TRANSIENT (còn hy vọng retry), nếu không thì lỗi của provider đầu; không provider nào khả dụng ⇒ `NO_SOURCE_PROVIDER` (RESOURCE). Chi tiết `attempts` nằm trong `StageError.detail`.
+- Thiếu title: hỏi `describe()` của provider khác; vẫn thiếu thì dùng video id (`metadata.title_from = fallback`).
+- **Cache & idempotency:** `cache_key = sha256(kind, định danh nguồn, ngôn ngữ ưu tiên)`. (1) job: `subtitle_raw.meta.json` + raw còn đúng sha256 ⇒ dùng lại; (2) cache chung `runtime/cache/source/<key>/` ⇒ copy vào job; (3) gọi provider. Khóa theo `cache_key` nên hai job cùng nguồn chạy song song chỉ tải một lần. `refresh_source: true` bỏ qua (1)(2).
+- **Không chạm state pipeline:** chain chỉ đọc/ghi file trong workspace của job và cache; DB/queue của module bên ngoài không bao giờ được dùng.
+
+**Mã lỗi provider supervip** (map từ exception của module qua bridge): `SubtitleUnavailable → NO_SUBTITLES` (POLICY), `LanguageUnavailable → LANGUAGE_UNAVAILABLE` (POLICY), `BlockedByYouTube → YOUTUBE_BLOCKED` (RESOURCE), thiếu thư viện → `SUPERVIP_DEPENDENCY_MISSING` (RESOURCE), lỗi khác/crash/timeout → `SUPERVIP_ERROR`/`SUPERVIP_BRIDGE_FAILED`/`SUPERVIP_TIMEOUT` (TRANSIENT), không chạy được Python → `SUPERVIP_UNAVAILABLE` (RESOURCE).
+
+**Transcript Processor** (`source/transcript.py`, ContentFactory sở hữu): `process(raw, format, out_dir, ctx, provenance)` = `raw subtitle → timestamp-aware parser (srt/vtt/json/txt) → structured transcript → caption reconstruction → duplicate cleanup → punctuation/paragraph → clean transcript`.
+- Timestamp **không bị xóa**: `transcript_structured.json` có `cues[{i,start,end,text,gap_before}]`, `sentences[{i,start,end,text,gap_before,cue_range,interpolated_time,punctuation_added,capitalized,internal_pauses,paragraph}]`, `paragraphs[{i,sentence_range,start,end,gap_before}]`, `provenance{raw_sha256,format,parser_version,config,config_hash,...}`, `stats`, `clean_sha256`. Văn bản thuần (`txt`) dùng cùng schema với `start/end = null`.
+- `transcript_clean.txt`: không timestamp, đoạn cách nhau một dòng trống, sinh **sau** khi dựng lại.
+- Idempotent: dùng lại structured khi `(raw_sha256, format, parser_version, config_hash)` không đổi; dùng lại clean khi sha256 khớp `clean_sha256`.
+
+**Artifact của stage `source`** (`workspace/<job>/source/`):
+
+| File | Artifact kind | Nội dung |
+|---|---|---|
+| `source.json` | `metadata` | `SourceResult` (đường dẫn tương đối) + `transcript{structured, clean, stats}`; không có `origin` (đổi theo lần chạy) |
+| `subtitle_raw.<srt|vtt|json|txt>` | `subtitle_raw` | phụ đề thô |
+| `transcript_structured.json` | `transcript_structured` | như trên |
+| `transcript_clean.txt` | `transcript` | transcript sạch |
+
+Nội bộ, không đăng ký artifact: `subtitle_raw.meta.json` (dấu vân tay thu thập), `_acq/` (thư mục tạm của provider, xóa sau khi xong).
 
 ## 2. StoryAdapter
 
@@ -324,7 +375,7 @@ output/<project>/
   "created": "...", "updated": "...",
   "stages": {
     "source": {"status": "succeeded", "attempts": 1, "stage_key": "...", "started": "...", "ended": "...",
-               "data": {}, "artifacts": [{"path": "source/transcript.txt", "kind": "transcript", "sha256": "...", "bytes": 1, "meta": {}}]},
+               "data": {}, "artifacts": [{"path": "source/transcript_clean.txt", "kind": "transcript", "sha256": "...", "bytes": 1, "meta": {}}]},
     "story": {}, "tts": {}, "audio": {}, "render_youtube": {}, "render_tiktok": {}, "output": {}, "publish": {}
   },
   "nondeterministic": ["render.background_selection"]
@@ -339,7 +390,7 @@ Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `
 
 | Stage | queue → running → done | Module/adapter | Đầu vào → đầu ra (artifact kind) |
 |---|---|---|---|
-| source | NEW → SOURCE_PROCESSING → SOURCE_READY | SourceProcessor | — → subtitle_raw, transcript_structured, transcript, metadata |
+| source | NEW → SOURCE_PROCESSING → SOURCE_READY | SourceAdapter + Transcript Processor | — → subtitle_raw, transcript_structured, transcript, metadata |
 | story | SOURCE_READY → STORY_RUNNING → STORY_READY | StoryAdapter + Story Assembler + validator bất biến | transcript, metadata → story_text, story_report |
 | tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTSAdapter + AudioProcessor | story_text → audio_master |
 | audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master → audio_youtube, audio_tiktok |
@@ -377,4 +428,15 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 | `StoryResult` | `{story: Path, stats}` | `{sections: [Path], stats}` | Assembler chạy ở stage cho mọi adapter; adapter không cần tự gộp |
 | `SourceBundle` | `{title, language, transcript}` | thêm `source_language` | Story cần biết ngôn ngữ nguồn khác ngôn ngữ đích |
 | Artifact | source: `transcript`, `metadata`; story: `story_text` | thêm `subtitle_raw`, `transcript_structured`, `story_report` | D-27 |
-| `ctx.config` | `output_dir` | không đổi; cache nằm trong constructor của `YouTubeSourceProcessor` (do registry truyền `runtime/cache`) | module không cần biết đường dẫn runtime |
+| `ctx.config` | `output_dir` | không đổi; thêm `source` (cấu hình dựng câu); thư mục cache nằm trong constructor của `ProviderChain` (do registry truyền `runtime/cache/source`) | module không cần biết đường dẫn runtime |
+
+### Khác biệt thêm khi tích hợp Subtitle_supperVip
+
+| Mục | Trước | Sau | Lý do |
+|---|---|---|---|
+| Interface Source | `SourceProcessor.process(src, out_dir, ctx) -> {title, language, subtitle_raw, structured, transcript, metadata, stats}` (một khối) | `SourceAdapter.acquire -> SourceResult` (chỉ thu thập) + `TranscriptProcessor` (xử lý) | thay provider không đụng xử lý transcript; ContentFactory sở hữu transcript |
+| `SourceResult` | đường dẫn artifact đã xử lý | thông tin thu thập: `source_url, source_type, provider, video_id, title, description, language, raw_subtitle_path, subtitle_format, subtitle_kind, has_timestamps, metadata, status, error, attempts, origin` | yêu cầu tích hợp |
+| Tên file | `raw/subtitle.*`, `structured.json`, `transcript.txt`, `metadata.json` | `subtitle_raw.*`, `transcript_structured.json`, `transcript_clean.txt`, `source.json` | bố cục `source/` đã chốt trong HANDOFF §4A |
+| Mô tả video | `meta.description` có thể dùng làm mô tả đăng | output/publish luôn dùng 300 ký tự đầu của `story.txt` | không đăng lại mô tả của nguồn (D-31) |
+| Cấu hình | `youtube.preferred_langs`, `youtube.reconstruct` | `source.providers`, `source.languages`, `source.allow_translation`, `source.reconstruct`, `supervip.*`, `youtube.yt_dlp_*` (chỉ fallback) | nhiều provider |
+| Adapter name | `youtube` | `provider_chain` | |

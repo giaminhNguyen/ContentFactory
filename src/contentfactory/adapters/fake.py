@@ -68,22 +68,19 @@ HEALTH = {"ok": True, "fake": True}
 
 
 class FakeSource:
-    def process(self, src, out_dir: Path, ctx: StageContext):
+    """SourceAdapter giả: ghi một phụ đề VTT thật nhỏ để Transcript Processor (code thật) chạy trên đó."""
+
+    def acquire(self, src, out_dir: Path, ctx: StageContext):
         hook(ctx, "source")
         record_call(ctx, "source")
-        title = ctx.params.get("title") or "Truyện thử nghiệm"
-        lang = ctx.params.get("language", "vi")
-        raw = out_dir / "subtitle.vtt"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        raw = out_dir / "subtitle_raw.vtt"
         atomic_write_text(raw, "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nBản ghi giả lập.\n")
-        structured = out_dir / "structured.json"
-        atomic_write_json(structured, {"schema": 1, "cues": [], "sentences": [], "paragraphs": []})
-        transcript = out_dir / "transcript.txt"
-        atomic_write_text(transcript, f"Bản ghi giả lập cho nguồn: {src['value']}\n")
-        meta = out_dir / "metadata.json"
-        atomic_write_json(meta, {"title": title, "language": lang,
-                                 "description": f"Mô tả thử nghiệm cho {title}", "source": dict(src)})
-        return {"title": title, "language": lang, "subtitle_raw": raw, "structured": structured,
-                "transcript": transcript, "metadata": meta, "stats": {}}
+        return {"source_url": src["value"], "source_type": "youtube", "provider": "fake", "video_id": "abcdefghijk",
+                "title": ctx.params.get("title") or "Truyện thử nghiệm", "description": "Mô tả nguồn (không dùng)",
+                "language": ctx.params.get("language", "vi"), "raw_subtitle_path": raw, "subtitle_format": "vtt",
+                "subtitle_kind": "manual", "has_timestamps": True, "metadata": {}, "status": "ok", "error": None,
+                "attempts": [{"provider": "fake", "status": "ok"}], "origin": "network"}
 
     def health(self) -> dict:
         return HEALTH

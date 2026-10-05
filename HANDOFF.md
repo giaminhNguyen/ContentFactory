@@ -1,6 +1,7 @@
 # ContentFactory - Technical Handoff
 
 > Handoff kiến trúc đã chốt từ quá trình trao đổi.
+> **Cập nhật (tích hợp Subtitle_supperVip):** Source/Subtitle nay là một `SourceAdapter` có nhiều provider, `Subtitle_supperVip` là provider chính, ContentFactory vẫn là orchestrator duy nhất giữ state. Xem **§2A Current Integrations** và **§4A Source / Subtitle**. Các điểm đã lệch khỏi bản thiết kế đầu tiên được chỉnh trực tiếp trong tài liệu này; lý do và bằng chứng nằm ở `docs/` (`CURRENT_SYSTEM_AUDIT.md`, `DECISIONS.md`).
 > Mục tiêu: một pipeline duy nhất biến một nguồn truyện/video đầu vào thành **1 video YouTube hoàn chỉnh** và **nhiều video TikTok theo part**, trong khi hệ thống dễ thay module, dễ debug, dễ setup máy mới và không bắt người dùng phải hiểu chi tiết kỹ thuật.
 
 ---
@@ -20,18 +21,31 @@ Các file trung gian, cache, chunk audio, source sync, render temp, database... 
 
 ## 2. Các project/module hiện có
 
+### Source / Subtitle
+Repo / implementation:
+- `giaminhNguyen/Subtitle_supperVip` — **provider chính** (lấy phụ đề/caption YouTube bằng `youtube-transcript-api`);
+- `yt-dlp` — provider dự phòng và nguồn metadata bổ sung (mô tả, kênh);
+- provider cho file phụ đề local và văn bản thuần;
+- provider khác có thể thêm sau (cùng một `SourceAdapter`).
+
+Nhiệm vụ:
+- nhận YouTube URL (hoặc file phụ đề, hoặc văn bản);
+- thu thập phụ đề thô (ưu tiên phụ đề có sẵn hơn auto-caption) và metadata;
+- trả `SourceResult` chuẩn hóa; việc xử lý transcript thuộc **Transcript Processor** của ContentFactory (xem §4A).
+
+`Subtitle_supperVip` là một ứng dụng quản lý subtitle theo kênh (FastAPI + SQLite + worker + React). ContentFactory **chỉ dùng phần acquisition** của nó; API, hàng đợi, worker, DB và UI của nó không nằm trong pipeline.
+
 ### Story
 Repo:
 - `giaminhNguyen/oh-story-claudecode`
-- dùng `story-branch`
+- dùng `story-branch` (và `story-long-write` trong cùng bộ skill)
 
 Nhiệm vụ:
-- nhận dữ liệu đầu vào từ một câu chuyện nguồn;
-- phân tích và xây blueprint;
-- quản lý continuity;
-- sinh truyện dài;
-- có thể dùng section/chapter nội bộ để kiểm soát quá trình sinh;
-- output publish cuối cùng phải là một truyện liền mạch, không có header kiểu `Chapter 1`, `Chapter 2`, `Section 1`...
+- nhận clean transcript làm "tác phẩm gốc";
+- `story-branch` rút canon và dựng một nhánh truyện độc lập (nó **chỉ chuẩn bị tư liệu**, không viết văn);
+- `story-long-write` viết truyện dài theo từng chương, kèm continuity (blueprint, đại cương, tracking nằm trong workspace nội bộ);
+- `StoryAdapter` điều khiển cả chuỗi (oh-story chạy trong Claude Code CLI, không phải thư viện) và không sửa oh-story;
+- chương/section chỉ là nội bộ: **Story Assembler** (của ContentFactory) dựng output publish cuối cùng thành một truyện liền mạch, không có header kiểu `Chapter 1`, `Chapter 2`, `Section 1`...
 
 ### Media / Render
 Repo:
@@ -60,6 +74,19 @@ Nhiệm vụ:
 - có adapter chung;
 - mỗi engine có rule/profile riêng để tối ưu cách chia câu, đoạn, pause và parameter.
 
+### 2A. Current Integrations
+
+| Vai trò | Implementation hiện tại | Cách tích hợp | Trạng thái |
+|---|---|---|---|
+| Source / Subtitle | `Subtitle_supperVip` (provider chính), `yt-dlp` (fallback) | `SourceAdapter` (ProviderChain) → bridge subprocess gọi lại code acquisition của Subtitle_supperVip | đã tích hợp |
+| Transcript | Transcript Processor của ContentFactory | trong ContentFactory (parser có timestamp → structured → clean) | đã tích hợp |
+| Story | `oh-story-claudecode` | `StoryBranchAdapter` (Claude Code CLI headless) + Story Assembler | đã tích hợp, chưa kiểm chứng với LLM thật |
+| Render | `ContentFlow` | `media_worker` subprocess (JSON-lines) | chưa tích hợp |
+| Upload | `yt_uploader` | daemon HTTP headless | chưa tích hợp |
+| TTS | modular TTS framework | Phase 3 | chưa bắt đầu |
+
+Nguyên tắc chung: ContentFactory là **orchestrator cấp cao duy nhất**. DB của ContentFactory giữ state pipeline, state từng stage, tham chiếu artifact, trạng thái retry/resume. Mọi DB/queue/worker nội bộ của module bên ngoài (nếu có) chỉ là chi tiết cài đặt của provider và không bao giờ quyết định một job đang ở stage nào.
+
 ---
 
 ## 3. Kiến trúc tổng thể
@@ -72,10 +99,16 @@ Dùng một hệ thống tổng với các module độc lập:
 INPUT
   |
   v
-Source Processor
+Source Adapter  (providers: Subtitle_supperVip | yt-dlp | local file | plain text)
   |
   v
-Story Branch
+Transcript Processor  (raw subtitle -> structured -> clean)
+  |
+  v
+Story Adapter  (oh-story: story-branch + story-long-write)
+  |
+  v
+Story Assembler
   |
   v
 Full Story
@@ -117,25 +150,20 @@ Input ban đầu có thể là một YouTube URL.
 YouTube URL
     |
     v
-Download subtitle / transcript / metadata
+Source Adapter -> Subtitle_supperVip provider (fallback: yt-dlp)
     |
     v
-Clean + normalize source
+raw subtitle (giữ nguyên) + metadata
     |
     v
-Source Analyzer
+Transcript Processor: timestamp-aware parse -> structured transcript (còn timestamp)
+                      -> caption reconstruction -> duplicate cleanup -> punctuation/paragraph
     |
     v
-Story input / blueprint data
+clean transcript (không timestamp)
     |
     v
-story-branch
-    |
-    v
-Generate story internally by sections
-    |
-    v
-Continuity check
+Story Adapter: story-branch (canon, nhánh) -> story-long-write (chương nội bộ + continuity)
     |
     v
 Story Assembler
@@ -171,9 +199,57 @@ video.mp4              part_01 audio, part_02...
 
 ---
 
+## 4A. Source / Subtitle
+
+```text
+YouTube URL
+    |
+    v
+SourceAdapter  (ProviderChain, ContentFactory sở hữu)
+    |-- SubtitleSupperVipProvider --> bridge --> code acquisition của Subtitle_supperVip (chính)
+    |-- YtDlpProvider             (dự phòng + metadata bổ sung)
+    |-- LocalSubtitleProvider     (srt / vtt / json / txt trên đĩa)
+    |-- PlainTextProvider         (văn bản thuần, không timestamp)
+    |
+    v
+SourceResult
+    |
+    v
+Transcript Processor  (ContentFactory sở hữu)
+    |
+    v
+Story pipeline
+```
+
+`SourceResult` tối thiểu: `source_url`, `source_type` (`youtube` / `local_subtitle` / `plain_text`), `provider`, `video_id`, `title`, `description` (của nguồn, nếu có), `language`, `raw_subtitle_path`, `subtitle_format` (`srt` / `vtt` / `json` / `txt`), `metadata`, `status`, `error`; thêm `subtitle_kind` (`manual` / `auto` / `translated`), `has_timestamps`, `attempts` (nhật ký provider đã thử).
+
+**Quy tắc đã chốt**
+
+1. `Subtitle_supperVip` là **implementation của SourceAdapter**, không phải orchestrator. ContentFactory giữ toàn bộ state pipeline; DB/queue/worker của Subtitle_supperVip không được dùng và không bao giờ quyết định stage của một job.
+2. `SourceAdapter` không hardcode một provider: thêm provider mới = thêm một lớp tuân thủ `SourceProvider`, không đổi pipeline.
+3. Chọn phụ đề: **có sẵn (thủ công) trước, auto-caption sau**, cuối cùng thủ công ở ngôn ngữ bất kỳ; mặc định không dùng bản dịch máy của YouTube. Provider lỗi thì chuyển provider kế (trừ lỗi dứt khoát về video: URL sai, video không tồn tại).
+4. **Timestamp không được xóa ngay sau khi tải.** Phụ đề thô được giữ nguyên; structured transcript giữ `start`/`end`/`gap` của cue, câu, đoạn; chỉ clean transcript (sinh sau bước dựng lại) là không có timestamp.
+5. **Không coi mỗi dòng caption là một câu.** Timestamp/gap được dùng để nối caption bị cắt giữa câu, phát hiện pause, xác định ranh giới câu và đoạn, hỗ trợ khôi phục dấu câu.
+6. Transcript Processor: `raw subtitle -> timestamp-aware parser -> structured transcript -> caption reconstruction -> duplicate cleanup -> punctuation/paragraph reconstruction -> clean transcript`.
+7. Artifact của stage (workspace của job):
+
+```text
+workspace/<job>/source/
+  source.json                   SourceResult + tóm tắt transcript
+  subtitle_raw.<srt|vtt|json|txt>
+  transcript_structured.json
+  transcript_clean.txt
+```
+
+8. **Cache / rerun:** phụ đề đã có và còn hợp lệ (sha256 + khóa theo nguồn và ngôn ngữ ưu tiên) thì không tải lại, kể cả khi là job mới cho cùng video; transcript không dựng lại nếu raw, định dạng, phiên bản processor và cấu hình không đổi; Story không chạy lại nếu transcript đầu vào không đổi và artifact Story còn hợp lệ. Đổi đầu vào thượng nguồn thì vô hiệu hóa phần phía sau.
+9. Mô tả/tiêu đề của video nguồn **không** được dùng làm mô tả video của sản phẩm; tiêu đề/mô tả riêng là việc của một bước sinh nội dung riêng (chưa làm).
+10. Subtitle_supperVip cần Python env riêng có `youtube-transcript-api` (không cài vào tiến trình orchestrator); `doctor` phải kiểm tra.
+
+---
+
 ## 5. Logic tạo truyện
 
-`story-branch` có thể dùng chapter/section nội bộ, nhưng đó không phải output cuối.
+`story-branch` và `story-long-write` (oh-story) dùng chapter/section nội bộ, nhưng đó không phải output cuối. `story-branch` chỉ chuẩn bị tư liệu nhánh; phần viết do `story-long-write`; `StoryAdapter` điều khiển cả hai và trả về danh sách section cho Story Assembler.
 
 Ví dụ nội bộ:
 
@@ -757,6 +833,8 @@ PUBLISHED
 
 Failure state tách riêng theo stage để retry đúng chỗ.
 
+> **Triển khai thực tế** (`docs/DECISIONS.md` D-21): `NEW -> SOURCE_PROCESSING -> SOURCE_READY -> STORY_RUNNING -> STORY_READY -> TTS_RUNNING -> AUDIO_READY -> AUDIO_PROCESSING -> YOUTUBE_RENDER_READY -> YOUTUBE_RENDERING -> TIKTOK_RENDER_READY -> TIKTOK_RENDERING -> OUTPUT_READY -> OUTPUT_PUBLISHING -> UPLOAD_READY -> UPLOADING -> PUBLISHED`, cộng `FAILED` kèm `failed_stage` để retry đúng stage. Danh sách ở trên là bản thiết kế ban đầu.
+
 ---
 
 ## 16. Workspace và Output phải tách hoàn toàn
@@ -886,7 +964,8 @@ start.ps1
 
 `doctor` kiểm tra tối thiểu:
 
-- story engine;
+- story engine (claude CLI đã đăng nhập, Node, oh-story);
+- source providers (Subtitle_supperVip: Python env có `youtube-transcript-api`; `yt-dlp`);
 - TTS engines configured;
 - FFmpeg;
 - ContentFlow renderer;
@@ -919,10 +998,16 @@ Version từng repo/module phải pin theo commit/version để máy mới repro
 15. Output final phải dễ tìm, dễ nhận biết và người dùng có thể di chuyển mà không ảnh hưởng hệ thống.
 16. TTS mới ưu tiên onboarding bằng repo/docs/source; AI tự phân tích và tạo adapter/profile/rule candidate.
 17. Không bắt người dùng nhập những thông số kỹ thuật mà hệ thống có thể tự khám phá.
+18. Thu thập phụ đề đi qua `SourceAdapter` nhiều provider; `Subtitle_supperVip` là provider chính, không phải orchestrator.
+19. Một nguồn state duy nhất: DB của ContentFactory. DB/queue của module bên ngoài chỉ là chi tiết cài đặt của provider.
+20. Timestamp của phụ đề được giữ cho tới sau bước dựng lại transcript; không coi mỗi dòng caption là một câu.
+21. Mỗi tầng cache (phụ đề, transcript, story) có dấu vân tay riêng; đầu vào thượng nguồn đổi thì vô hiệu hóa phần phía sau.
 
 ---
 
 ## 21. Điểm chưa chốt / cần thiết kế tiếp
+
+Đã chốt từ tích hợp Source/Subtitle: kiến trúc Source stage (§4A).
 
 Các phần cần triển khai chi tiết ở bước sau:
 
@@ -937,6 +1022,8 @@ Các phần cần triển khai chi tiết ở bước sau:
 - TikTok renderer profile cụ thể;
 - naming/version policy cho output package;
 - uploader policy và retry/rate-limit;
+- fallback ASR khi video không có phụ đề nào;
+- bước sinh tiêu đề/mô tả riêng (không dùng của nguồn);
 - UI/CLI cuối cùng.
 
 ---

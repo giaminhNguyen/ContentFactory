@@ -124,6 +124,44 @@ class ScriptedOhStory:
         return {"session_id": f"S{self.n}", "text": "ok", "cost_usd": 0.01, "is_error": False}
 
 
+class StubProvider:
+    """SourceProvider giả: đếm số lần gọi, trả fixture, có thể lỗi theo kịch bản (danh sách StageError lần lượt)."""
+
+    def __init__(self, name="stub", kinds=("youtube_url",), fixture="manual_split.srt", fail=None, title="Chuyện ma ở nhà cũ",
+                 available=True, kind="manual", language="vi", description=None):
+        self.name, self.kinds, self.fixture, self.fail = name, kinds, fixture, list(fail or [])
+        self.title, self._available, self.kind, self.language, self.description = title, available, kind, language, description
+        self.calls = self.describe_calls = 0
+
+    def supports(self, kind):
+        return kind in self.kinds
+
+    def available(self):
+        return self._available
+
+    def health(self):
+        return {"ok": self._available, "provider": self.name}
+
+    def describe(self, src, ctx):
+        self.describe_calls += 1
+        return {"title": self.title, "description": self.description} if self.title else {}
+
+    def acquire(self, src, work_dir, ctx, prefs):
+        self.calls += 1
+        if self.fail:
+            e = self.fail.pop(0)
+            if e is not None:
+                raise e
+        work_dir.mkdir(parents=True, exist_ok=True)
+        fmt = Path(self.fixture).suffix[1:]
+        out = work_dir / f"subtitle_raw.{fmt}"
+        shutil.copyfile(FIXTURES / self.fixture, out)
+        return {"source_url": src["value"], "source_type": "youtube", "provider": self.name, "video_id": "abcdefghijk",
+                "title": self.title, "description": self.description, "language": self.language, "raw_subtitle_path": out,
+                "subtitle_format": fmt, "subtitle_kind": self.kind, "has_timestamps": True, "metadata": {"stub": True},
+                "status": "ok", "error": None}
+
+
 def stub_deploy(root: Path, ws: Path) -> None:
     """Thay deploy.py: chỉ cần dấu `.story-deployed` (deploy thật được test riêng)."""
     ws.mkdir(parents=True, exist_ok=True)

@@ -110,23 +110,50 @@ class StageContext:
 
 
 # ---- Source ---------------------------------------------------------------------------------
-class SourceInput(TypedDict):
-    kind: str          # youtube_url | transcript_file | text | local_folder
-    value: str
+class _SourceInputRequired(TypedDict):
+    kind: str          # youtube_url | transcript_file | text
+    value: str         # URL, đường dẫn file phụ đề, hoặc chính văn bản
 
 
-class SourceResult(TypedDict):
-    title: str
-    language: str
-    subtitle_raw: Path          # phụ đề gốc, giữ nguyên byte như nguồn trả về
-    structured: Path            # transcript có cấu trúc: cue/câu/đoạn kèm start, end, gap
-    transcript: Path            # transcript sạch, không timestamp, dựng lại từ structured
-    metadata: Path
-    stats: dict
+class SourceInput(_SourceInputRequired, total=False):
+    title: str         # gợi ý tiêu đề (file local / văn bản)
+    language: str      # ngôn ngữ của nguồn nếu biết
 
 
-class SourceProcessor(Protocol):
-    def process(self, src: SourceInput, out_dir: Path, ctx: StageContext) -> SourceResult: ...
+class SourceResult(TypedDict, total=False):
+    """Kết quả THU THẬP phụ đề (chưa xử lý transcript). Provider nào cũng trả cùng dạng này."""
+    source_url: str
+    source_type: str            # youtube | local_subtitle | plain_text
+    provider: str               # supervip | ytdlp | local | text | ...
+    video_id: str | None
+    title: str | None
+    description: str | None     # mô tả CỦA NGUỒN; không dùng làm mô tả video của ta
+    language: str | None        # ngôn ngữ của phụ đề/văn bản nguồn
+    raw_subtitle_path: Path     # phụ đề gốc đúng như provider trả về (nguyên byte)
+    subtitle_format: str        # srt | vtt | json (snippet start/duration/text) | txt
+    subtitle_kind: str          # manual | auto | translated | unknown
+    has_timestamps: bool
+    metadata: dict              # title, channel, duration, upload_date, ... (tùy provider)
+    status: str                 # ok | error
+    error: dict | None          # StageError.to_dict() nếu status == error
+    attempts: list[dict]        # nhật ký các provider đã thử (chẩn đoán)
+    origin: str                 # network | cache | job
+
+
+class SourceProvider(Protocol):
+    """Một cách thu thập phụ đề cụ thể. Raise StageError khi thất bại."""
+    name: str
+
+    def supports(self, kind: str) -> bool: ...
+    def available(self) -> bool: ...
+    def acquire(self, src: SourceInput, work_dir: Path, ctx: StageContext, prefs: dict) -> SourceResult: ...
+    def describe(self, src: SourceInput, ctx: StageContext) -> dict: ...   # metadata bổ sung (title, description...) hoặc {}
+    def health(self) -> dict: ...
+
+
+class SourceAdapter(Protocol):
+    """Điểm vào của stage Source: chọn provider, fallback, cache; KHÔNG xử lý transcript."""
+    def acquire(self, src: SourceInput, out_dir: Path, ctx: StageContext) -> SourceResult: ...
     def health(self) -> dict: ...
 
 

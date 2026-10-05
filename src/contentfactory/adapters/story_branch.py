@@ -16,6 +16,7 @@ An toàn: transcript là DỮ LIỆU KHÔNG TIN CẬY. Mặc định `permission
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -30,8 +31,9 @@ from pathlib import Path
 from typing import Callable, Protocol, TypedDict
 
 from ..contracts import ErrorClass, SourceBundle, StageContext, StageError, StoryResult
-from ..fsutil import atomic_write_json, atomic_write_text
+from ..fsutil import atomic_write_json, atomic_write_text, sha256_file
 
+ADAPTER_VERSION = "1"
 LANG_NAMES = {"vi": "tiếng Việt", "en": "tiếng Anh", "zh": "tiếng Trung", "ja": "tiếng Nhật", "ko": "tiếng Hàn"}
 DEFAULT_ALLOWED = ["Read", "Write", "Edit", "Glob", "Grep", "Skill", "TodoWrite",
                    "Bash(python:*)", "Bash(python3:*)", "Bash(py:*)", "Bash(node:*)", "Bash(bash:*)", "Bash(sh:*)",
@@ -246,6 +248,25 @@ class StoryBranchAdapter:
         pre = HEADLESS.format(lang=lang)
         stats = {"turns": 0, "cost_usd": 0.0, "steps_skipped": [], "chapters_target": chapters}
 
+        # Vô hiệu hóa: đầu vào thượng nguồn đổi (transcript, tiêu đề, ngôn ngữ, tên sách, phiên bản adapter) thì canon/đại cương cũ
+        # không còn đúng => cất workspace cũ sang oh-story.stale-<fp> (để debug) và làm lại từ đầu. Số chương mục tiêu
+        # KHÔNG nằm trong dấu vân tay: tăng số chương chỉ viết tiếp.
+        fp = hashlib.sha256(json.dumps({"transcript": sha256_file(Path(bundle["transcript"])), "title": bundle["title"],
+                                        "language": bundle["language"], "source_language": bundle["source_language"],
+                                        "book": book_name, "adapter": ADAPTER_VERSION}, sort_keys=True).encode()).hexdigest()
+        state_path = out_dir / "adapter_state.json"
+        try:
+            prev_fp = json.loads(state_path.read_text(encoding="utf-8")).get("inputs_fp")
+        except (OSError, ValueError):
+            prev_fp = None
+        if prev_fp and prev_fp != fp and ws.exists():
+            stale = out_dir / f"oh-story.stale-{prev_fp[:8]}"
+            shutil.rmtree(stale, ignore_errors=True)
+            ws.rename(stale)
+            stats["invalidated"] = prev_fp[:8]
+            ctx.log("story_branch_invalidated", old=prev_fp[:8], new=fp[:8])
+        atomic_write_json(state_path, {"inputs_fp": fp, "status": "running"})
+
         if not (ws / ".story-deployed").is_file():
             ws.mkdir(parents=True, exist_ok=True)
             ctx.log("story_branch_deploy", root=str(self.root))
@@ -281,7 +302,8 @@ class StoryBranchAdapter:
         files = self._chapter_files(book)
         if len(files) < chapters:
             raise StageError(ErrorClass.POLICY, "STORY_MISSING_CHAPTERS", f"có {len(files)}/{chapters} file chương")
-        atomic_write_json(out_dir / "adapter_state.json", {**stats, "book": book_name, "chapters": [p.name for p in files]})
+        atomic_write_json(state_path, {**stats, "inputs_fp": fp, "status": "done", "book": book_name,
+                                       "chapters": [p.name for p in files]})
         return {"sections": files[:chapters], "stats": stats}
 
     def _seed_source(self, ws: Path, src_name: str, bundle: SourceBundle) -> None:

@@ -17,13 +17,20 @@ Mỗi phase có **đầu ra kiểm chứng được**; chưa đạt thì chưa s
 ## Phase 2 — Source + Story thật ✅ (đã xong; Story chưa kiểm chứng với LLM thật)
 
 **Đã làm:**
-- **Source** (`source/`): URL YouTube → `yt-dlp` (ưu tiên phụ đề có sẵn, sau đó auto-caption) → phụ đề gốc nguyên byte → `structured.json` (cue/câu/đoạn với `start,end,text,gap_before`, khử auto-caption rolling) → dựng câu/đoạn bằng timestamp (ghép caption bị cắt giữa câu, phát hiện pause, phục hồi đoạn, dấu chấm + viết hoa) → `transcript.txt` sạch không timestamp. Idempotent theo từng bước, có cache liên job theo video id.
+- **Source** (`source/`; bản đầu dùng yt-dlp, nay là `SourceAdapter` nhiều provider, xem phần mở rộng bên dưới): URL YouTube → `yt-dlp` (ưu tiên phụ đề có sẵn, sau đó auto-caption) → phụ đề gốc nguyên byte → `transcript_structured.json` (cue/câu/đoạn với `start,end,text,gap_before`, khử auto-caption rolling) → dựng câu/đoạn bằng timestamp (ghép caption bị cắt giữa câu, phát hiện pause, phục hồi đoạn, dấu chấm + viết hoa) → `transcript.txt` sạch không timestamp. Idempotent theo từng bước, có cache liên job theo video id.
 - **Story** (`adapters/story_branch.py`, `story/`): `StoryBranchAdapter` điều khiển story-branch → story-long-write qua Claude CLI headless (resume theo file, chặn chi phí, quyền thận trọng); **Story Assembler** (gỡ heading/marker, làm mượt chỗ nối, loại trùng lặp, lưới an toàn) + validator bất biến; blueprint/continuity/sections nằm ở workspace nội bộ.
-- Artifact mới: `subtitle_raw`, `transcript_structured`, `story_report`. Cấu hình chọn adapter thật: `adapters.source = "youtube"`, `adapters.story = "story_branch"`.
+- Artifact mới: `subtitle_raw`, `transcript_structured`, `story_report`. Cấu hình chọn adapter thật: `adapters.source = "provider_chain"`, `adapters.story = "story_branch"`.
 - `scripts/run_real_job.py` (`--dry-run` kiểm tra điều kiện, không gọi LLM), 86 test (stdlib `unittest`, ~17 s).
 
 **Kiểm chứng:** ba mẫu phụ đề (auto-caption rolling, manual bị cắt giữa câu, có timestamp gap); `story.txt` không heading (stage + validator); rerun không tải/làm lại artifact còn hợp lệ (cùng workspace và job mới cùng URL); resume story theo bước và theo lô chương; `ClaudeCliRunner` chạy với tiến trình giả lập CLI thật (kết quả, tác vụ nền, lỗi đăng nhập, huỷ giữa lượt); deploy oh-story thật vào thư mục tạm không sửa module; **YouTube thật**: phụ đề thủ công + auto-caption thật. Đã phá code có chủ đích 7 chỗ ở phần mới và test bắt cả 7.
 **Chưa kiểm chứng:** lượt Claude thật (tiếng Việt qua oh-story, cổng xác nhận, chi phí) và phụ đề tiếng Việt thật. Xem `DECISIONS.md` D-23, §5.
+
+### Phase 2 mở rộng — tích hợp Subtitle_supperVip ✅ (không phải Phase 3)
+
+**Đã làm:** audit `Subtitle_supperVip` (`CURRENT_SYSTEM_AUDIT.md` §6–§7); `SourceAdapter` + `SourceProvider` + `SourceResult` mới; `ProviderChain` (fallback, cache chung, khóa chống tải trùng, dấu vân tay trong workspace); providers `supervip` (bridge tới code của module), `ytdlp` (fallback), `local`, `text`; `TranscriptProcessor` tách riêng và nhận cả `srt/vtt/json/txt`; bố cục `source/{source.json, subtitle_raw.*, transcript_structured.json, transcript_clean.txt}`; vô hiệu hóa cache của Story theo dấu vân tay đầu vào; gỡ `YouTubeSourceProcessor` cũ; cập nhật `HANDOFF.md` (§2, §2A, §3, §4, §4A, §5, §15, §19, §20, §21).
+**Sửa lỗi phát hiện trên đường:** `Orchestrator.run()` không dùng lại được sau lần dừng đầu tiên (token huỷ không reset); race khi hai job cùng nguồn chạy song song cùng tải.
+**Kiểm chứng:** 116 test (stdlib), gồm chạy **code thật của Subtitle_supperVip** với stub thư viện mạng; cây thư mục của module không bị đụng; **YouTube thật**: supervip và yt-dlp cho transcript sạch giống hệt nhau (similarity 1.0), fallback và rerun (0,0 s) đúng. **Chưa kiểm chứng:** phụ đề tiếng Việt thật.
+Không bắt đầu TTS (Phase 3).
 
 ## Việc chờ (chưa xếp phase)
 

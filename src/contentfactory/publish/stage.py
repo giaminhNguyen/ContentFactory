@@ -17,7 +17,7 @@ def run(ctx: StageContext, publish: PublishAdapter) -> StageResult:
     res = publish.publish({
         "platform": getattr(publish, "platform", "youtube"),
         "video": ctx.one("video_youtube"), "thumbnail": ctx.one("thumbnail"),
-        "title": meta["title"], "description": meta.get("description") or story[:300].strip(),
+        "title": meta["title"], "description": story[:300].strip(),                 # không dùng mô tả của nguồn (D-31)
         "tags": p.get("tags", []), "privacy": p.get("privacy", "private"),
         "made_for_kids": p["made_for_kids"], "account_id": p.get("account_id"),
         "idempotency_key": ctx.stage_key}, ctx)

@@ -107,23 +107,61 @@
 - Ghi `assembly_report.json` (artifact `story_report`) liệt kê mọi thứ đã gỡ. Blueprint/continuity/sections nằm ở workspace nội bộ (`story/oh-story/`), không nằm trong gói output (có test).
 - **Idempotent:** chỉ dựng lại khi sha256 các section hoặc phiên bản assembler đổi.
 
-### D-25 ✅ Source: yt-dlp ngoài, phụ đề có sẵn > auto, giữ nguyên raw, dựng câu bằng timestamp
+### D-25 ✅ Source: phụ đề có sẵn > auto, giữ nguyên raw, dựng câu bằng timestamp (provider/bố cục file: xem D-29…D-34)
+> Cập nhật: yt-dlp không còn là downloader duy nhất mà là provider **dự phòng**; tên file và cache đã đổi (D-33, D-34). Các quy tắc chọn track, ba tầng dữ liệu và dựng câu bằng timestamp bên dưới vẫn đúng.
 - **Công cụ:** `yt-dlp` gọi qua subprocess (lệnh cấu hình được: `youtube.yt_dlp_cmd`), không phải phụ thuộc Python; `health()` báo thiếu. Chọn track: thủ công (ngôn ngữ ưu tiên `vi,en`) > thủ công (ngôn ngữ gốc video) > auto ngôn ngữ gốc (`*-orig`) > auto ưu tiên > thủ công bất kỳ; không có gì → `NO_SUBTITLES` (POLICY). **Không có fallback ASR/Whisper** (ngoài phạm vi).
-- **Ba tầng dữ liệu, đúng yêu cầu:** `raw/subtitle.<ext>` nguyên byte; `structured.json` (cue với `start,end,text,gap_before` + câu + đoạn, kèm `internal_pauses`, `provenance`); `transcript.txt` sạch không timestamp, sinh **sau** khi dựng lại.
+- **Ba tầng dữ liệu, đúng yêu cầu:** `subtitle_raw.<ext>` nguyên byte; `transcript_structured.json` (cue với `start,end,text,gap_before` + câu + đoạn, kèm `internal_pauses`, `provenance`); `transcript_clean.txt` sạch không timestamp, sinh **sau** khi dựng lại.
 - **Dựng lại câu/đoạn bằng timestamp** (`source/reconstruct.py`), tại mỗi ranh giới cue: nối tiếp (caption bị cắt giữa câu) / kết thúc câu (có dấu câu, hoặc pause ≥ 0.8 s, hoặc câu quá dài) / kết thúc đoạn (pause ≥ 2.0 s hoặc đoạn ≥ 900 ký tự). Câu kết thúc ngay *giữa* một cue cũng được tách; timestamp và `cue_range` nội suy theo vị trí ký tự. Phục hồi dấu câu ở mức an toàn: thêm dấu chấm, viết hoa đầu câu; vị trí các pause giữa câu được giữ để bước khôi phục dấu phẩy bằng LLM dùng sau. Ngưỡng cấu hình ở `youtube.reconstruct`.
 - **Khử auto-caption "rolling"** (mỗi cue lặp dòng của cue trước, thẻ `<c>`/timing từng từ, `&nbsp;`, `[Âm nhạc]`, `>>`), nhưng không xóa các dòng lặp hợp lệ ("Không." / "Không.").
-- **Idempotent theo từng bước + cache liên job:** `raw/download.json` (sha256), `structured.json.provenance` (sha256 raw + phiên bản parser + hash cấu hình), `clean_sha256`; cache `runtime/cache/youtube/<video_id>/<hash ngôn ngữ>/` để job mới cho cùng URL không tải lại. `refresh_source: true` ép tải lại.
+- **Idempotent theo từng bước + cache liên job:** `subtitle_raw.meta.json` (sha256), `transcript_structured.json` → `provenance` (sha256 raw + phiên bản parser + hash cấu hình), `clean_sha256`; cache `runtime/cache/youtube/<video_id>/<hash ngôn ngữ>/` để job mới cho cùng URL không tải lại. `refresh_source: true` ép tải lại.
 - **Đã kiểm chứng với YouTube thật** (video công khai, yt-dlp 2026.08.19 trong venv tạm, không cài vào môi trường của bạn): phụ đề thủ công được ưu tiên hơn auto; auto-caption thật (103 cue rolling → 47 cue sạch, không còn thẻ); chạy lại 0,01 s không đụng mạng. **Chưa kiểm chứng** với phụ đề tiếng Việt thật.
 
 ### D-26 ✅ Quyền của agent: mặc định thận trọng, transcript là dữ liệu không tin cậy
 - Transcript YouTube do bên thứ ba viết và được đưa cho một agent có công cụ ghi file/chạy lệnh ⇒ rủi ro prompt injection. Mặc định `permission_mode=acceptEdits` + allowlist lệnh (`python`, `node`, `bash`, `git`, `ls`, …); `--setting-sources project,local` + `--strict-mcp-config` để không nạp CLAUDE.md/plugin/hook của người dùng; biến môi trường `CLAUDE*`/`OMC_*` bị bỏ khỏi tiến trình con (như bench của oh-story). Nội dung transcript **không bao giờ** nằm trong prompt, chỉ nằm trong file `原文.md` (có test), và prompt nói rõ đó là dữ liệu.
 - `bypassPermissions` (cách bench của oh-story chạy) là tùy chọn có chủ đích, chỉ trong workspace cách ly của job. Nếu mặc định thận trọng làm agent kẹt vì thiếu quyền, đây là chỗ cần nới (chưa biết trước vì chưa chạy LLM thật).
 
-### D-27 ✅ Artifact mới ở stage Source/Story
+### D-27 ✅ Artifact mới ở stage Source/Story (đã chỉnh bởi D-31, D-33)
 - Source sinh `subtitle_raw`, `transcript_structured`, `transcript`, `metadata`; Story sinh `story_text`, `story_report`. Thay đổi `SourceResult`/`StoryResult`/`SourceBundle` (thêm `source_language`) ghi ở `MODULE_CONTRACTS.md` §10. `metadata.json` **không** chứa `description` của video gốc (tránh chép mô tả của người khác thành mô tả video của ta); stage output/publish dùng 300 ký tự đầu của `story.txt`.
 
 ### D-28 ✅ Đánh số phase theo chỉ dẫn của người dùng
 - Phase 2 = Source + Story thật (phần "Phase 3" trong lộ trình ban đầu). Các phase sau được đánh số lại liên tục (3 = TTS, 4 = Audio + Render, 5 = Publish + Output, 6 = Bất đồng bộ + vận hành, 7 = TTS Auto-Profile) và chỉ là đề xuất. Các spike ContentFlow/yt_uploader thật chưa làm, xếp trong "Việc chờ" của `IMPLEMENTATION_PHASES.md`. Không bắt đầu Phase 3.
+
+### D-29 ✅ Subtitle_supperVip được tích hợp qua SourceAdapter; ContentFactory vẫn là orchestrator cấp cao
+- **Quyết định:** `Subtitle_supperVip` là **implementation chính của `SourceAdapter`** (provider `supervip`), không phải orchestrator. ContentFactory giữ pipeline job, state từng stage, tham chiếu artifact và retry/resume trong DB của nó. Subtitle_supperVip chỉ làm phần *thu thập phụ đề* (resolve nguồn, chọn track, lấy phụ đề, metadata nếu có key).
+- **Kiến trúc:** `YouTube URL → SourceAdapter (ProviderChain) → provider (supervip → yt-dlp → …) → SourceResult → Transcript Processor → Story`. `SourceAdapter` không hardcode provider: thêm provider = thêm một lớp `SourceProvider` (hiện có `supervip`, `ytdlp`, `local`, `text`).
+- **Bằng chứng (audit, `CURRENT_SYSTEM_AUDIT.md` §6):** module là app quản lý theo **kênh** (FastAPI + SQLite + worker + UI), không có entrypoint cho một video lẻ, có state machine và queue riêng. Dùng nguyên app sẽ tạo hai state machine cho cùng một job.
+
+### D-30 ✅ Cách tích hợp: bridge gọi lại code acquisition của module, không chạy API/worker/DB, không sửa module
+- **Bridge** (`source/bridge/supervip_bridge.py`) chạy bằng Python env riêng có `youtube-transcript-api`, gọi `fetch_selected`/`serialize`/exceptions của `app.services.subtitles` và `YouTubeDataClient._video_details` (khi có `YOUTUBE_API_KEY`). Orchestrator vẫn chỉ cần stdlib.
+- **Đã loại:** (a) gọi HTTP API của module: chỉ nhận URL kênh, cần Data API key chỉ để resolve kênh, và tạo state thứ hai; (b) copy/fork code vào ContentFactory: lệch phiên bản; (c) import trực tiếp vào tiến trình orchestrator: kéo dependency (`pydantic-settings`, …) và `.env`/DB của module vào.
+- **Cô lập:** bridge chạy ở thư mục tạm (không nạp `.env`/`data/`), `PYTHONDONTWRITEBYTECODE=1`; test khẳng định cây thư mục của module không đổi và không có `*.db`. Không import `app.main/worker/models/database/services.jobs`.
+- **Reuse:** `fetch_selected` (liệt kê/chọn/lấy phụ đề + phân loại lỗi), `serialize` (raw JSON), `YouTubeDataClient._video_details` (metadata). **Không dùng:** channel/scan/sync, `jobs.py`, `worker.py`, `models.py`/DB/alembic, FastAPI, React, Docker, `dev.ps1`/`start.ps1`, `requests_per_minute` (khai báo nhưng không có tác dụng).
+- **Code Phase 2 cũ:** `YouTubeSourceProcessor` (nguyên khối) **đã gỡ** sau khi tích hợp mới được chứng minh (116 test + chạy thật hai provider cho transcript sạch giống hệt nhau, similarity 1.0). Downloader yt-dlp được **giữ** thành `YtDlpProvider` (fallback); parser/dựng câu thành `TranscriptProcessor`; cache thành `ProviderChain`.
+
+### D-31 ✅ Ownership của state; mô tả/tiêu đề của nguồn không dùng làm của ta
+- **State:** DB của ContentFactory là nguồn sự thật duy nhất của pipeline. Provider không đọc/ghi DB của ContentFactory; DB của Subtitle_supperVip không được tạo, đọc hay ghi (test `test_module_state_is_never_touched`). Lỗi của provider chỉ trở thành lỗi của **stage `source`** (TRANSIENT retry theo backoff; POLICY/RESOURCE/AUTH → `FAILED` ở stage đó), không bao giờ làm đổi state job khác.
+- **Mô tả:** `SourceResult.description` (nếu có) chỉ là dữ liệu tham khảo; output/publish luôn lấy 300 ký tự đầu của `story.txt` làm mô tả (D-27). Tiêu đề hiện vẫn lấy từ nguồn (giới hạn đã biết).
+
+### D-32 ✅ Chính sách chọn provider và phụ đề
+- **Thứ tự provider:** theo `source.providers` (mặc định `supervip, ytdlp, local, text`; mỗi provider chỉ nhận loại nguồn nó hỗ trợ). Provider không khả dụng bị bỏ qua và ghi vào `attempts`.
+- **Fallback:** mọi lỗi chuyển sang provider kế, **trừ** lỗi dứt khoát về đầu vào/video (`NOT_YOUTUBE_URL`, `BAD_VIDEO_ID`, `VIDEO_UNAVAILABLE`, `FILE_NOT_FOUND`, `UNSUPPORTED_FORMAT`, `EMPTY_SUBTITLE`). Hết provider: ưu tiên báo lỗi TRANSIENT (còn hy vọng retry), nếu không thì lỗi của provider chính.
+- **Chọn phụ đề (supervip):** 3 pass bằng chính hàm của module — manual (ngôn ngữ ưu tiên `vi,en`) → auto (ưu tiên + `original`) → manual bất kỳ ngôn ngữ; `allow_translation=false` (không dịch máy của YouTube; Story lo ngôn ngữ đích). Lý do: `choose_transcript` của module với `any` có thể chọn auto-vi trước manual-en, trái yêu cầu "ưu tiên phụ đề có sẵn".
+- **Bị chặn IP:** `YOUTUBE_BLOCKED` là RESOURCE (không retry mù, chuyển sang fallback).
+
+### D-33 ✅ Ngữ nghĩa "raw subtitle" và bố cục artifact
+- Raw = **đúng như provider trả về**: supervip → snippet JSON `{text,start,duration}` (module không giữ timedtext gốc); yt-dlp → VTT/SRT; local → copy nguyên byte; text → `.txt`. `subtitle_format` ghi rõ; Transcript Processor đọc cả bốn.
+- Bố cục `workspace/<job>/source/`: `source.json` (kind `metadata`), `subtitle_raw.<ext>`, `transcript_structured.json`, `transcript_clean.txt` (kind `transcript`); nội bộ: `subtitle_raw.meta.json`, `_acq/`. Output final không chứa file tạm.
+
+### D-34 ✅ Cache và vô hiệu hóa theo từng tầng
+- **Phụ đề:** khóa `sha256(kind, định danh nguồn, ngôn ngữ ưu tiên)`; dấu vân tay trong job (`subtitle_raw.meta.json`) + cache chung `runtime/cache/source/<key>/`; sha256 raw sai thì khôi phục từ cache rồi mới tới mạng; khóa theo khóa cache để job song song cùng nguồn chỉ tải một lần (test race, đã mutation-check). Đổi ngôn ngữ ưu tiên ⇒ khóa khác ⇒ tải lại; `refresh_source` ép tải lại.
+- **Transcript:** dùng lại structured khi `(raw_sha256, format, parser_version, config_hash)` không đổi; clean theo `clean_sha256`. Đổi raw/định dạng/phiên bản/cấu hình ⇒ dựng lại, không tải lại.
+- **Story:** assembly chỉ dựng lại khi sha256 các section đổi; adapter lưu dấu vân tay đầu vào (`sha256(transcript)`, tiêu đề, ngôn ngữ, tên sách, phiên bản adapter) trong `adapter_state.json`: không đổi ⇒ không gọi agent nào; đổi ⇒ cất workspace oh-story cũ sang `oh-story.stale-<fp>` và làm lại từ đầu. Số chương mục tiêu không nằm trong dấu vân tay (tăng số chương chỉ viết tiếp).
+- **Giới hạn:** chưa có `rerun --from <stage>`: vô hiệu hóa theo tầng xảy ra khi một stage chạy lại (crash/retry/job mới), không phải khi người dùng bắt chạy lại giữa pipeline.
+
+### D-35 ✅ Môi trường chạy của Subtitle_supperVip
+- Cần Python env riêng có `youtube-transcript-api` (README của module: 3.12+; máy audit chỉ có 3.10 và 3.13, chạy được trên 3.13 và cả 3.10 qua test với stub). Cấu hình `supervip.python`, hoặc `backend/.venv` nếu có, nếu không thì dùng Python hiện tại. `health()` chạy bridge `health` (nạp code thật của module) để báo thiếu; `doctor`/`setup` tự động cài env để phase sau.
+- Không tự cài gói vào máy người dùng. `YOUTUBE_API_KEY` tùy chọn (chỉ để lấy metadata đầy đủ); thiếu thì title lấy qua yt-dlp (nếu có) hoặc dùng video id.
+- Pin: ghi trong `modules.lock` kèm cảnh báo cây làm việc có thay đổi chưa commit và remote không clone được từ máy audit.
 
 ## 2. Câu hỏi còn mở
 
@@ -136,13 +174,15 @@ Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt 
 | Frame 16:9 1920×1080 + layout (R6) | Phase 4 | Orchestrator sinh một frame viền đen tối thiểu để chạy được; thiết kế đẹp là việc sau |
 | Engine TTS đầu tiên | Phase 3 | Bắt đầu với engine local đã có trong môi trường (VieNeu-TTS, sẽ audit ở Phase 3) |
 
-## 3. Đề xuất chỉnh HANDOFF (chưa áp dụng, chờ duyệt)
+## 3. Đề xuất chỉnh HANDOFF (đã áp dụng một phần khi tích hợp Subtitle_supperVip; phần còn lại chưa áp dụng, chờ duyệt)
+
+Đã áp dụng vào `HANDOFF.md`: §2 Story và Source/Subtitle, §2A, §3, §4, §4A, §5, §15 (ghi chú state thực tế), §19 (doctor), §20, §21.
 
 | Mục HANDOFF | Chỉnh đề xuất | Mã |
 |---|---|---|
-| §2 Story | Ghi rõ: `story-branch` = chuẩn bị nhánh từ truyện có sẵn; sinh truyện là `story-long-write`; không headless; tiếng Trung | A1–A4 |
-| §3/§4 | Thêm SourceProcessor là module **mới**, không có trong ba project | A2 |
-| §5 | Ghi Story Assembler là module mới; chương hiện là file riêng có dòng tiêu đề | A5 |
+| §2 Story ✅ đã áp dụng | Ghi rõ: `story-branch` = chuẩn bị nhánh từ truyện có sẵn; sinh truyện là `story-long-write`; không headless; tiếng Trung | A1–A4 |
+| §3/§4 ✅ đã áp dụng | Source là module **mới** (nay: `SourceAdapter` + Transcript Processor, §4A) | A2 |
+| §5 ✅ đã áp dụng | Ghi Story Assembler là module mới; chương hiện là file riêng có dòng tiêu đề | A5 |
 | §2 Media/§12 | Ghi: ContentFlow chưa có profile 16:9/9:16; profile do orchestrator cấp qua frame PNG + config | A8 |
 | §11 | Speed ×2/split/watermark thuộc AudioProcessor của orchestrator | A11–A12 |
 | §13 Source Sync | Ghi: hiện là hàm/tab chạy thủ công; nền "background" là việc của orchestrator | A10 |
@@ -167,3 +207,12 @@ Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt 
 - Không có phụ đề: lỗi `NO_SUBTITLES` (không ASR). Video giới hạn tuổi/thành viên/yêu cầu đăng nhập: `YOUTUBE_SIGNIN_REQUIRED` (AUTH); cookie chỉ truyền được qua `youtube.yt_dlp_args`.
 - Assembler dùng heuristic: heading theo mẫu lạ có thể lọt (validator chỉ chặn mẫu quen thuộc); đoạn "gần trùng" có thể là lặp có chủ ý (điệp khúc) — report ghi lại, ngưỡng 35% chặn việc mất nội dung hàng loạt.
 - `docs/CURRENT_SYSTEM_AUDIT.md` là ảnh chụp lúc Phase 0, không cập nhật theo các thay đổi này.
+
+## 6. Giới hạn đã biết sau tích hợp Subtitle_supperVip
+
+- Raw của provider chính là snippet đã parse, không phải timedtext gốc: không phục hồi được định dạng/định vị gốc của YouTube.
+- Chưa kiểm chứng với phụ đề **tiếng Việt thật** và với video thực sự chỉ có auto-caption qua provider supervip (đã kiểm chứng manual + auto trên video công khai tiếng Anh; stub kiểm chứng các nhánh còn lại).
+- `youtube-transcript-api` dựa vào endpoint không công khai: có thể bị chặn IP hoặc đổi hành vi; fallback yt-dlp cũng có thể bị chặn cùng IP.
+- Phân loại lỗi trong module dựa vào tên lớp/chuỗi message của thư viện; bridge xếp lỗi lạ vào TRANSIENT.
+- Metadata (mô tả, kênh) đầy đủ phụ thuộc yt-dlp (không có trong supervip); thiếu cả hai thì title = video id.
+- Chưa có ASR khi video không có phụ đề nào, chưa có `doctor`/`setup` tự dựng env cho supervip.

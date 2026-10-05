@@ -7,7 +7,9 @@ CẢNH BÁO CHI PHÍ: Story gọi Claude Code CLI (tài khoản của bạn) qua
 (analyze -> explore -> create -> handoff -> 开书 -> các lô <= 3 chương). Bắt đầu bằng --chapters 3
 và đặt --max-budget-usd để chặn chi phí mỗi lượt.
 
-Điều kiện: yt-dlp (pip install yt-dlp, hoặc --yt-dlp "python -m yt_dlp"), claude CLI đã đăng nhập, node, python.
+Điều kiện: Source dùng Subtitle_supperVip (provider chính; cần một Python có youtube-transcript-api: --supervip-python)
+và yt-dlp (fallback; pip install yt-dlp hoặc --yt-dlp "python -m yt_dlp"); Story cần claude CLI đã đăng nhập, node, python.
+Metadata đầy đủ từ Subtitle_supperVip cần biến môi trường YOUTUBE_API_KEY (không bắt buộc: thiếu thì tiêu đề lấy qua yt-dlp).
 Quyền của agent: mặc định acceptEdits + allowlist (transcript là dữ liệu không tin cậy). Nếu agent bị kẹt vì thiếu quyền,
 thử --permission-mode bypassPermissions CHỈ khi chấp nhận rủi ro (workspace của job được cách ly trong thư mục tạm).
 """
@@ -33,7 +35,9 @@ def main() -> int:
     ap.add_argument("--chapters", type=int, default=3)
     ap.add_argument("--chapter-chars", type=int, default=3000)
     ap.add_argument("--language", default="vi")
-    ap.add_argument("--yt-dlp", default="yt-dlp", help='lệnh gọi yt-dlp, vd "python -m yt_dlp"')
+    ap.add_argument("--yt-dlp", default="yt-dlp", help='lệnh gọi yt-dlp (fallback), vd "python -m yt_dlp"')
+    ap.add_argument("--supervip-python", help="Python có youtube-transcript-api để chạy bridge Subtitle_supperVip")
+    ap.add_argument("--providers", default="supervip,ytdlp", help="thứ tự provider, vd supervip,ytdlp hoặc ytdlp")
     ap.add_argument("--permission-mode", default="acceptEdits")
     ap.add_argument("--max-budget-usd", type=float, default=None, help="trần chi phí MỖI lượt agent")
     ap.add_argument("--max-turns", type=int, default=40)
@@ -46,8 +50,11 @@ def main() -> int:
     if not (root / "modules.lock").exists():
         (root / "modules.lock").write_text((REPO / "modules.lock").read_text(encoding="utf-8"), encoding="utf-8")
     cfg = load_config(root, {
-        "adapters": {"source": "youtube", "story": "story_branch"},
+        "adapters": {"source": "provider_chain", "story": "story_branch"},
+        "source": {"providers": a.providers.split(",")},
         "youtube": {"yt_dlp_cmd": shlex.split(a.yt_dlp)},
+        "supervip": {"python": a.supervip_python,
+                     "backend_dir": str(REPO / "modules" / "Subtitle_supperVip" / "backend")},
         "story_branch": {"oh_story_root": str(REPO / "modules" / "oh-story-claudecode"),
                          "permission_mode": a.permission_mode, "max_budget_usd_per_turn": a.max_budget_usd,
                          "max_turns": a.max_turns},
@@ -56,9 +63,10 @@ def main() -> int:
     health = {k: adapters[k].health() for k in ("source", "story")}
     print("root:", root)
     print("health:", json.dumps(health, ensure_ascii=False))
-    if a.dry_run or not all(h["ok"] for h in health.values()):
+    ok = all(h["ok"] for h in health.values())
+    if a.dry_run or not ok:
         print("dry-run: không gọi LLM" if a.dry_run else "thiếu điều kiện: sửa theo health ở trên rồi chạy lại")
-        return 0 if all(h["ok"] for h in health.values()) else 2
+        return 0 if ok else 2
 
     orc = Orchestrator(cfg, adapters, echo=False)
     job = orc.submit({"input": {"kind": "youtube_url", "value": a.url}, "language": a.language, "made_for_kids": False,

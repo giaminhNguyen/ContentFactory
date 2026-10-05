@@ -1,7 +1,7 @@
 # CURRENT_SYSTEM_AUDIT
 
 > Phase 0. Audit 3 project hiện có so với `HANDOFF.md`. Không sửa source cũ.
-> Ngày audit: 2026-10-05.
+> Ngày audit: 2026-10-05. §6–§7 (Subtitle_supperVip) được thêm khi tích hợp Source/Subtitle.
 
 ## 0. Phương pháp và độ tin cậy
 
@@ -173,7 +173,7 @@ Mức độ: ❌ sai/không có trong code · ⚠️ đúng một phần · ✅ 
 | # | HANDOFF nói (mục) | Thực tế | Mức | Xác minh |
 |---|---|---|---|---|
 | A1 | `story-branch` "nhận input từ câu chuyện nguồn, phân tích, xây blueprint, sinh truyện dài" (§2, §3) | Chỉ chuẩn bị tư liệu nhánh; **không viết nội dung**. Viết truyện là `story-long-write` | ❌ | V |
-| A2 | Input có thể là YouTube URL → transcript → source analyzer → story (§4) | Không project nào xử lý transcript/YouTube. Story cần truyện hoàn chỉnh tiếng Trung. **SourceProcessor hoàn toàn mới** | ❌ | |
+| A2 | Input có thể là YouTube URL → transcript → source analyzer → story (§4) | Không project nào xử lý transcript/YouTube. Story cần truyện hoàn chỉnh tiếng Trung. **SourceProcessor hoàn toàn mới** (sau đó được giải quyết: `SourceAdapter` + Subtitle_supperVip + Transcript Processor, xem §6–§7) | ❌ | |
 | A3 | Story là một module chạy tự động trong pipeline (§3, §14) | Chỉ chạy trong agent CLI, nhiều cổng chờ người, không headless, không schema | ❌ | |
 | A4 | Ngôn ngữ truyện (HANDOFF **không nêu**) | Story chỉ viết tiếng Trung; checker hardcode tiếng Trung | ⚠️ ẩn số | |
 | A5 | "Story Assembler" bỏ header/marker, nối thành `story.txt` (§5) | Không tồn tại. Có tiêu đề chương trong từng file `正文/第NNN章_*.md` | ❌ (mới) | V |
@@ -195,3 +195,75 @@ Mức độ: ❌ sai/không có trong code · ⚠️ đúng một phần · ✅ 
 | A21 | `doctor` kiểm tra ffmpeg/NVENC/YouTube credentials (§19) | Có thể: `media_worker health`, `GET /api/v1/health`, ffmpeg probe. Story engine chưa có cách health-check | ⚠️ | |
 
 Các "Điểm chưa chốt" của HANDOFF §21 vẫn đúng và không bị code mới giải quyết; riêng "interface giữa TTS output và ContentFlow" (audio file → `inputs[type=audio]`) và "TikTok renderer profile cụ thể" đã được làm rõ ở `MODULE_CONTRACTS.md`.
+
+## 6. Subtitle_supperVip (audit bổ sung)
+
+### 6.1 Snapshot
+
+| | |
+|---|---|
+| Path | `modules/Subtitle_supperVip` (copy từ `Desktop/GIT/Subtitle_supperVip`; bản gốc không bị sửa) |
+| Branch / HEAD | `Update` / `3d9281f010424dc4807e76f8bd443ddb50fb3694` ("feat: initialize YouTube subtitle manager") |
+| Remote | `git@home.com:giaminhNguyen/Subtitle_supperVip.git` — **clone từ máy này bị từ chối (SSH publickey)**, nên dùng bản local |
+| Cây làm việc | 3 file đã stage chưa commit: `README.md` (sửa), `dev.ps1`, `start.ps1` (thêm). Code backend khớp HEAD |
+| Quy mô | 36 file, ~116 KB; backend ~25 KB Python |
+| Test của nó | 12 test pytest, **12 pass** (Python 3.13, thư viện `youtube-transcript-api` 1.2.4) |
+
+### 6.2 Là gì
+
+Ứng dụng web **quản lý subtitle theo kênh**: dán URL kênh → quét toàn bộ uploads → tải caption theo hàng đợi → lưu file. FastAPI + SQLAlchemy/SQLite + worker riêng + React/Vite UI. README yêu cầu Python 3.12+ (máy audit có 3.10 và 3.13, **không có 3.12**; backend chạy được trên 3.13, `dev.ps1` dùng `py -3.12` nên sẽ lỗi trên máy này).
+
+### 6.3 Kết quả audit theo từng mục (đọc từ code)
+
+| Mục | Thực tế trong code |
+|---|---|
+| **Entrypoint** | `app.main:app` (uvicorn), `python -m app.worker` (vòng lặp poll), frontend Vite. Không có CLI. **Không có entrypoint cho một video lẻ.** |
+| **Kiến trúc** | REST FastAPI (`main.py`) → SQLite qua SQLAlchemy (`models.py`: Channel, ChannelSettings, Video, Subtitle, Job, JobLog, SyncRun); services `youtube.py` (Data API), `subtitles.py` (transcript), `jobs.py` (enqueue/scan); `worker.py` |
+| **Nhận URL/ID** | Chỉ URL **kênh** (`parse_channel_url`: `/channel/ID`, `/@handle`, `/user/`, `/c/` qua search). Video vào hệ thống **chỉ** qua scan uploads của một kênh. `POST /api/videos/{id}/download` nhận UUID nội bộ. Không có parse URL video / video id |
+| **Resolve video** | kênh → `channels.list` → uploads playlist → `playlistItems.list` (50/trang) + `videos.list` (`snippet,contentDetails,liveStreamingDetails`): title, publishedAt, duration (ISO8601→giây), thumbnail, loại (short ≤ 60 s / live / video). **Cần `YOUTUBE_API_KEY`**, tốn quota. Dữ liệu lưu **không có description**. `_video_details(ids)` là phương thức private |
+| **Lấy subtitle** | `youtube-transcript-api` ≥ 1.0: `YouTubeTranscriptApi().list(id)` → chọn track → `fetch()` → snippet `{text,start,duration}`. **Không giữ file timedtext gốc**, chỉ snippet đã parse. Không Selenium |
+| **Chọn ngôn ngữ** | `choose_transcript`: lọc theo `manual|auto|any`; duyệt ngôn ngữ ưu tiên (so mã trước dấu `-`); `original` = track đầu tiên; dịch của YouTube nếu `allow_translation` (mặc định **true**). Không có "manual trước auto" xuyên ngôn ngữ: với `any`, auto-vi có thể thắng manual-en |
+| **Metadata** | Chỉ qua Data API (cần key). `metadata.json` ghi video_id, title, url, published_at, thông tin track, danh sách file |
+| **Retry** | Chỉ ở worker: `max_job_attempts`=5, backoff `min(300, 2^lần × 5)` s. `Blocked` (IpBlocked/RequestBlocked/429) → video `blocked`, job `failed` ngay (không retry). NoTranscript/TranscriptsDisabled → `no_subtitle` (job `completed`). LanguageUnavailable → `language_unavailable`. Lỗi khác → retry. **Không retry trong thư viện** |
+| **Rate limit** | `REQUESTS_PER_MINUTE` chỉ được **khai báo** trong `config.py` và `.env.example`, **không nơi nào dùng** (README mô tả như có hiệu lực) |
+| **Queue / worker** | Bảng `jobs` SQLite; `process_one()` poll mỗi `WORKER_POLL_SECONDS`; pause/resume/cancel/retry qua API; `recover_interrupted()` đưa job `processing` về `queued` khi worker khởi động. Claim bằng SELECT rồi UPDATE (không atomic, không lease/heartbeat): **chỉ an toàn với một worker** (README thừa nhận) |
+| **SQLite / state** | `data/app.db`, alembic `0001`. Trạng thái Video (9) và Job (6) là state machine **của riêng nó** |
+| **Trùng lặp** | Video unique `(channel_id, youtube_video_id)` (cùng video ở hai kênh có thể trùng); `enqueue` chặn job active trùng `(kind, channel_id, video_id)`; Subtitle unique `(video_id, language_code, format)` |
+| **Lưu trữ** | `data/<kênh>/<YYYY-MM>-<tên>-<id>/{<lang>.srt|txt|json|vtt|csv, metadata.json}`, tên file được làm sạch |
+| **Chẩn đoán** | `/health` chỉ trả `{"ok": true}` (không kiểm DB/key/thư viện); dashboard đếm; bảng `job_logs`. Không có doctor |
+| **Setup / portable** | `dev.ps1` (venv + pip + alembic + npm + 3 cửa sổ), `start.ps1` + `docker-compose.yml` (api, worker, web). `.env` (`YOUTUBE_API_KEY` bắt buộc để resolve/scan). Không portable thực sự |
+| **Xử lý lỗi** | 3 exception tự định nghĩa; phân loại lỗi thư viện bằng **tên lớp / chuỗi message** (`"ipblocked" in name`, `"429" in message`…): mong manh theo phiên bản thư viện |
+
+### 6.4 README so với code
+
+- `REQUESTS_PER_MINUTE` "tốc độ request tối đa khuyến nghị": **không được thực thi** (xem trên).
+- "Lấy metadata": không có mô tả video.
+- Phần còn lại (kênh, scan, queue, trạng thái, test) khớp code.
+
+### 6.5 Kiểm chứng thật
+
+Chạy bằng venv Python 3.13, ở thư mục tạm (không sinh `data/`, không đọc `.env`) trên một video YouTube công khai:
+- `available_transcripts`: liệt kê đủ track thủ công + auto (1,1 s).
+- `fetch_selected(manual, [vi,en])` → en thủ công, 61 snippet; `(auto, [...,original])` → en auto, 52 snippet; `(manual, [vi])` → `LanguageUnavailable` đúng như thiết kế.
+- Snippet **không có** thẻ HTML, không có dòng lặp kiểu rolling, không chồng thời gian; 29/61 snippet chứa `\n` bên trong (caption hai dòng); còn ký hiệu `♪` và `[♪♪♪]`.
+- `serialize(..., "srt")` đúng định dạng.
+
+### 6.6 Phần dùng được và phần không
+
+- **Dùng được (hàm thuần, không dính DB):** `services/subtitles.py` (`fetch_selected`, `choose_transcript`, `available_transcripts`, `serialize`, 3 exception), `services/youtube.py::YouTubeDataClient._video_details` (metadata).
+- **Không dùng:** channel/scan/sync, `jobs.py`, `worker.py`, `models.py`/DB/alembic, FastAPI, React UI, Docker, `dev.ps1`/`start.ps1`. Lý do: thiết kế theo kênh, tạo state machine thứ hai, một worker + SQLite không atomic, cần API key/quota.
+
+## 7. Source Phase 2 so với Subtitle_supperVip
+
+| Chức năng | Source Phase 2 | Subtitle_supperVip | Quyết định (D-29…D-35) |
+|---|---|---|---|
+| Nhận URL / video id | `parse_video_id` | không có (chỉ URL kênh) | **giữ** của ContentFactory (định danh, cache, bridge) |
+| Lấy phụ đề | yt-dlp (subprocess) | `youtube-transcript-api` | supervip = **provider chính**; yt-dlp = **fallback** (`YtDlpProvider`) |
+| Chọn track | `choose_subtitle` | `choose_transcript` | supervip: 3 pass (manual → auto → manual bất kỳ); yt-dlp giữ `choose_subtitle` |
+| Metadata | yt-dlp info (title, mô tả, kênh, độ dài) | Data API (cần key, không mô tả) | supervip khi có key; yt-dlp **bổ sung** khi thiếu title |
+| Raw | file VTT/SRT thật | snippet JSON đã parse | giữ nguyên "raw" theo provider (`subtitle_format` nói rõ) |
+| Retry | orchestrator | worker riêng (5 lần) | **chỉ orchestrator**; worker của module không dùng |
+| Queue / state | SQLite của ContentFactory | SQLite riêng | **chỉ ContentFactory** |
+| Cache / idempotency | sidecar + cache theo video id | thư mục `data/` + DB | cache của ContentFactory (`ProviderChain`) |
+| Parse / dựng câu / clean | có | chỉ `serialize` | **giữ** (Transcript Processor) |
+| `YouTubeSourceProcessor` (nguyên khối) | có | — | **đã gỡ** sau khi tích hợp mới được kiểm chứng; logic tách thành provider + processor + chain |
