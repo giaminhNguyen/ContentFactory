@@ -1,7 +1,8 @@
 """Dựng adapter từ config. Chỉ orchestrator được import module cụ thể; module không import nhau.
 
 Tên adapter trong config["adapters"][<loại>]:
-  "fake" | "builtin" | "provider_chain" (source) | "story_branch" (story) | "package.module:ClassName" (adapter của phase sau).
+  "fake" | "builtin" | "provider_chain" (source) | "story_branch" (story) | "rule" (planner) | "ffmpeg" (audio) |
+  "package.module:ClassName" (adapter ngoài; cấu hình riêng qua config["adapter_config"][<loại>]).
 Đổi sang adapter thật chỉ cần sửa config; ví dụ:
   {"adapters": {"source": "provider_chain", "story": "story_branch"}}
 `provider_chain` đọc danh sách provider ở config["source"]["providers"] (supervip, ytdlp, local, text).
@@ -12,6 +13,7 @@ import importlib
 from pathlib import Path
 
 from ..adapters import fake
+from ..audio.processor import FfmpegAudio
 from ..adapters.story_branch import StoryBranchAdapter
 from ..output.publisher import BuiltinOutputPublisher
 from ..source.chain import ProviderChain
@@ -43,7 +45,7 @@ def _factories(cfg: Config) -> dict:
         ("source", "provider_chain"): lambda: _source_chain(cfg),
         ("story", "fake"): fake.FakeStory,
         ("story", "story_branch"): lambda: StoryBranchAdapter(sb, oh_root),
-        ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("render", "fake"): fake.FakeRender,
+        ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("output", "builtin"): lambda: BuiltinOutputPublisher(cfg["output"]),
     }

@@ -7,10 +7,10 @@ Validator CHỈ nhìn vào file (rẻ, tất định, không LLM).
 from __future__ import annotations
 
 import json
-import wave
 from pathlib import Path
 from typing import Callable
 
+from ..fsutil import wav_header
 from ..story.validate import validate_story_text
 
 Validator = Callable[[Path, dict], list[str]]
@@ -56,7 +56,7 @@ def _json_ok(path: Path) -> dict | list | None:
         return None
 
 
-for _kind in ("transcript_structured", "story_report", "tts_manifest", "output_package", "publish_result"):
+for _kind in ("transcript_structured", "story_report", "tts_manifest", "audio_timeline", "audio_report", "output_package", "publish_result"):
     VALIDATORS[_kind] = lambda path, meta: [] if _json_ok(path) is not None else ["BAD_JSON"]
 
 
@@ -71,12 +71,12 @@ def _metadata(path: Path, meta: dict) -> list[str]:
 def _audio(path: Path, meta: dict) -> list[str]:
     if path.suffix.lower() != ".wav":                    # định dạng khác: validator giàu hơn do Audio phase đăng ký
         return []
-    try:
-        with wave.open(str(path), "rb") as w:
-            return [] if w.getnframes() > 0 and w.getframerate() > 0 else ["ZERO_DURATION"]
-    except (wave.Error, EOFError):
+    try:                                                 # wav_header đọc được cả WAVE_FORMAT_EXTENSIBLE/float (ffmpeg 24-bit, nhiều engine TTS)
+        h = wav_header(path)
+    except (ValueError, OSError):
         return ["UNDECODABLE"]
+    return [] if h["frames"] > 0 and h["rate"] > 0 else ["ZERO_DURATION"]
 
 
-for _kind in ("audio_master", "audio_youtube", "audio_tiktok"):
+for _kind in ("audio_master", "narration_master", "audio_youtube", "audio_tiktok"):
     VALIDATORS[_kind] = _audio

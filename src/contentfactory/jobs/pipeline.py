@@ -61,6 +61,9 @@ class Stage:
     # dù không stage nào khác tiêu thụ output của nó.
     deliverable: bool = False
 
+    # Input tùy chọn: nạp vào ctx.inputs nếu có, không bắt buộc, không ảnh hưởng planner (vd timeline cho cắt part TikTok).
+    optional: tuple[str, ...] = ()
+
     @property
     def required_inputs(self) -> tuple[str, ...]:
         return self.requires
@@ -81,12 +84,14 @@ STAGES: tuple[Stage, ...] = (
           checkpoint="sections/chương chưa commit",
           params_deps=("story_profile", "language", "fake"), config_deps=("story_branch",)),
     Stage("tts", STORY_READY, TTS_RUNNING, AUDIO_READY,
-          ("story_text",), ("audio_master", "tts_manifest"), "tts", ("tts", "audio", "planner"),
-          checkpoint="segments/chunks chưa hoàn thành", params_deps=("tts", "language", "fake"),
+          ("story_text",), ("audio_master", "tts_manifest", "audio_timeline"), "tts", ("tts", "audio", "planner"),
+          checkpoint="segments/chunks chưa hoàn thành", params_deps=("tts", "language", "audio.format", "audio.join", "fake"),
           config_deps=("adapter_config",)),
     Stage("audio", AUDIO_READY, AUDIO_PROCESSING, YOUTUBE_RENDER_READY,
-          ("audio_master",), ("audio_youtube", "audio_tiktok"), "audio", ("audio",),
-          checkpoint="bản phân phối (YouTube, từng part TikTok)", params_deps=("watermark", "tiktok", "fake")),
+          ("audio_master",), ("narration_master", "audio_youtube", "audio_tiktok", "audio_report"), "audio", ("audio",),
+          checkpoint="Narration Master, bản YouTube, từng part TikTok",
+          params_deps=("audio.format", "audio.master", "audio.youtube", "audio.tiktok", "audio.qa", "watermark", "tiktok", "fake"),
+          optional=("audio_timeline",)),
     Stage("render_youtube", YOUTUBE_RENDER_READY, YOUTUBE_RENDERING, TIKTOK_RENDER_READY,
           ("audio_youtube", "metadata"), ("video_youtube", "thumbnail"), "render/youtube", ("render",), "gpu",
           checkpoint="video, thumbnail", params_deps=("render", "channel", "fake"), deliverable=True),

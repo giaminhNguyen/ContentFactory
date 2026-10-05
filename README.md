@@ -2,7 +2,7 @@
 
 Pipeline biến một nguồn truyện/video thành 1 video YouTube và N video TikTok. Thiết kế: `HANDOFF.md`; audit và quyết định: `docs/`.
 
-Trạng thái: **Phase 3 (TTS framework: Manager, Planner + validator, retry/cache theo segment, onboarding Analyzer, Auto Tune; chưa có engine TTS thật) trên Phase 2.9 (lõi căn chỉnh với kiến trúc cuối: start/target stage, hold/auto resume, config snapshot) trên nền Phase 2 + Subtitle_supperVip** — orchestrator lõi (SQLite, state machine, queue theo stage, checkpoint, retry, resume) + **Source thật** (`SourceAdapter` nhiều provider: Subtitle_supperVip chính, yt-dlp dự phòng → Transcript Processor) + **Story** (`StoryBranchAdapter` điều khiển oh-story, Story Assembler). TTS/Render/Upload vẫn là fake. Thiết kế job control (stage-based pipeline, pause/auto-resume, Resource Monitor, config snapshot) đã chốt trong `HANDOFF.md` §15A–§15C nhưng **chưa triển khai**. Story **chưa được kiểm chứng với LLM thật** (xem `docs/DECISIONS.md` D-23).
+Trạng thái: **Phase 4 (Audio Quality Pipeline: dọn biên, Pause Engine, Narration Master, YouTube + watermark, TikTok ×2 giữ cao độ + split thông minh, Audio QA; cần ffmpeg) trên Phase 3 (TTS framework: Manager, Planner + validator, retry/cache theo segment, onboarding Analyzer, Auto Tune; chưa có engine TTS thật) trên Phase 2.9 (lõi căn chỉnh với kiến trúc cuối: start/target stage, hold/auto resume, config snapshot) trên nền Phase 2 + Subtitle_supperVip** — orchestrator lõi (SQLite, state machine, queue theo stage, checkpoint, retry, resume) + **Source thật** (`SourceAdapter` nhiều provider: Subtitle_supperVip chính, yt-dlp dự phòng → Transcript Processor) + **Story** (`StoryBranchAdapter` điều khiển oh-story, Story Assembler). TTS/Render/Upload vẫn là fake. Thiết kế job control (stage-based pipeline, pause/auto-resume, Resource Monitor, config snapshot) đã chốt trong `HANDOFF.md` §15A–§15C nhưng **chưa triển khai**. Story **chưa được kiểm chứng với LLM thật** (xem `docs/DECISIONS.md` D-23).
 
 ```powershell
 # Python >= 3.10, không cần cài gói ngoài để chạy test
@@ -23,6 +23,10 @@ python -m contentfactory submit --mode VIDEO_ONLY --artifact audio_master=a.wav 
 python -m contentfactory resume <job_id> [--now]       # job đang PAUSED_* (Auto Resume tắt hoặc muốn ép đo lại)
 python -m contentfactory config <job_id> --auto-resume off
 python -m contentfactory resources                     # trạng thái Resource Monitor
+
+# Audio (Phase 4): dùng ffmpeg thật cho stage audio (mặc định vẫn là fake); profile mastering/split nằm trong params.audio
+#   config/config.json:  {"adapters": {"audio": "ffmpeg"}, "tools": {"ffmpeg": null, "ffprobe": null}}
+python scripts/audio_qa.py <file.wav> [--lufs -16 --duration 600]       # QA một file audio (corrupt, rỗng, clipping, im lặng, độ to...)
 
 # TTS (Phase 3): thêm engine mới chỉ từ repo/docs, rồi đo thực tế
 python scripts/tts_onboard.py <thư-mục | git URL | URL docs> --out onboarding/<engine>    # profile candidate + config adapter + needs_user

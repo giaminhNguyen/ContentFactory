@@ -307,7 +307,7 @@ class PipelineTTSTest(RootCase):
         jid = self.run_tts(orc)
         self.assertEqual(orc.store.get_job(jid)["state"], P.AUDIO_READY)
         kinds = {a["kind"] for a in orc.store.artifacts(jid) if a["stage"] == "tts"}
-        self.assertEqual(kinds, {"audio_master", "tts_manifest"})
+        self.assertEqual(kinds, {"audio_master", "tts_manifest", "audio_timeline"})
         m = self.manifest(jid)
         self.assertEqual((m["engine"], m["language"], m["totals"]["segments"]), ("fake", "vi", 6))
         self.assertEqual({r["source"] for r in m["segments"]}, {"synth"})

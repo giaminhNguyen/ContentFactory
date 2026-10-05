@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ from .normalize import normalize_text
 from .planner import RuleSegmentPlanner, SegmentPlanner, validate_plan
 from .schema import cache_identity, normalize_capabilities, resolve, segment_key, stable_hash
 
+_TERMINAL = re.compile(r"[.!?…][\"”’)\]]*\s*$")
 MAX_INNER_RETRY_AFTER_S = 30.0       # Retry-After lớn hơn: không ngủ trong stage, trả lỗi cho chính sách retry/hold của job
 
 
@@ -183,7 +185,13 @@ class TTSManager:
             ctx.log("tts_chunk_done", index=idx, total=len(segments), source=row["source"])
             ctx.progress(len(chunks), len(segments), "segments")
         master = ctx.workspace / "audio" / "master.wav"
-        atomic_write(master, lambda tmp: self.audio.assemble(chunks, [s["pause_after_ms"] for s in segments], tmp, ctx))
+        joined: dict = {}
+
+        def build(tmp: Path) -> None:
+            joined.update(self.audio.assemble(chunks, [s["pause_after_ms"] for s in segments], tmp, ctx) or {})
+        atomic_write(master, build)
+        timeline = self._timeline(segments, rows, joined, flat)
+        tl_file = atomic_write_json(ctx.workspace / "audio" / "timeline.json", timeline)
         qa = self.audio.qa(master)
         if not qa["ok"]:
             raise StageError(ErrorClass.TRANSIENT, "MASTER_QA_FAILED", ",".join(qa["issues"]))
@@ -197,10 +205,38 @@ class TTSManager:
                                "duration_sec": qa["duration_sec"]}}
         mf = atomic_write_json(ctx.stage_dir / "tts_manifest.json", manifest)
         return StageResult(
-            [ctx.draft(master, "audio_master", duration_sec=qa["duration_sec"]), ctx.draft(mf, "tts_manifest")],
+            [ctx.draft(master, "audio_master", duration_sec=qa["duration_sec"]), ctx.draft(mf, "tts_manifest"),
+             ctx.draft(tl_file, "audio_timeline", segments=len(timeline["segments"]))],
             {"segments": len(rows), "reused_chunks": n_local + n_cache, "cache_hits": n_cache, "synthesized": n_synth,
              "segment_retries": n_retry, "duration_sec": qa["duration_sec"], "engine": flat["engine"],
              "planner": plan_report["used"]})
+
+    # -- timeline ranh giới (cho cắt part TikTok ở Phase 4) -------------------------------------------
+    @staticmethod
+    def _timeline(segments: list[Segment], rows: list[dict], joined: dict, flat: dict) -> dict:
+        """Mỗi segment: thời điểm trong narration, điểm cắt (giữa khoảng nghỉ) và LOẠI ranh giới sau nó:
+        paragraph (pause cấp đoạn) > sentence (segment kết thúc bằng dấu câu) > cut (cắt giữa câu, tránh dùng làm điểm chia part)."""
+        pm = flat["pause_ms"]
+        tl = joined.get("timeline")
+        if not tl:                                          # processor không cung cấp: tự tính từ độ dài chunk + pause
+            tl, t = [], 0.0
+            for r, s in zip(rows, segments):
+                end = t + float(r["duration_sec"])
+                gap = s["pause_after_ms"] / 1000
+                tl.append({"index": s["index"], "start_sec": round(t, 4), "end_sec": round(end, 4), "gap_after_sec": gap,
+                           "cut_sec": round(end + gap / 2, 4)})
+                t = end + gap
+        out = []
+        for i, (e, s) in enumerate(zip(tl, segments)):
+            p = s["pause_after_ms"]
+            if i == len(segments) - 1:
+                kind = "end"
+            elif pm["paragraph"] > 0 and p >= pm["paragraph"]:
+                kind = "paragraph"
+            else:
+                kind = "sentence" if _TERMINAL.search(s["text"]) else "cut"
+            out.append({**e, "index": s["index"], "kind": kind, "chars": len(s["text"])})
+        return {"schema": 1, "duration_sec": joined.get("duration_sec"), "segments": out}
 
     # -- cache ----------------------------------------------------------------------------------------
     @staticmethod

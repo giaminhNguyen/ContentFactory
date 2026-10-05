@@ -364,7 +364,7 @@ class Orchestrator:
         contract = StageContract(stage)
         try:
             jd = ensure_job_dirs(self.cfg.path("workspace"), job_id)
-            inputs = self.store.inputs(job_id, stage.requires)
+            inputs = self.store.inputs(job_id, stage.requires + stage.optional)
             ready, _missing = contract.can_run({k for k, v in inputs.items() if v})
             key = contract.stage_key(claim.params, claim.snapshot, inputs) if ready else None
             if key:

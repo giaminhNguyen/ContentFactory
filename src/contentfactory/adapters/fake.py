@@ -145,10 +145,27 @@ class FakeAudio:
             return {"ok": False, "duration_sec": 0.0, "issues": ["UNDECODABLE"]}
         return {"ok": dur > 0, "duration_sec": round(dur, 3), "issues": [] if dur > 0 else ["ZERO_DURATION"]}
 
+    def qa_full(self, audio: Path, expect: dict, ctx: StageContext) -> dict:
+        q = self.qa(audio)
+        return {"ok": q["ok"], "errors": [{"code": c, "message": c} for c in q["issues"]], "warnings": [], "kind": expect.get("kind"),
+                "measures": {"duration_sec": q["duration_sec"]}}
+
     def assemble(self, chunks, pauses_ms, out: Path, ctx: StageContext) -> dict:
-        data = b"".join(_read_frames(c) + _silence(p / 1000) for c, p in zip(chunks, pauses_ms))
+        data, timeline, t = b"", [], 0.0
+        for i, (c, p) in enumerate(zip(chunks, pauses_ms), 1):
+            fr = _read_frames(c)
+            d = len(fr) / 2 / RATE
+            timeline.append({"index": i, "start_sec": round(t, 4), "end_sec": round(t + d, 4), "gap_after_sec": p / 1000,
+                             "cut_sec": round(t + d + p / 2000, 4)})
+            data += fr + _silence(p / 1000)
+            t += d + p / 1000
         _write_wav(out, data)
-        return {"duration_sec": len(data) / 2 / RATE}
+        return {"duration_sec": len(data) / 2 / RATE, "timeline": timeline}
+
+    def master(self, src: Path, out: Path, ctx: StageContext) -> dict:
+        data = _read_frames(src)
+        atomic_write(out, lambda tmp: _write_wav(tmp, data))
+        return {"duration_sec": round(len(data) / 2 / RATE, 3), "fake": True}
 
     def build_youtube_audio(self, master: Path, watermark: Path | None, out: Path, ctx: StageContext) -> dict:
         data = (_read_frames(watermark) if watermark else b"") + _read_frames(master)
@@ -156,8 +173,8 @@ class FakeAudio:
         return {"duration_sec": round(len(data) / 2 / RATE, 3), "watermark": bool(watermark)}
 
     def build_tiktok_parts(self, master: Path, speed: float, target_part_sec: float, out_dir: Path,
-                           ctx: StageContext) -> list[Path]:
-        # Fake: KHÔNG đổi tốc độ thật, chỉ chia theo độ dài nguồn tương ứng target*speed (ffmpeg atempo ở Phase 5).
+                           ctx: StageContext, timeline=None) -> dict:
+        # Fake: KHÔNG đổi tốc độ thật, chỉ chia theo độ dài nguồn tương ứng target*speed (xử lý thật: audio.processor.FfmpegAudio).
         data = _read_frames(master)
         step = max(2, int(RATE * target_part_sec * speed) * 2)
         step -= step % 2
@@ -165,8 +182,10 @@ class FakeAudio:
         for i, off in enumerate(range(0, len(data), step), 1):
             p = out_dir / f"part_{i:02d}.wav"
             atomic_write(p, lambda tmp, o=off: _write_wav(tmp, data[o:o + step]))
-            parts.append(p)
-        return parts
+            d = len(data[off:off + step]) / 2 / RATE
+            parts.append({"path": p, "index": i, "start_sec": round(off / 2 / RATE, 3), "end_sec": round(off / 2 / RATE + d, 3),
+                          "duration_sec": round(d, 3), "boundary": "fake", "forced": False, "mid_sentence": False})
+        return {"parts": parts, "warnings": [], "stretch": {"engine": "fake"}, "split": {"boundaries": "fake"}}
 
     def health(self) -> dict:
         return HEALTH

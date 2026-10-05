@@ -229,11 +229,16 @@ class AudioQAReport(TypedDict):
 
 
 class AudioProcessor(Protocol):
-    def qa(self, audio: Path) -> AudioQAReport: ...
+    """Xử lý audio tất định, độc lập engine TTS (MODULE_CONTRACTS §4). Profile (mastering, pause, split...) đọc từ ctx.params."""
+    def qa(self, audio: Path) -> AudioQAReport: ...                          # kiểm nhanh: đọc được, dài > 0
+    def qa_full(self, audio: Path, expect: dict, ctx: StageContext) -> dict: ...   # {ok, errors[{code,message}], warnings, measures}
+    # chunk -> narration thô; trả {"duration_sec", "timeline": [{index, start_sec, end_sec, gap_after_sec, cut_sec}]}
     def assemble(self, chunks: list[Path], pauses_ms: list[int], out: Path, ctx: StageContext) -> dict: ...
+    def master(self, src: Path, out: Path, ctx: StageContext) -> dict: ...         # narration thô -> Narration Master
     def build_youtube_audio(self, master: Path, watermark: Path | None, out: Path, ctx: StageContext) -> dict: ...
-    def build_tiktok_parts(self, master: Path, speed: float, target_part_sec: float,
-                           out_dir: Path, ctx: StageContext) -> list[Path]: ...
+    # trả {"parts": [{path, index, start_sec, end_sec, duration_sec, boundary, forced, mid_sentence, ...}], "stretch": {...}, "split": {...}, "warnings": [...]}
+    def build_tiktok_parts(self, master: Path, speed: float, target_part_sec: float, out_dir: Path, ctx: StageContext,
+                           timeline: dict | list | None = None) -> dict: ...
     def health(self) -> dict: ...
 
 

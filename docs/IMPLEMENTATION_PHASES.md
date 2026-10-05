@@ -59,10 +59,14 @@ Không bắt đầu TTS (Phase 3).
 **Ràng buộc giữ nguyên:** không phụ thuộc publishing metadata ngoài identifier (`project.id`, `language`) (D-48).
 Không bắt đầu Audio (Phase 4).
 
-## Phase 4 — Audio
+## Phase 4 — Audio Quality Pipeline ✅ (đã xong; chưa kiểm chứng với giọng TTS thật)
 
-**Làm:** `AudioProcessor.build_youtube_audio` (watermark là channel asset), `build_tiktok_parts` (tăng tốc, cắt part theo config), Audio QA cho các bản phân phối.
-**Xong khi:** từ `master.wav` ra audio YouTube (có watermark) và N part TikTok đúng thời lượng cấu hình; đổi watermark chỉ build lại nhánh YouTube; không phụ thuộc publishing metadata (D-48).
+**Đã làm:** chuẩn hóa kỹ thuật + dọn biên (cắt im lặng tới mép tín hiệu, fade vi mô, biên chuẩn) + Pause Engine theo profile + ghép lossless → narration thô và `audio_timeline`; Narration Master (highpass?/compressor?/loudnorm 2 lượt linear/limiter, mọi tham số bằng profile); bản YouTube (watermark khớp độ to + gap, phần truyện ghép nguyên từng mẫu); TikTok (rubberband ×speed giữ cao độ, split thông minh theo timeline hoặc khoảng lặng, cửa sổ dao động, part cuối ngắn hơn được, không part vụn); Audio QA (corrupt, empty, clipping, im lặng quá mức, thiếu chunk, sai định dạng, độ dài bất thường, loudness, true peak); `audio_report`. Xem `DECISIONS.md` D-64…D-69, `MODULE_CONTRACTS.md` §4.
+**Kiểm chứng:** +68 test (`tests/test_audio.py`; tổng 266): nối 12 chunk không click (đo bước nhảy giữa các mẫu; đối chứng nối thô thì click), pause nghe được đúng giá trị profile, loudness đạt −16/−20 LUFS và true peak dưới trần, limiter chặn clipping, compressor giảm chênh lệch mức, định dạng nội bộ 48 kHz mono 24-bit, **×2 giữ cao độ** (Goertzel: 440 Hz ⇒ ~440 Hz; đối chứng resample thô ⇒ ~880 Hz), split chọn ranh giới và cắt trong khoảng lặng ở ranh giới đoạn, tránh cắt giữa câu khi có ranh giới gần, QA bắt audio lỗi giả lập (hỏng, cụt, rỗng, clipping, im lặng, sai định dạng, sai độ dài), đổi watermark không TTS lại (stage_key, from_job và cache trong stage), pipeline đầy đủ với ffmpeg thật, thiếu ffmpeg ⇒ job bị giữ; kiểm đột biến cho cao độ, split, dọn biên và QA clipping. Phần thuần chạy mọi nơi; phần ffmpeg bỏ qua nếu máy không có ffmpeg.
+**Sửa trên đường:** `module wave` không đọc được WAV 24-bit/float của ffmpeg và nhiều engine TTS (validator và QA chunk TTS từng coi là hỏng) ⇒ `fsutil.wav_header`.
+**Chưa kiểm chứng / chưa làm:** giọng TTS thật và nghe thử (ngưỡng và mặc định là khởi điểm), de-esser/EQ/denoise, ducking, crossfade, cache trung gian dùng chung giữa job, ranh giới `scene` (D-67, D-69). Mặc định `adapters.audio` vẫn là `fake`.
+**Ràng buộc giữ nguyên:** không phụ thuộc publishing metadata (D-48).
+Không bắt đầu Render (Phase 5).
 
 ## Phase 5 — Render
 

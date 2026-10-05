@@ -41,7 +41,7 @@ class ResumeTest(RootCase):
         jid = self.orc().submit(params(fake={"tts_chunk_3": {"sleep_s": 60, "attempt": 1}}))
         chunks = self.job_dir(jid) / "tts" / "chunks"
         self.kill_when(jid, lambda s, j: s.get_job(j)["state"] == P.TTS_RUNNING and
-                       (chunks / "000002.wav").exists(), "chunk 2 done")
+                       (chunks / "000002.json").exists(), "chunk 2 done")   # sidecar ghi SAU file wav: mới là dấu hiệu chunk hoàn tất
 
         orc = self.orc()
         orc.run()

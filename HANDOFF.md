@@ -722,6 +722,8 @@ Nhưng các mục này **không phải điều kiện để bắt đầu tích h
 
 ## 9. Master Audio và distribution audio
 
+> **Trạng thái:** **đã triển khai ở Phase 4** (`docs/MODULE_CONTRACTS.md` §4, `docs/DECISIONS.md` D-64…D-69). Chi tiết: `audio_master` = narration thô từ TTS (chuẩn hóa kỹ thuật, dọn biên, pause); **Narration Master** (`narration_master`, đã chỉnh loudness/limiter) do stage `audio` tạo; từ đó mới sinh YouTube/TikTok. Chưa kiểm chứng với giọng TTS thật.
+
 TTS chỉ sinh nội dung truyện một lần.
 
 ```text
@@ -739,6 +741,8 @@ Từ master mới sinh các phiên bản platform.
 ---
 
 ## 10. YouTube Audio
+
+> **Trạng thái:** **đã triển khai ở Phase 4** (D-66): đổi watermark chỉ chạy lại stage `audio`, trong stage chỉ làm lại bản YouTube; phần truyện ghép nguyên từng mẫu.
 
 Watermark là channel asset riêng, không thuộc story.
 
@@ -770,6 +774,8 @@ Watermark phải dễ thay theo channel.
 ---
 
 ## 11. TikTok Audio và Video
+
+> **Trạng thái:** phần **audio** đã triển khai ở Phase 4 (D-67): tăng tốc giữ cao độ (rubberband), split thông minh ~`target_part_sec`, part cuối ngắn hơn được. Phần **video** TikTok thuộc Phase 5.
 
 TikTok cũng phải output thành **video**, không chỉ audio.
 

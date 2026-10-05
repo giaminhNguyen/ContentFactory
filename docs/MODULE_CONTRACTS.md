@@ -217,27 +217,26 @@ story.txt -> normalize_text -> Planner(rule|ai) -> validate_plan -> segments.jso
 - `tts.analyzer.analyze(root, engine, ai_infer) -> {engine, capabilities, profile(annotated candidate), adapter{kind, ready, spec|code, config}, needs_user, candidates, files}`; `fetch_reference`, `write_onboarding(result, out_dir)`; CLI `scripts/tts_onboard.py`. Không chạy mã của repo. Chi tiết và giới hạn: D-61.
 - `tts.autotune.AutoTuner(adapter, language, profile).run() -> TuneReport`, `apply_to_profile(profile, report)`; CLI `scripts/tts_tune.py`. Chỉ chạy khi người dùng yêu cầu. D-62.
 
-## 4. AudioProcessor
+## 4. AudioProcessor (đã triển khai ở Phase 4)
 
-**Trách nhiệm:** mọi thao tác audio tất định bằng ffmpeg: ghép chunk → master, tạo bản YouTube (watermark), bản TikTok (tăng tốc, cắt part). **Mới (A11, A12); ContentFlow không có các thao tác này.**
+**Trách nhiệm:** mọi thao tác audio tất định, **độc lập engine TTS**: ghép chunk (chuẩn hóa kỹ thuật + dọn biên + Pause Engine) → Narration Master (loudness/compressor/limiter) → bản YouTube (watermark) và các part TikTok (tăng tốc giữ cao độ, split thông minh) + QA. Quyết định: `DECISIONS.md` D-64…D-69. Mã: `audio/` (`profile`, `pause`, `split`, `qa`, `wavio`, `ffmpeg`, `processor`, `stage`).
 
 ```python
-class AudioQAReport(TypedDict):
-    ok: bool; duration_sec: float; silent_ratio: float; issues: list[str]
-
 class AudioProcessor(Protocol):
-    def qa(self, audio: ArtifactRef) -> AudioQAReport: ...                       # HANDOFF §6.8
-    def assemble(self, chunks: list[ChunkResult], pauses_ms: list[int], ctx) -> ArtifactRef: ...   # -> audio/master.wav
-    def build_youtube_audio(self, master: ArtifactRef, watermark: ArtifactRef | None, ctx) -> ArtifactRef: ...
-    def build_tiktok_parts(self, master: ArtifactRef, speed: float, target_part_sec: int,
-                           ctx) -> list[ArtifactRef]: ...                         # audio/tiktok/part_01.wav ...
-    def health(self) -> HealthReport: ...                                        # ffmpeg/ffprobe
+    def qa(self, audio: Path) -> AudioQAReport: ...                                   # nhanh: đọc được, dài > 0
+    def qa_full(self, audio: Path, expect: dict, ctx) -> dict: ...                    # {ok, errors[{code,message}], warnings, kind, measures}
+    def assemble(self, chunks, pauses_ms, out, ctx) -> dict: ...                      # {duration_sec, timeline[{index,start_sec,end_sec,gap_after_sec,cut_sec}]}
+    def master(self, src, out, ctx) -> dict: ...                                       # narration thô -> Narration Master
+    def build_youtube_audio(self, master, watermark | None, out, ctx) -> dict: ...
+    def build_tiktok_parts(self, master, speed, target_part_sec, out_dir, ctx, timeline=None) -> dict:
+        # {"parts": [{path, index, start_sec, end_sec, duration_sec, boundary, forced, mid_sentence}], "stretch": {...}, "split": {...}, "warnings": [...]}
+    def health(self) -> dict: ...
 ```
-
-- **Quy tắc:** `speed`, `target_part_sec` (mặc định 2.0 và 600) **đến từ config**, không hardcode (HANDOFF §11). Cắt part tại điểm im lặng gần ranh giới mục tiêu; part cuối có thể ngắn hơn; không tạo part < `min_last_part_sec` (cấu hình) mà gộp vào part trước.
-- **Watermark** nằm ở `channels/<channel>/watermark.wav`; đổi watermark chỉ làm lại `build_youtube_audio` trở xuống (HANDOFF §10).
-- **Lỗi:** thiếu ffmpeg → `RESOURCE`; file hỏng → `POLICY`; đầy đĩa → `RESOURCE`.
-- **Triển khai:** wrapper ffmpeg/ffprobe của orchestrator (ffmpeg đã là điều kiện của ContentFlow nên không thêm phụ thuộc mới).
+- **Cài đặt:** `FfmpegAudio` (`adapters.audio = "ffmpeg"`; `tools.ffmpeg`/`tools.ffprobe` ở config máy, mặc định tìm trên PATH). `FakeAudio` (Phase 1) thực hiện cùng hợp đồng mà không xử lý thật.
+- **Profile** (`audio/profile.py`; `params.audio` ghi đè): `format {sample_rate, channels, sample_fmt}` (mặc định 48000/1/s24le, nội bộ lossless), `join {edge{threshold_db, keep_ms, fade_ms, highpass_hz}, pause{scale, min_ms, max_ms, compensate_edge, tail_ms}}`, `master {highpass_hz, compressor{enabled=false, ...}, loudness{enabled, target_lufs=-16, true_peak_db=-1.5, lra=11}, limiter{enabled, ceiling_db=-1, attack_ms, release_ms}}`, `youtube.watermark {position start|end|both, gap_ms, offset_db, fade_ms, trim}`, `tiktok {stretch{engine rubberband|atempo, options}, split{min_ratio, max_ratio, min_last_ratio, fade_ms, bonus_sec{...}, silence{...}}, loudness, limiter}`, `qa {...ngưỡng}`; thêm `params.tiktok {speed=2.0, target_part_sec=600}` và `params.watermark`.
+- **Stage `audio`:** `requires audio_master`, `optional audio_timeline` (`Stage.optional`: nạp vào `ctx.inputs` nếu có, không ảnh hưởng planner), `produces narration_master, audio_youtube, audio_tiktok (nhiều part, meta index/duration/boundary/forced/mid_sentence), audio_report`. Stage `tts` sinh thêm `audio_timeline` (§3.4). `audio_report` là JSON (profile, đo đạc, QA từng bản, ranh giới split, cảnh báo).
+- **Quy tắc:** `speed`, `target_part_sec` đến từ profile/config; split ưu tiên ranh giới câu/đoạn, cho phép dao động (D-67). **Watermark** là asset của channel; đổi watermark chỉ chạy lại stage `audio` (và trong stage chỉ làm lại nhánh YouTube) (D-66).
+- **Lỗi:** thiếu ffmpeg/ffprobe → `RESOURCE` (`FFMPEG_MISSING`, job giữ `PAUSED_RESOURCE`); đầy đĩa → `RESOURCE disk`; file hỏng/không decode được → `POLICY` (`AUDIO_DECODE_FAILED`, `AUDIO_UNREADABLE`); thiếu chunk/chunk rỗng → `POLICY` (`MISSING_CHUNKS`, `CHUNK_EMPTY`); audio im lặng/rỗng → `POLICY` (`AUDIO_SILENT`, `WATERMARK_SILENT`); QA không đạt → `POLICY AUDIO_QA_FAILED`; ffmpeg lỗi không rõ → `TRANSIENT`.
 
 ## 5. RenderAdapter
 
@@ -391,8 +390,8 @@ Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `
 |---|---|---|---|
 | source | NEW → SOURCE_PROCESSING → SOURCE_READY | SourceAdapter + Transcript Processor | — → subtitle_raw, transcript_structured, transcript, metadata |
 | story | SOURCE_READY → STORY_RUNNING → STORY_READY | StoryAdapter + Story Assembler + validator bất biến | transcript, metadata → story_text, story_report |
-| tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTS Manager + TTSAdapter + AudioProcessor + SegmentPlanner | story_text → audio_master, tts_manifest |
-| audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master → audio_youtube, audio_tiktok |
+| tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTS Manager + TTSAdapter + AudioProcessor + SegmentPlanner | story_text → audio_master, tts_manifest, audio_timeline |
+| audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master (+ audio_timeline tùy chọn) → narration_master, audio_youtube, audio_tiktok, audio_report |
 | render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | RenderAdapter (GPU) | audio_youtube, metadata → video_youtube, thumbnail |
 | render_tiktok | TIKTOK_RENDER_READY → TIKTOK_RENDERING → OUTPUT_READY | RenderAdapter (GPU) | audio_tiktok → video_tiktok |
 | output | OUTPUT_READY → OUTPUT_PUBLISHING* → UPLOAD_READY | OutputPublisher | story_text, metadata, video_*, thumbnail → output_package |
@@ -410,7 +409,7 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 |---|---|---|---|
 | Kiểu dữ liệu adapter | `ArtifactRef` vào/ra | `Path` vào/ra; handler trả `ArtifactDraft`; orchestrator niêm phong | Adapter không phải hash/ghi DB; sha256 tính đúng một lần tại checkpoint |
 | `TTSAdapter.synthesize` | trả `ChunkResult{audio: ArtifactRef}` | nhận `out_path`, trả `{index, duration_sec}` | TTS Manager (handler) kiểm soát tên chunk và resume |
-| `AudioProcessor` | theo `ArtifactRef` | theo `Path`; `qa()` trả `AudioQAReport` | như trên |
+| `AudioProcessor` | theo `ArtifactRef` | theo `Path`; `qa()` trả `AudioQAReport` | như trên. Phase 4 mở rộng: `qa_full`, `master`, `build_tiktok_parts` trả dict (part + stretch + split + cảnh báo), `assemble` trả timeline (§4) |
 | `StoryAdapter.generate` | `(SourceBundle, profile, ctx)` | `(SourceBundle{title,language,transcript:Path}, profile, out_dir, ctx)` | adapter biết chỗ ghi |
 | `OutputPublisher.publish` | `(job, manifest, cfg)` | `(OutputRequest, ctx)` với đường dẫn artifact | Module không đọc DB/manifest, chỉ nhận artifact |
 | `RenderAdapter` | có `sync_source`, `status` | chỉ `render_video`, `render_thumbnail`, `health` | Source Sync và reconcile thuộc Phase 5 |
@@ -490,7 +489,8 @@ class Stage:                         # mở rộng bảng ở §9
 | Kind | Validator |
 |---|---|
 | `story_text` | `story.validate.validate_story_text` (không heading/marker/rỗng/lặp) |
-| `audio_master`, `audio_youtube`, `audio_tiktok` | `AudioProcessor.qa` (đọc được, duration > 0, không im lặng bất thường); validator WAV của `orchestrator/validation.py` |
+| `audio_master`, `narration_master`, `audio_youtube`, `audio_tiktok` | validator WAV của `orchestrator/validation.py` (đọc header cả WAVE_FORMAT_EXTENSIBLE, frames > 0); QA đầy đủ bằng `AudioProcessor.qa_full` trong stage |
+| `audio_timeline`, `audio_report` | JSON hợp lệ |
 | `tts_manifest` | JSON hợp lệ (schema §3.4) |
 | `video_youtube`, `video_tiktok`, `thumbnail` | tồn tại, đọc được, kích thước hợp lệ |
 | `transcript`, `transcript_structured`, `subtitle_raw`, `metadata` | khớp sha256 + provenance (`raw_sha256`, `parser_version`, `config_hash`) |

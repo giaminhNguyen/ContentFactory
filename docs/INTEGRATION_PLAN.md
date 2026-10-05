@@ -41,7 +41,7 @@
 | Thumbnail | worker `type=thumbnail` | Không (cần bổ sung asset ngoài repo, R5) |
 | Source Sync | shim trong orchestrator gọi `source_sync.sync_videos(SyncOptions)` bằng Python của ContentFlow; sau đó đọc `_synced/` và `source_profile.json` | Không |
 | Profile YouTube/TikTok | frame PNG + `config_overrides` (`video_generator.viewport`, `frame_layouts`) truyền qua `params.config`; lưu ở `config/render_profiles/` của orchestrator | Không |
-| Speed ×2, split part, watermark | AudioProcessor (ffmpeg) trước khi gọi worker | Không |
+| Speed ×2, split part, watermark | AudioProcessor (ffmpeg) trước khi gọi worker — **đã làm ở Phase 4** | Không |
 | Reconcile sau crash | `media_worker status --output-dir D --key K` + `idempotency_key` | Không |
 | Health | `media_worker health` | Không |
 

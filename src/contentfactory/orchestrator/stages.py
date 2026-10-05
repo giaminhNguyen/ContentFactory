@@ -20,6 +20,14 @@ from ..jobs.db import JobStore
 from .validation import validate_kind
 
 
+def _dig(d: dict, dotted: str):
+    """params_deps cho phép đường dẫn có dấu chấm (vd "audio.join") để stage chỉ phụ thuộc đúng phần của mình."""
+    cur = d
+    for part in dotted.split("."):
+        cur = cur.get(part) if isinstance(cur, dict) else None
+    return cur
+
+
 class StageContract:
     def __init__(self, stage: P.Stage) -> None:
         self.stage = stage
@@ -69,7 +77,7 @@ class StageContract:
     # -- stage_key --------------------------------------------------------------------------
     def stage_key(self, params: dict, snapshot: dict | None, inputs: dict[str, list[ArtifactRef]]) -> str:
         st = self.stage
-        picked = params if st.params_deps is None else {k: params.get(k) for k in st.params_deps}
+        picked = params if st.params_deps is None else {k: _dig(params, k) for k in st.params_deps}
         sem = (snapshot or {}).get("semantic", {})
         cfg = {k: sem.get(k) for k in st.config_deps}
         cfg["adapters"] = {a: (sem.get("adapters") or {}).get(a) for a in st.adapters}

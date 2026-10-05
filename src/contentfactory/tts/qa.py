@@ -9,6 +9,8 @@ import sys
 import wave
 from pathlib import Path
 
+from ..fsutil import wav_header
+
 SILENT_AMPLITUDE = 64          # |mẫu| < 64/32768 coi là im lặng (~ -54 dBFS)
 
 
@@ -18,7 +20,13 @@ def wav_stats(path: Path) -> dict | None:
             n, rate, width, ch = w.getnframes(), w.getframerate(), w.getsampwidth(), w.getnchannels()
             frames = w.readframes(n)
     except (wave.Error, EOFError):
-        return {"decodable": False, "duration_sec": 0.0, "silence_ratio": 1.0, "sample_rate": 0, "channels": 0}
+        try:                                       # WAVE_FORMAT_EXTENSIBLE / float: module wave không đọc được nhưng file vẫn hợp lệ
+            h = wav_header(path)
+            ok = h["frames"] > 0 and h["format_tag"] in (1, 3)
+            return {"decodable": ok, "duration_sec": h["duration"], "silence_ratio": 0.0 if ok else 1.0,
+                    "sample_rate": h["rate"], "channels": h["channels"]}
+        except (ValueError, OSError):
+            return {"decodable": False, "duration_sec": 0.0, "silence_ratio": 1.0, "sample_rate": 0, "channels": 0}
     except OSError:
         return None
     if width != 2 or not n:
