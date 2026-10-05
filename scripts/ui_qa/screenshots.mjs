@@ -1,0 +1,51 @@
+// Chụp ảnh màn hình cho README từ giao diện mẫu: node scripts/ui_qa/screenshots.mjs <base-url> <fixture.json> <out-dir>
+import { chromium } from "playwright-core";
+import fs from "node:fs";
+import path from "node:path";
+const [base, fxFile, out] = [process.argv[2].replace(/\/$/, ""), process.argv[3], process.argv[4]];
+const fx = JSON.parse(fs.readFileSync(fxFile, "utf8"));
+const CHROME = ["C:/Program Files/Google/Chrome/Application/chrome.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"].find((p) => fs.existsSync(p));
+const b = await chromium.launch({ executablePath: CHROME, headless: true });
+async function page(scheme = "light", w = 1440, h = 900) {
+  const ctx = await b.newContext({ viewport: { width: w, height: h }, colorScheme: scheme, deviceScaleFactor: 1, reducedMotion: "reduce" });
+  return ctx.newPage();
+}
+const snap = async (p, name) => { await p.waitForTimeout(600); await p.screenshot({ path: path.join(out, name + ".png") }); console.log("saved", name); };
+const go = async (p, hash) => { await p.goto(base + "/#" + hash); await p.waitForSelector("#page-title"); await p.waitForTimeout(700); };
+
+let p = await page("light", 1440, 1320);
+await go(p, "/");
+await p.fill("#run-input", fx.youtube);
+await p.waitForSelector(".plan .step");
+await p.fill("input[placeholder^='Không bắt buộc']", "Ngôi nhà cuối ngõ");
+await p.selectOption("select >> nth=0", "kenh_a").catch(() => {});
+await p.waitForTimeout(900);
+await snap(p, "run");
+await p.context().close();
+p = await page();
+await go(p, "/jobs");
+await p.waitForSelector(".job");
+await snap(p, "jobs");
+const done = await p.locator(".job:has-text('đã hoàn tất') a").first().getAttribute("href");
+await p.goto(base + "/" + done); await p.waitForSelector(".stage-row"); await p.waitForTimeout(600);
+await snap(p, "job-completed");
+await go(p, "/jobs?status=waiting");
+await p.locator(".job a:has-text('chờ mạng')").click();
+await p.waitForSelector(".alert[data-tone=wait]");
+await snap(p, "job-waiting");
+await go(p, "/channels/kenh_a");
+await p.waitForSelector(".form-section");
+await snap(p, "channel");
+await go(p, "/settings");
+await p.waitForSelector(".health-group", { timeout: 60000 });
+await snap(p, "doctor");
+await p.context().close();
+p = await page("dark");
+await go(p, "/jobs");
+await p.waitForSelector(".job");
+await snap(p, "jobs-dark");
+await p.context().close();
+p = await page("light", 390, 844);
+await go(p, "/");
+await snap(p, "run-mobile");
+await b.close();
