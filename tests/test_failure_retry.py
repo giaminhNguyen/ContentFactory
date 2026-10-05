@@ -22,7 +22,7 @@ class FailureRetryTest(RootCase):
         self.assertEqual((j["state"], j["failed_stage"], j["last_error"]["code"]), (P.FAILED, "story", "BAD_SOURCE"))
         self.assertEqual(self.runs(orc, jid), {"source": ["succeeded"], "story": ["failed"]})   # POLICY: không auto-retry
         before = fingerprint(self.job_dir(jid), orc.store, jid)
-        self.assertEqual({a["kind"] for a in orc.store.artifacts(jid)}, {"transcript", "metadata"})
+        self.assertEqual({a["kind"] for a in orc.store.artifacts(jid)}, {"subtitle_raw", "transcript_structured", "transcript", "metadata"})
         m = json.loads((self.job_dir(jid) / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual((m["state"], m["failed_stage"]), (P.FAILED, "story"))
 
@@ -73,13 +73,15 @@ class FailureRetryTest(RootCase):
         self.assertEqual((j["state"], j["last_error"]["code"]), (P.FAILED, "UNEXPECTED"))
         self.assertEqual(self.runs(orc, jid)["story"], ["failed"])
 
-    def test_story_that_breaks_the_no_chapter_header_rule_is_rejected(self):
+    def test_validator_is_the_last_line_of_defence_against_chapter_headers(self):
+        """Assembler chỉ gỡ dòng heading thật; câu văn mở đầu bằng "Chương 2 ..." thì validator phải chặn."""
         orc = self.orc()
         real = orc.adapters["story"].generate
 
         def bad(bundle, profile, out_dir, ctx):
             r = real(bundle, profile, out_dir, ctx)
-            r["story"].write_text("Chương 1\n\n" + r["story"].read_text(encoding="utf-8"), encoding="utf-8")
+            last = r["sections"][-1]
+            last.write_text(last.read_text(encoding="utf-8") + "\nChương 2 đã kết thúc trong im lặng.\n", encoding="utf-8")
             return r
 
         orc.adapters["story"].generate = bad
@@ -88,6 +90,7 @@ class FailureRetryTest(RootCase):
         j = orc.store.get_job(jid)
         self.assertEqual((j["state"], j["last_error"]["code"]), (P.FAILED, "STORY_INVALID"))
         self.assertNotIn("story_text", {a["kind"] for a in orc.store.artifacts(jid)})
+        self.assertFalse((self.job_dir(jid) / "story" / "story.txt").exists())
 
     def test_publish_requires_explicit_made_for_kids_but_output_is_already_delivered(self):
         orc = self.orc()

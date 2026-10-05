@@ -27,8 +27,8 @@
   └─────────┬──────────────┬───────────────────┬─────────────────────────────────┘
             │              │                   │
    claude -p / LLM     python -m media_worker   HTTP 127.0.0.1:8973
-   (oh-story hoặc      + source_sync shim       yt-uploader serve --headless
-    DirectLLM)         (ContentFlow)            (yt_uploader)
+   (oh-story,      + source_sync shim       yt-uploader serve --headless
+    story-branch)         (ContentFlow)            (yt_uploader)
 ```
 
 ## 3. Kế hoạch tích hợp theo module
@@ -58,17 +58,20 @@ Việc phải làm nhưng nằm ngoài code ContentFlow:
 - Map `channel` trong `channels/<name>/channel.yaml` → `account_id` của yt_uploader (không có chọn kênh thật, A14).
 - Retry job `failed` do orchestrator quyết định theo `error_class` (R4).
 
-### 3.3 oh-story-claudecode → StoryAdapter (**khoảng cách lớn nhất**)
+### 3.3 oh-story-claudecode → StoryAdapter (đã làm ở Phase 2: `StoryBranchAdapter`, chưa kiểm chứng với LLM thật)
 
-Thực tế (A1–A7): không có Story module tự động. Ba hướng đã cân nhắc; **đã chốt S2** (DECISIONS D-03, với ngôn ngữ đích `vi` theo D-04):
+Thực tế (A1–A7): oh-story không phải module tự động; story-branch chỉ chuẩn bị tư liệu. Theo chỉ dẫn Phase 2, adapter **không sửa oh-story** mà điều khiển nó từ ngoài:
 
-| Hướng | Mô tả | Ưu | Nhược |
-|---|---|---|---|
-| **S1. `OhStoryCliAdapter`** | Mỗi job một workspace riêng, deploy `/story-setup`, điều khiển `story-long-write` bằng `claude -p`, tự trả lời cổng xác nhận (theo mẫu `scripts/bench/run.py`), poll `追踪/`, Assembler gộp `正文/*.md` | Tái dùng toàn bộ phương pháp + continuity có sẵn | **Tiếng Trung only**; không có headless chính thức; mong manh theo prompt; đắt (35K char doc budget mỗi lượt, 3 chương/lượt); `story-branch` không phải nguồn sinh |
-| **S2. `DirectLLMStoryAdapter`** | Orchestrator tự gọi LLM theo section, giữ state continuity riêng, tham khảo skill làm tài liệu | Kiểm soát ngôn ngữ, định dạng đầu ra, headless thật | Phải xây continuity/blueprint; không tái dùng được code cũ |
-| **S3. Hybrid** | S2 ở giai đoạn đầu; S1 cho thể loại/ngôn ngữ phù hợp sau | Giảm rủi ro | Hai đường code |
+| Việc | Cách |
+|---|---|
+| Triển khai skill | `scripts/bench/deploy.py` của chính oh-story → workspace riêng của job (`story/oh-story/`) |
+| Nguồn | transcript sạch → `拆文库/<nguồn>/原文.md` (tác phẩm gốc cho story-branch) |
+| Điều khiển | `claude -p` stream-json (`ClaudeCliRunner`): `story-branch analyze → explore → create → handoff → story-long-write 开书 → 写第a-b章`; trả lời cổng xác nhận bằng câu cố định; poll `追踪/_tracking-state.json` |
+| Đầu ra | các file `正文/第NNN章*.md` làm section; **Story Assembler** (ở stage, không phải ở oh-story) dựng `story.txt` liền mạch |
+| Resume | điều kiện xong của từng bước kiểm bằng file trên đĩa; chạy lại bỏ qua bước đã xong |
+| An toàn | `acceptEdits` + allowlist, không nạp cấu hình người dùng, transcript chỉ nằm trong file (D-26) |
 
-**Quyết định: S2.** S1 loại vì chỉ tiếng Trung (bộ cấm từ, detector, đếm chữ hardcode) trong khi đích là tiếng Việt; oh-story được giữ làm tài liệu phương pháp, không làm runtime. Contract `StoryAdapter` đóng băng và pipeline dựng bằng `FixtureStoryAdapter` ở Phase 1, nên mọi stage phía sau chỉ cần `story.txt` hợp lệ và không bị chặn bởi Story thật.
+Phương án dự phòng chưa xây: S2 `DirectLLMStoryAdapter` (tự gọi LLM theo section) nếu kiểm chứng thật cho thấy oh-story không dùng được cho tiếng Việt (D-23).
 
 ### 3.4 Các phần mới (không có trong 3 project)
 
@@ -81,8 +84,8 @@ SourceProcessor, TTS (adapter/profile/segment planner/manager/QA), AudioProcesso
 | 1 | Source Sync từ orchestrator | Shim gọi `sync_videos` | Thêm job type `sync` vào `media_worker` (đồng nhất giao thức); sửa ghi `.part` + atomic profile |
 | 2 | Profile YouTube/TikTok | Frame + `config_overrides` ở orchestrator | Không |
 | 3 | Tốc độ ×2, cắt part, watermark | AudioProcessor | Không |
-| 4 | Gộp section thành `story.txt` | StoryAdapter/Assembler (S2 tự sinh section nên không còn tiêu đề chương của oh-story để gỡ) | Không |
-| 5 | Điều khiển story không tương tác | Bỏ runtime oh-story, dùng S2 (D-03) | Không cần; upstream headless nằm ngoài phạm vi |
+| 4 | Gộp chương thành `story.txt` | Story Assembler ở stage (D-24) | Không |
+| 5 | Điều khiển story không tương tác | `ClaudeCliRunner` + câu trả lời cố định cho cổng xác nhận (D-23) | Chế độ headless chính thức ở upstream sẽ ổn định hơn; ngoài phạm vi |
 | 6 | Seed nền ngẫu nhiên | **Không có đường adapter** (rng không lộ ra qua API). Chấp nhận không tái tạo y hệt (D-08) | Đưa `rng`/`seed` từ `video_utils.choose_next_clip` lên `render_video`/worker `params` |
 | 7 | Thumbnail ≤ 2 MiB | Adapter nén lại JPG | Không |
 | 8 | Chọn kênh YouTube | Một account/kênh | yt_uploader: dùng `channel_id` thật (không bắt buộc) |
@@ -96,12 +99,12 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 
 | ID | Rủi ro | Mức | Nguồn | Giảm thiểu |
 |---|---|---|---|---|
-| R1 | **Story module không như HANDOFF mô tả**: `story-branch` không sinh truyện; không headless; không nhận transcript. Chọn S2 (D-03) nghĩa là **tự xây** blueprint/continuity | **Cao** | A1–A3 | Contract tách rời; fixture adapter; spike S2 ở Phase 2a; validator bất biến |
-| R2 | **Ngôn ngữ**: oh-story chỉ tiếng Trung, đích là tiếng Việt (D-04, suy ra từ ContentFlow/môi trường). **Đã giảm** nhờ bỏ runtime oh-story; còn lại rủi ro chất lượng văn Việt do LLM và độ phủ của TTS tiếng Việt | Trung | A4 | Profile theo ngôn ngữ; validator ngôn ngữ; nghe thử ở Phase 4 |
-| R3 | ~~Điều khiển story qua `claude -p` mong manh~~ — **không còn áp dụng** (S1 không xây, D-03). Thay bằng: chi phí/độ ổn định gọi LLM nhiều section liên tục cho truyện dài | Trung | A3 | Chia section có checkpoint; resume; đo chi phí ở 2a |
-| R4 | **yt_uploader chưa từng chạy với Google thật**; OAuth client thủ công; quota ~6 upload/ngày (ngoài repo, chưa xác nhận); project chưa audit có thể ép private; job `failed` không tự retry | Trung–Cao | A14 | Test thật sớm (Phase 2/6) với kênh thử; policy retry ở orchestrator; ghi quota vào `doctor` |
+| R1 | **Story module không như HANDOFF mô tả**: story-branch không sinh truyện; oh-story không headless, không nhận transcript. Đã giảm bằng adapter + Assembler (Phase 2) nhưng **chưa chạy với LLM thật** | **Cao** | A1–A3 | `scripts/run_real_job.py --chapters 3 --max-budget-usd 2` để kiểm chứng; dự phòng S2 |
+| R2 | **Ngôn ngữ**: oh-story viết tiếng Trung, bộ kiểm "AI-flavor"/đếm chữ CJK có thể chặn commit chương tiếng Việt; đích là tiếng Việt (D-04). **Chưa biết** cho tới khi chạy thật | **Cao** | A4 | Kiểm chứng ở lần chạy thật đầu tiên; nếu chặn: S2 hoặc nới bằng cấu hình; validator ngôn ngữ ở phase sau |
+| R3 | Điều khiển oh-story qua `claude -p`: mong manh (cổng xác nhận, quyền công cụ), tốn chi phí (~35K ký tự tài liệu mỗi lượt; 15–25 lượt cho ~14 chương), transcript là dữ liệu không tin cậy | Trung–Cao | A3 | `max_turns`, `max_follow_ups`, `max_budget_usd_per_turn`; `STORY_STEP_INCOMPLETE` thay vì lặp vô hạn; quyền thận trọng (D-26); resume theo file |
+| R4 | **yt_uploader chưa từng chạy với Google thật**; OAuth client thủ công; quota ~6 upload/ngày (ngoài repo, chưa xác nhận); project chưa audit có thể ép private; job `failed` không tự retry | Trung–Cao | A14 | Test thật sớm (spike upload, Phase 5) với kênh thử; policy retry ở orchestrator; ghi quota vào `doctor` |
 | R5 | **Thumbnail không chạy được** ở checkout hiện tại (thiếu `template.png`/font; font fallback Windows); output 1648×928 có thể >2 MiB giới hạn uploader | Trung | A13 | Cung cấp asset; kiểm kích thước và nén; kiểm font tiếng Việt |
-| R6 | **Chưa có profile 16:9**; ContentFlow chỉ được dùng với frame 9:16 | Trung | A8 | Tạo frame 16:9 + test thật ở Phase 5 |
+| R6 | **Chưa có profile 16:9**; ContentFlow chỉ được dùng với frame 9:16 | Trung | A8 | Tạo frame 16:9 + test thật ở Phase 4 |
 | R7 | Timeout cứng 3600 s mỗi lệnh ffmpeg; render 40–60 phút trên CPU có thể vượt | Trung | §3.4 audit | Ưu tiên NVENC, doctor kiểm; chia nhỏ nếu cần; ghi lại nếu gặp |
 | R8 | Source Sync ghi không atomic, skip theo "tồn tại" ⇒ file cụt bị coi là hợp lệ; không phát hiện nguồn đổi bằng hash | Trung | A10 | Shim: kiểm tra bằng ffprobe sau sync, xóa file lỗi; so sánh `source_profile.json`; fingerprint pool ở orchestrator |
 | R9 | Nền video ngẫu nhiên không seed ⇒ không reproducible | Thấp | A9, A20 | Ghi `nondeterministic` vào manifest; coi video là artifact |
@@ -109,7 +112,7 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 | R11 | Windows-first: DPAPI token, font `C:\Windows\Fonts`, `build.bat`, đường dẫn ổ đĩa | Thấp–Trung | §3.6, §4.3 audit | Chỉ hỗ trợ Windows ở giai đoạn đầu; ghi vào doctor |
 | R12 | Tài nguyên: audio dài + nhiều render 1080p + N video TikTok trên một GPU/đĩa; chạy song song (HANDOFF §14) dễ tranh GPU/đĩa | Trung | | Hàng đợi có giới hạn đồng thời theo tài nguyên; kiểm chỗ trống đĩa trước mỗi stage |
 | R13 | `media_worker` ghi `.worker_state.json` + lock + `.work/` vào `output_dir`; dùng chung giữa job ⇒ đụng | Thấp | §3.4 audit | Một `output_dir` riêng mỗi lời gọi |
-| R14 | Test ContentFlow chưa chạy; không có bằng chứng toàn bộ pass trên máy này | Thấp–Trung | §3.7 audit | Chạy test trong Phase 2 sau khi cài Pillow/pytest |
+| R14 | Test ContentFlow chưa chạy; không có bằng chứng toàn bộ pass trên máy này | Thấp–Trung | §3.7 audit | Chạy test trong spike ContentFlow sau khi cài Pillow/pytest |
 | R15 | Tài liệu trong module lỗi thời (README, IMPLEMENTATION_STATUS) gây hiểu nhầm | Thấp | | Tin code, không tin doc; audit này là nguồn tham chiếu |
 | R16 | Hai runtime (Python + Go daemon) cần quản vòng đời tiến trình | Thấp | | `start.ps1` + `doctor` kiểm `/health` |
 

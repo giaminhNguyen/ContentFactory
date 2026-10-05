@@ -16,11 +16,8 @@
 - **Hệ quả:** hợp đồng ở `MODULE_CONTRACTS.md` viết dạng Python Protocol nhưng ràng buộc thật là artifact + manifest, nên đổi ngôn ngữ vẫn được.
 - **Ghi chú:** chọn Python **không** có nghĩa import code ContentFlow; vẫn dùng subprocess (D-05).
 
-### D-03 ✅ StoryAdapter: S2 (`DirectLLMStoryAdapter`) là hướng chính; oh-story chỉ là tài liệu phương pháp
-- **Bối cảnh:** `story-branch` chỉ chuẩn bị tư liệu và không sinh văn bản; `story-long-write` không headless, **chỉ tiếng Trung**, từng chương một file, không có assembler (A1–A7). Ngôn ngữ đích là tiếng Việt (D-04) nên S1 không dùng trực tiếp được (bộ cấm từ, detector, đếm chữ đều hardcode tiếng Trung).
-- **Quyết định:** contract `StoryAdapter` giữ nguyên (HANDOFF §3–§5). Cài đặt thật là S2: orchestrator gọi LLM theo section, giữ state continuity và blueprint riêng trong `workspace/job_x/story/`, rồi Assembler + validator bất biến sinh `story.txt`. Phương pháp (blueprint → section → kiểm continuity → bỏ heading) tham khảo `skills/story-long-write` và `story-long-analyze`, **không** phụ thuộc runtime của oh-story. `FixtureStoryAdapter` dùng để dựng pipeline ở Phase 1.
-- **S1 (`OhStoryCliAdapter`) không xây.** Chỉ xem xét lại nếu sau này cần một kênh truyện tiếng Trung. Repo `oh-story-claudecode`/`story-branch` vẫn là nguồn tham chiếu phương pháp và có thể là đầu vào "viết nhánh tiếp của truyện đã có" ở phiên bản sau (giữ tinh thần HANDOFF §2).
-- **Hệ quả:** phải tự xây continuity/blueprint (R1 chuyển từ "chưa biết hướng" thành "khối lượng công việc ước lượng được"); spike Phase 2a thu hẹp còn kiểm chứng S2.
+### D-03 ⚠️ Đã bị thay thế bởi D-23 (Phase 2): StoryAdapter dùng oh-story thay vì tự gọi LLM
+- Quyết định ban đầu (Phase 0) là S2 (`DirectLLMStoryAdapter`) vì oh-story chỉ viết tiếng Trung và không headless. Chỉ dẫn Phase 2 của người dùng là **dùng StoryAdapter để gọi logic story-branch hiện có, không sửa sâu oh-story**, nên S1 được làm (D-23). S2 giữ lại làm **phương án dự phòng chưa xây**, kích hoạt nếu kiểm chứng thật cho thấy S1 không dùng được cho tiếng Việt (D-23, rủi ro R2).
 
 ### D-04 ✅ Ngôn ngữ đích mặc định: tiếng Việt (`vi`), cấu hình theo `StoryProfile.language` và `TTSProfile.language`
 - **Bằng chứng (suy ra từ code/môi trường):** ContentFlow README yêu cầu font hỗ trợ tiếng Việt, `renderer.py` kiểm glyph tiếng Việt (`VIETNAMESE_PROBE`), 40 file Python có chuỗi tiếng Việt, test dùng đường dẫn tiếng Việt; môi trường có skill `gen-audio-queue` (VieNeu-TTS) và `viet-tieu-thuyet`.
@@ -51,7 +48,7 @@
 - ContentFlow không có `atempo`, split, watermark (đã kiểm). ffmpeg đã là điều kiện bắt buộc.
 
 ### D-11 ✅ Walking skeleton trước, spike rủi ro song song
-- Xem `IMPLEMENTATION_PHASES.md`: Phase 1 dựng pipeline với adapter giả; Phase 2 spike Story/ContentFlow/yt_uploader.
+- Xem `IMPLEMENTATION_PHASES.md`: Phase 1 dựng pipeline với adapter giả; Phase 2 làm Source + Story thật; spike ContentFlow/yt_uploader thật xếp sau.
 
 ### D-12 ✅ yt_uploader chạy như daemon headless, adapter là HTTP client loopback
 - Có sẵn idempotency, resume bền, `error_class`; chạy `serve --headless`. Không dùng chế độ `upload` một phát vì mất queue/resume/idempotency.
@@ -73,7 +70,7 @@
 
 ### D-17 ✅ Phase 1 chỉ dùng stdlib: Python ≥ 3.10, `sqlite3`, `unittest`, config JSON
 - **Bằng chứng:** máy có Python 3.10 (và 3.13), không có `pytest`, không có `tomllib` (3.11+). `setup` máy mới không nên phụ thuộc gói ngoài khi chưa cần.
-- **Quyết định:** config ở `config/config.json` (đã sửa các chỗ nhắc `.yaml` trong D-07, D-15). Các ví dụ YAML của HANDOFF (`channel.yaml`, TTS profile) sẽ được đọc khi tới Phase 4/5; chọn PyYAML hay JSON lúc đó. Test chạy bằng `python -m unittest discover -s tests -t .` (pytest cũng chạy được nếu có).
+- **Quyết định:** config ở `config/config.json` (đã sửa các chỗ nhắc `.yaml` trong D-07, D-15). Các ví dụ YAML của HANDOFF (`channel.yaml`, TTS profile) sẽ được đọc khi tới Phase 3/5; chọn PyYAML hay JSON lúc đó. Test chạy bằng `python -m unittest discover -s tests -t .` (pytest cũng chạy được nếu có).
 
 ### D-18 ✅ Phát hiện tiến trình chết bằng lease + heartbeat; resume tự động
 - **Quyết định:** claim job ghi `lease_owner`/`lease_until` (mặc định 30 s, heartbeat 10 s). Orchestrator mới (hoặc cùng orchestrator) thấy lease hết hạn thì đánh dấu stage_run `interrupted` và xếp job về `queue_state` **của đúng stage đó**. Không kiểm PID (không tin cậy trên Windows khi thiếu thư viện, và không dùng được khi máy khởi động lại).
@@ -97,16 +94,47 @@
 - Artifact + stage_run + chuyển state commit cùng một transaction (`JobStore.succeed`); chỉ owner của lease mới commit được (kết quả của tiến trình đã mất lease bị bỏ). Manifest ghi lại từ DB sau mỗi stage và dựng lại khi khởi động nên crash giữa commit và ghi file không để lại manifest sai.
 - Đầu vào mỗi stage được kiểm lại **theo kích thước** (rẻ với file GB); sha256 tính một lần lúc niêm phong.
 
+### D-23 ✅ StoryAdapter = `StoryBranchAdapter`: điều khiển story-branch rồi story-long-write qua Claude Code CLI headless
+- **Chỉ dẫn:** Phase 2 yêu cầu dùng StoryAdapter gọi logic story-branch hiện có, không sửa sâu oh-story. Thực tế (audit A1) story-branch **chỉ chuẩn bị tư liệu** (正典 → 分支提案 → 分支简报 → 分支设定) và không viết văn; phần viết là `story-long-write`. Adapter vì vậy chạy cả chuỗi: `story-branch analyze → explore → create → handoff → story-long-write 开书 → 写第a-b章` (lô ≤ 3 chương, giới hạn của oh-story), mỗi bước một phiên mới, trạng thái nằm trên đĩa đúng như oh-story thiết kế.
+- **Không sửa oh-story:** deploy bằng chính `scripts/bench/deploy.py` của nó vào workspace riêng của job (`story/oh-story/`), transcript sạch đặt ở `拆文库/<nguồn>/原文.md` làm "tác phẩm gốc". Điều kiện xong của mỗi bước là file trên đĩa nên chạy lại bỏ qua bước đã xong và tiếp tục từ chương chưa commit (`追踪/_tracking-state.json`).
+- **Giao tiếp:** interface `AgentRunner` (thật: `ClaudeCliRunner`, theo mẫu stream-json của bench; test: `ScriptedOhStory`). Cổng xác nhận được trả lời bằng một câu cố định ("chọn phương án bạn đề xuất…") tối đa `max_follow_ups` lần; quá giới hạn thì `STORY_STEP_INCOMPLETE` (POLICY, không retry mù vì mỗi lượt tốn tiền); `max_turns` chặn tổng số lượt.
+- **Chưa kiểm chứng với LLM thật.** Logic điều khiển, resume, deploy oh-story thật và runner (qua tiến trình giả lập CLI) đã test; **chưa có lượt Claude thật nào được chạy** (tốn chi phí tài khoản và cần quyết định quyền, xem D-26). Hai rủi ro chưa biết: (1) oh-story viết tiếng Trung, bộ kiểm "AI-flavor"/đếm chữ CJK có thể chặn commit chương tiếng Việt; (2) agent có thể kẹt ở điểm xác nhận mà câu trả lời cố định không giải quyết được. Cách kiểm chứng: `python scripts/run_real_job.py URL --chapters 3 --max-budget-usd 2`. Nếu (1) xảy ra: dự phòng S2 (D-03).
+- **Hệ quả:** story-branch được dùng đúng nghĩa của nó ("nhánh từ một tác phẩm có sẵn"): transcript video là tác phẩm gốc, truyện ra là một nhánh độc lập của nó. Lệch với kỳ vọng "viết lại y nguyên"; ghi nhận để người dùng xác nhận.
+
+### D-24 ✅ Story Assembler là bước của stage, độc lập với engine; adapter chỉ trả danh sách section
+- `StoryResult` đổi thành `{sections: [Path], stats}`. Stage Story chạy `story/assembler.py` rồi validator bất biến cho **mọi** adapter. Assembler gỡ heading (`Chương N`, `Chapter`, `Section`, `Part`, `Phần`, `第N章`, `#…`, `**…**`, `【…】`), đường kẻ, marker, "Còn tiếp/Hết chương", đoạn "Ở chương trước…"; ghi mỗi đoạn cách nhau một dòng trống (bước TTS tách theo dòng trống); bỏ phần đầu section chép lại đuôi section trước; nối câu bị cắt ở ranh giới section; loại câu lặp liền kề, đoạn trùng khít và gần trùng (Jaccard shingle 8 ký tự ≥ 0.85, cửa sổ 40 đoạn).
+- **Không xóa mù quáng:** dòng chỉ bị coi là heading khi không kết thúc bằng dấu câu ("Chương 2 đã kết thúc trong im lặng." là câu văn, được giữ; validator chặn nếu còn). Nếu assembler loại > 35% nội dung thì lỗi `ASSEMBLER_REMOVED_TOO_MUCH` thay vì âm thầm làm mất truyện (lưới này đã tự bắt một lỗi dữ liệu fake lúc phát triển).
+- Ghi `assembly_report.json` (artifact `story_report`) liệt kê mọi thứ đã gỡ. Blueprint/continuity/sections nằm ở workspace nội bộ (`story/oh-story/`), không nằm trong gói output (có test).
+- **Idempotent:** chỉ dựng lại khi sha256 các section hoặc phiên bản assembler đổi.
+
+### D-25 ✅ Source: yt-dlp ngoài, phụ đề có sẵn > auto, giữ nguyên raw, dựng câu bằng timestamp
+- **Công cụ:** `yt-dlp` gọi qua subprocess (lệnh cấu hình được: `youtube.yt_dlp_cmd`), không phải phụ thuộc Python; `health()` báo thiếu. Chọn track: thủ công (ngôn ngữ ưu tiên `vi,en`) > thủ công (ngôn ngữ gốc video) > auto ngôn ngữ gốc (`*-orig`) > auto ưu tiên > thủ công bất kỳ; không có gì → `NO_SUBTITLES` (POLICY). **Không có fallback ASR/Whisper** (ngoài phạm vi).
+- **Ba tầng dữ liệu, đúng yêu cầu:** `raw/subtitle.<ext>` nguyên byte; `structured.json` (cue với `start,end,text,gap_before` + câu + đoạn, kèm `internal_pauses`, `provenance`); `transcript.txt` sạch không timestamp, sinh **sau** khi dựng lại.
+- **Dựng lại câu/đoạn bằng timestamp** (`source/reconstruct.py`), tại mỗi ranh giới cue: nối tiếp (caption bị cắt giữa câu) / kết thúc câu (có dấu câu, hoặc pause ≥ 0.8 s, hoặc câu quá dài) / kết thúc đoạn (pause ≥ 2.0 s hoặc đoạn ≥ 900 ký tự). Câu kết thúc ngay *giữa* một cue cũng được tách; timestamp và `cue_range` nội suy theo vị trí ký tự. Phục hồi dấu câu ở mức an toàn: thêm dấu chấm, viết hoa đầu câu; vị trí các pause giữa câu được giữ để bước khôi phục dấu phẩy bằng LLM dùng sau. Ngưỡng cấu hình ở `youtube.reconstruct`.
+- **Khử auto-caption "rolling"** (mỗi cue lặp dòng của cue trước, thẻ `<c>`/timing từng từ, `&nbsp;`, `[Âm nhạc]`, `>>`), nhưng không xóa các dòng lặp hợp lệ ("Không." / "Không.").
+- **Idempotent theo từng bước + cache liên job:** `raw/download.json` (sha256), `structured.json.provenance` (sha256 raw + phiên bản parser + hash cấu hình), `clean_sha256`; cache `runtime/cache/youtube/<video_id>/<hash ngôn ngữ>/` để job mới cho cùng URL không tải lại. `refresh_source: true` ép tải lại.
+- **Đã kiểm chứng với YouTube thật** (video công khai, yt-dlp 2026.08.19 trong venv tạm, không cài vào môi trường của bạn): phụ đề thủ công được ưu tiên hơn auto; auto-caption thật (103 cue rolling → 47 cue sạch, không còn thẻ); chạy lại 0,01 s không đụng mạng. **Chưa kiểm chứng** với phụ đề tiếng Việt thật.
+
+### D-26 ✅ Quyền của agent: mặc định thận trọng, transcript là dữ liệu không tin cậy
+- Transcript YouTube do bên thứ ba viết và được đưa cho một agent có công cụ ghi file/chạy lệnh ⇒ rủi ro prompt injection. Mặc định `permission_mode=acceptEdits` + allowlist lệnh (`python`, `node`, `bash`, `git`, `ls`, …); `--setting-sources project,local` + `--strict-mcp-config` để không nạp CLAUDE.md/plugin/hook của người dùng; biến môi trường `CLAUDE*`/`OMC_*` bị bỏ khỏi tiến trình con (như bench của oh-story). Nội dung transcript **không bao giờ** nằm trong prompt, chỉ nằm trong file `原文.md` (có test), và prompt nói rõ đó là dữ liệu.
+- `bypassPermissions` (cách bench của oh-story chạy) là tùy chọn có chủ đích, chỉ trong workspace cách ly của job. Nếu mặc định thận trọng làm agent kẹt vì thiếu quyền, đây là chỗ cần nới (chưa biết trước vì chưa chạy LLM thật).
+
+### D-27 ✅ Artifact mới ở stage Source/Story
+- Source sinh `subtitle_raw`, `transcript_structured`, `transcript`, `metadata`; Story sinh `story_text`, `story_report`. Thay đổi `SourceResult`/`StoryResult`/`SourceBundle` (thêm `source_language`) ghi ở `MODULE_CONTRACTS.md` §10. `metadata.json` **không** chứa `description` của video gốc (tránh chép mô tả của người khác thành mô tả video của ta); stage output/publish dùng 300 ký tự đầu của `story.txt`.
+
+### D-28 ✅ Đánh số phase theo chỉ dẫn của người dùng
+- Phase 2 = Source + Story thật (phần "Phase 3" trong lộ trình ban đầu). Các phase sau được đánh số lại liên tục (3 = TTS, 4 = Audio + Render, 5 = Publish + Output, 6 = Bất đồng bộ + vận hành, 7 = TTS Auto-Profile) và chỉ là đề xuất. Các spike ContentFlow/yt_uploader thật chưa làm, xếp trong "Việc chờ" của `IMPLEMENTATION_PHASES.md`. Không bắt đầu Phase 3.
+
 ## 2. Câu hỏi còn mở
 
-Không còn câu hỏi nào chặn Phase 1. D-03, D-04, D-07 đã được chốt bằng mặc định suy ra từ code/môi trường (xem trên). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code và chỉ cần tới Phase 2c/5; `doctor` sẽ báo thiếu thay vì chặn:
+Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:
 
 | Điều kiện | Cần ở | Mặc định nếu chưa có |
 |---|---|---|
-| Google Cloud OAuth client + một kênh thử (R4) | Phase 2c, 6 | Spike 2c bỏ qua; `PublishAdapter` chạy bằng `FakePublish`; `doctor` báo "YouTube chưa cấu hình" |
-| `assets/template.png` + font tiếng Việt cho thumbnail (R5) | Phase 5 | Thumbnail bị bỏ qua có cảnh báo, video vẫn render; không tự tạo template |
-| Frame 16:9 1920×1080 + layout (R6) | Phase 5 | Orchestrator sinh một frame viền đen tối thiểu để chạy được; thiết kế đẹp là việc sau |
-| Engine TTS đầu tiên | Phase 4 | Bắt đầu với engine local đã có trong môi trường (VieNeu-TTS, sẽ audit ở Phase 4) |
+| Google Cloud OAuth client + một kênh thử (R4) | spike upload thật, Phase 5 | Spike upload bỏ qua; `PublishAdapter` chạy bằng `FakePublish`; `doctor` báo "YouTube chưa cấu hình" |
+| `assets/template.png` + font tiếng Việt cho thumbnail (R5) | Phase 4 | Thumbnail bị bỏ qua có cảnh báo, video vẫn render; không tự tạo template |
+| Frame 16:9 1920×1080 + layout (R6) | Phase 4 | Orchestrator sinh một frame viền đen tối thiểu để chạy được; thiết kế đẹp là việc sau |
+| Engine TTS đầu tiên | Phase 3 | Bắt đầu với engine local đã có trong môi trường (VieNeu-TTS, sẽ audit ở Phase 3) |
 
 ## 3. Đề xuất chỉnh HANDOFF (chưa áp dụng, chờ duyệt)
 
@@ -120,13 +148,22 @@ Không còn câu hỏi nào chặn Phase 1. D-03, D-04, D-07 đã được chố
 | §13 Source Sync | Ghi: hiện là hàm/tab chạy thủ công; nền "background" là việc của orchestrator | A10 |
 | §15/§16 | Ghi: `UPLOADING/PUBLISHED` chỉ áp dụng YouTube; TikTok = xuất file | A15 |
 | §18 | Ghi: nền video ngẫu nhiên không tái tạo y hệt | A20 |
-| §21 | Bổ sung: ngôn ngữ đích `vi` (D-04); Story = S2 direct LLM (D-03); tên output (D-07); đồng thời render (D-15) | |
+| §21 | Bổ sung: ngôn ngữ đích `vi` (D-04); Story = StoryBranchAdapter điều khiển oh-story qua Claude CLI (D-23); tên output (D-07); đồng thời render (D-15) | |
 
 ## 4. Giới hạn đã biết sau Phase 1
 
 - Dừng có chủ đích dựa vào handler **hợp tác** (kiểm `ctx.cancel`); handler không hợp tác sẽ chặn shutdown cho tới khi xong hoặc bị kill (rồi quay về cơ chế lease).
-- Chưa có: `cancel` job, `rerun --from <stage>` (cần cho "đổi watermark chỉ build lại nhánh YouTube", Phase 5/7), cache-hit liên job theo `stage_key` (đã tính và lưu, chưa dùng), CLI ưu tiên job.
-- Chưa có `doctor.ps1`, `setup.ps1`, `update.ps1`, `start.ps1` (HANDOFF §19) — chuyển sang Phase 2 (doctor/setup bản đầu) và Phase 7.
+- Chưa có: `cancel` job, `rerun --from <stage>` (cần cho "đổi watermark chỉ build lại nhánh YouTube", Phase 4/7), cache-hit liên job theo `stage_key` (đã tính và lưu, chưa dùng), CLI ưu tiên job.
+- Chưa có `doctor.ps1`, `setup.ps1`, `update.ps1`, `start.ps1` (HANDOFF §19) — chuyển sang phase sau (doctor/setup bản đầu) và Phase 6. Phase 2 chỉ thêm `health()` cho adapter Source/Story và `scripts/run_real_job.py --dry-run`.
 - Thay gói output của chính job khi retry là `rmtree` rồi `rename` (cửa sổ ngắn không có gói); gói vẫn không bao giờ ở trạng thái nửa vời.
 - Chỉ kiểm thử trên Windows (kill bằng TerminateProcess). Nhiều orchestrator trên cùng DB được kiểm bằng 2 luồng trong một tiến trình và bằng kill/resume, chưa kiểm bằng 2 tiến trình chạy đồng thời.
 - Fake adapter không đổi tốc độ audio thật (chỉ chia part theo `target×speed`), video/thumbnail chỉ là byte giả.
+
+## 5. Giới hạn đã biết sau Phase 2
+
+- **Story thật chưa chạy với LLM thật** (D-23). Ba rủi ro lớn nhất: tiếng Việt vs bộ kiểm tiếng Trung của oh-story; cổng xác nhận; chi phí (mỗi lượt oh-story nạp tới ~35K ký tự tài liệu; ~14 chương mặc định ≈ 15–25 lượt). `target_chars=40000`/`chapter_chars=3000` là **ước lượng** cho 40–60 phút audio, cần đo ở phase TTS.
+- Tiêu đề video YouTube vẫn lấy từ tiêu đề video nguồn (`metadata.title`); chưa có bước sinh tiêu đề/mô tả riêng (không nên đăng trùng tiêu đề của người khác).
+- Phụ đề không dấu câu và liền mạch (không có pause) cho câu dài vì không có tín hiệu để ngắt; `internal_pauses` đã được giữ cho bước khôi phục dấu câu bằng LLM sau này.
+- Không có phụ đề: lỗi `NO_SUBTITLES` (không ASR). Video giới hạn tuổi/thành viên/yêu cầu đăng nhập: `YOUTUBE_SIGNIN_REQUIRED` (AUTH); cookie chỉ truyền được qua `youtube.yt_dlp_args`.
+- Assembler dùng heuristic: heading theo mẫu lạ có thể lọt (validator chỉ chặn mẫu quen thuộc); đoạn "gần trùng" có thể là lặp có chủ ý (điệp khúc) — report ghi lại, ngưỡng 35% chặn việc mất nội dung hàng loạt.
+- `docs/CURRENT_SYSTEM_AUDIT.md` là ảnh chụp lúc Phase 0, không cập nhật theo các thay đổi này.

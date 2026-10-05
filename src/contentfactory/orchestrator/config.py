@@ -14,6 +14,10 @@ DEFAULTS: dict = {
     "retry": {"max_attempts": 3, "backoff_s": [2, 10, 60], "max_interruptions": 5},
     "lease_s": 30.0, "heartbeat_s": 10.0, "poll_s": 0.5,
     "output": {"name_template": "{date}_{slug}"},           # D-07
+    "youtube": {"preferred_langs": ["vi", "en"], "yt_dlp_cmd": ["yt-dlp"], "yt_dlp_args": [],
+                "reconstruct": {}},                         # ghi đè ReconstructConfig (sentence_gap, paragraph_gap, ...)
+    "story_branch": {"permission_mode": "acceptEdits", "max_turns": 80, "max_follow_ups": 4,
+                     "chapters_per_batch": 3, "max_budget_usd_per_turn": None},
     "job_defaults": {"language": "vi", "channel": "default",
                      "tiktok": {"speed": 2.0, "target_part_sec": 600}},
 }

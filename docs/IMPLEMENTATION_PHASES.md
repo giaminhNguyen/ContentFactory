@@ -6,51 +6,56 @@ Mỗi phase có **đầu ra kiểm chứng được**; chưa đạt thì chưa s
 
 ## Phase 0 — Audit ✅ (đã xong)
 
-Đầu ra: 5 tài liệu trong `docs/`, `modules.lock`, commit. Các quyết định mở (D-03 Story = S2, D-04 ngôn ngữ = `vi`, D-07 tên output) đã được chốt bằng mặc định suy ra từ code/môi trường; xem `DECISIONS.md`.
+Đầu ra: 5 tài liệu trong `docs/`, `modules.lock`, commit. Các quyết định mở (D-03 Story = S2 — sau đó bị D-23 thay ở Phase 2, D-04 ngôn ngữ = `vi`, D-07 tên output) đã được chốt bằng mặc định suy ra từ code/môi trường; xem `DECISIONS.md`.
 
 ## Phase 1 — Khung orchestrator + walking skeleton ✅ (đã xong)
 
 **Đã làm:** `src/contentfactory/` (orchestrator, jobs, adapters, source, story, tts, audio, render, publish, output), SQLite job store, state machine + stage table, hàng đợi theo stage có giới hạn tài nguyên, checkpoint nguyên tử, retry theo lớp lỗi, resume sau kill (lease + heartbeat), dừng êm, structured logging (JSONL chung + riêng từng job), manifest dẫn xuất, workspace riêng từng job, `OutputPublisher` thật, fake adapter cho cả 7 contract, CLI `python -m contentfactory {submit,run,status,retry}`, `scripts/run_fake_job.py`, 31 test (stdlib `unittest`, ~13 s). Chi tiết quyết định: `DECISIONS.md` D-16…D-22; hợp đồng: `MODULE_CONTRACTS.md` §9–§10.
 **Kiểm chứng:** job fake đi hết `NEW → PUBLISHED`; kill tiến trình thật giữa stage và giữa chunk TTS, chạy lại thì resume đúng stage (chunk xong không tổng hợp lại); stage lỗi không làm mất artifact stage trước, retry chỉ chạy lại stage lỗi; xóa `output/` không ảnh hưởng pipeline; test kiến trúc cấm module import nhau. Đã thử phá code có chủ đích (3 lỗi) và test bắt được cả 3.
-**Hoãn sang phase sau:** `doctor`/`setup`/`update`/`start` (Phase 2 bản đầu, Phase 7 đầy đủ), `rerun --from`, cache-hit theo `stage_key`, `cancel` job. Danh sách giới hạn: `DECISIONS.md` §4.
+**Hoãn sang phase sau:** `doctor`/`setup`/`update`/`start` (bản đầu cùng spike, đầy đủ ở Phase 6), `rerun --from`, cache-hit theo `stage_key`, `cancel` job. Danh sách giới hạn: `DECISIONS.md` §4.
 
-## Phase 2 — Spike rủi ro (song song được, không phụ thuộc nhau)
+## Phase 2 — Source + Story thật ✅ (đã xong; Story chưa kiểm chứng với LLM thật)
 
-| Spike | Mục tiêu | Tiêu chí kết luận |
+**Đã làm:**
+- **Source** (`source/`): URL YouTube → `yt-dlp` (ưu tiên phụ đề có sẵn, sau đó auto-caption) → phụ đề gốc nguyên byte → `structured.json` (cue/câu/đoạn với `start,end,text,gap_before`, khử auto-caption rolling) → dựng câu/đoạn bằng timestamp (ghép caption bị cắt giữa câu, phát hiện pause, phục hồi đoạn, dấu chấm + viết hoa) → `transcript.txt` sạch không timestamp. Idempotent theo từng bước, có cache liên job theo video id.
+- **Story** (`adapters/story_branch.py`, `story/`): `StoryBranchAdapter` điều khiển story-branch → story-long-write qua Claude CLI headless (resume theo file, chặn chi phí, quyền thận trọng); **Story Assembler** (gỡ heading/marker, làm mượt chỗ nối, loại trùng lặp, lưới an toàn) + validator bất biến; blueprint/continuity/sections nằm ở workspace nội bộ.
+- Artifact mới: `subtitle_raw`, `transcript_structured`, `story_report`. Cấu hình chọn adapter thật: `adapters.source = "youtube"`, `adapters.story = "story_branch"`.
+- `scripts/run_real_job.py` (`--dry-run` kiểm tra điều kiện, không gọi LLM), 86 test (stdlib `unittest`, ~17 s).
+
+**Kiểm chứng:** ba mẫu phụ đề (auto-caption rolling, manual bị cắt giữa câu, có timestamp gap); `story.txt` không heading (stage + validator); rerun không tải/làm lại artifact còn hợp lệ (cùng workspace và job mới cùng URL); resume story theo bước và theo lô chương; `ClaudeCliRunner` chạy với tiến trình giả lập CLI thật (kết quả, tác vụ nền, lỗi đăng nhập, huỷ giữa lượt); deploy oh-story thật vào thư mục tạm không sửa module; **YouTube thật**: phụ đề thủ công + auto-caption thật. Đã phá code có chủ đích 7 chỗ ở phần mới và test bắt cả 7.
+**Chưa kiểm chứng:** lượt Claude thật (tiếng Việt qua oh-story, cổng xác nhận, chi phí) và phụ đề tiếng Việt thật. Xem `DECISIONS.md` D-23, §5.
+
+## Việc chờ (chưa xếp phase)
+
+| Việc | Mục tiêu | Ghi chú |
 |---|---|---|
-| 2a Story (S2) | Prototype `DirectLLMStoryAdapter` tiếng Việt trên một nguồn nhỏ: blueprint → vài section → continuity → assemble | Ra `story.txt` tiếng Việt hợp lệ (qua validator bất biến), chi phí/thời gian/token ước tính, ổn định qua ≥3 lần chạy; nếu không đạt thì ghi lại và điều chỉnh thiết kế section/continuity (không quay lại S1) |
-| 2b ContentFlow thật | Cài Pillow/pytest, chạy test ContentFlow; gọi `media_worker` render thật 1–2 phút audio với frame 9:16 mặc định; thử NVENC | Có video; test pass/fail ghi lại (R14); đo thời gian |
-| 2c yt_uploader thật | Build, tạo OAuth client, `login`, upload video test `private` lên kênh thử, đặt thumbnail, `idempotency_key` lặp lại | Có `video_id`; hành vi quota/private thật được ghi (R4) |
+| Kiểm chứng Story thật | chạy `scripts/run_real_job.py URL --chapters 3 --max-budget-usd 2` trên một video tiếng Việt | quyết định giữ S1 hay chuyển S2 (D-23) |
+| Spike ContentFlow thật | cài Pillow/pytest, chạy test ContentFlow, render thật vài phút audio với NVENC | R6, R7, R14 |
+| Spike yt_uploader thật | build, tạo OAuth client, upload `private` lên kênh thử, đặt thumbnail, thử `idempotency_key` | R4; bỏ qua nếu chưa có OAuth client + kênh thử |
+| `doctor` bản đầu | gom `health()` của adapter, ffmpeg/NVENC, `media_worker health`, yt-dlp, claude CLI | HANDOFF §19 |
 
-**Xong khi:** có số liệu chi phí/ổn định cho S2; hai adapter Render/Publish biết chắc chạy được hay không trên máy thật. Spike 2c bỏ qua (kèm cảnh báo `doctor`) nếu chưa có OAuth client + kênh thử; các spike còn lại không bị chặn.
-
-## Phase 3 — SourceProcessor + Story thật
-
-**Làm:** SourceProcessor (URL → transcript/metadata/tùy chọn analysis), `DirectLLMStoryAdapter` (S2) hoàn chỉnh, Story Assembler, validator bất biến (§2 MODULE_CONTRACTS), báo cáo continuity.
-**Xong khi:** một URL thật ra `story.txt` không header, đúng ngôn ngữ `vi`, qua validator; resume story giữa chừng hoạt động.
-
-## Phase 4 — TTS
+## Phase 3 — TTS
 
 **Làm:** `TTSAdapter` cho **một** engine đầu tiên, TTSProfile/TTSRule schema, Text Preprocessor, SegmentPlanner (AI) + RuleValidator tất định, TTS Manager (chunk, retry từng chunk, cache), Audio QA, `AudioProcessor.assemble`.
 **Xong khi:** `story.txt` 40–60 phút → `master.wav`; hỏng một chunk chỉ retry chunk đó; chạy lại không gọi lại TTS (cache hit); đổi video/watermark không làm TTS chạy lại.
-**Không làm ở phase này:** TTS Auto-Profile/Auto Tune (HANDOFF §7) — để phase 8.
+**Không làm ở phase này:** TTS Auto-Profile/Auto Tune (HANDOFF §7) — để Phase 7.
 
-## Phase 5 — AudioProcessor + Render thật
+## Phase 4 — AudioProcessor + Render thật
 
 **Làm:** `build_youtube_audio` (watermark), `build_tiktok_parts` (speed ×2, cắt part theo config), `ContentFlowRenderAdapter` (worker subprocess), Source Sync shim + kiểm tra sau sync (R8), profile YouTube 16:9 (tạo frame + layout, R6) và TikTok 9:16, thumbnail (cung cấp asset, nén ≤2 MiB, R5), reconcile sau crash.
 **Xong khi:** từ `master.wav` ra `youtube/video.mp4` 1920×1080 + thumbnail hợp lệ và N file `tiktok/part_NN.mp4` 1080×1920; đo thời gian render 40–60 phút (R7); đổi watermark chỉ build lại nhánh YouTube.
 
-## Phase 6 — Publish YouTube + Output đầy đủ
+## Phase 5 — Publish YouTube + Output đầy đủ
 
 **Làm:** `YtUploaderPublishAdapter` (HTTP, token, idempotency, poll), policy retry theo `error_class`, xử lý `AMBIGUOUS_UPLOAD`, `OutputPublisher` hoàn chỉnh (README.txt, project.json, tên đụng nhau, verify sha256), `start.ps1` quản daemon.
 **Xong khi:** một job thật chạy NEW → PUBLISHED (video `private`/`unlisted` ở kênh thử) và OUTPUT_READY có gói đầy đủ; kill orchestrator lúc upload rồi chạy lại **không** tạo video thứ hai.
 
-## Phase 7 — Pipeline bất đồng bộ và vận hành
+## Phase 6 — Pipeline bất đồng bộ và vận hành
 
 **Làm:** worker pool theo stage (HANDOFF §14), giới hạn đồng thời theo tài nguyên (GPU/đĩa, R12), nhiều job song song với workspace riêng, `update.ps1`, `doctor` đầy đủ (HANDOFF §19), CLI/UI tối thiểu (form Input/Channel/TTS/Pool + RUN).
 **Xong khi:** ≥3 job chạy chồng stage mà không tranh chấp; máy mới `git clone → setup → start` chạy được.
 
-## Phase 8 — TTS Auto-Profile (HANDOFF §7–8)
+## Phase 7 — TTS Auto-Profile (HANDOFF §7–8)
 
 **Làm:** TTS Source Analyzer (repo/docs → adapter draft + candidate profile có `confidence/source`), Auto Tune benchmark tùy chọn, thêm engine thứ hai để kiểm chứng tính tổng quát của contract.
 **Xong khi:** thêm một TTS mới chỉ bằng repo/docs reference, không nhập tham số tay.
@@ -58,12 +63,10 @@ Mỗi phase có **đầu ra kiểm chứng được**; chưa đạt thì chưa s
 ## Phụ thuộc
 
 ```text
-P1 ─┬─ P2a ─ P3 ─┐
-    ├─ P2b ──────┼─ P5 ─┐
-    └─ P2c ──────┘      ├─ P6 ─ P7 ─ P8
-         P4 ────────────┘
+P0 audit -> P1 core -> P2 Source + Story  -> P3 TTS -> P4 Audio + Render -> P5 Publish + Output -> P6 Async + vận hành -> P7 TTS Auto-Profile
+                  \-> (Việc chờ: kiểm chứng Story thật, spike ContentFlow/yt_uploader, doctor) chạy song song khi cần
 ```
-(P4 phụ thuộc P1, và cần `story.txt` – có thể dùng fixture – nên song song được với P3.)
+Từ P3 trở đi chỉ là đề xuất và sẽ được đánh số lại theo chỉ dẫn của người dùng. P3 cần `story.txt`, có thể dùng `FakeStory` cho tới khi Story thật được kiểm chứng.
 
 ## Chưa nằm trong phạm vi
 

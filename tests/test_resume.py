@@ -24,7 +24,8 @@ class ResumeTest(RootCase):
         j = orc.store.get_job(jid)
         self.assertEqual(j["state"], P.STORY_RUNNING)                  # DB còn nguyên trạng thái lúc chết
         self.assertIsNotNone(j["lease_owner"])
-        self.assertEqual({a["kind"] for a in orc.store.artifacts(jid)}, {"transcript", "metadata"})   # stage trước còn
+        self.assertEqual({a["kind"] for a in orc.store.artifacts(jid)},
+                         {"subtitle_raw", "transcript_structured", "transcript", "metadata"})   # stage trước còn
         t0 = time.time()
         orc.run()                                                       # lease hết hạn (~1s) => nhận lại
         self.assertLess(time.time() - t0, 15)

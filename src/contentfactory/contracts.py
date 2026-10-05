@@ -118,8 +118,11 @@ class SourceInput(TypedDict):
 class SourceResult(TypedDict):
     title: str
     language: str
-    transcript: Path
+    subtitle_raw: Path          # phụ đề gốc, giữ nguyên byte như nguồn trả về
+    structured: Path            # transcript có cấu trúc: cue/câu/đoạn kèm start, end, gap
+    transcript: Path            # transcript sạch, không timestamp, dựng lại từ structured
     metadata: Path
+    stats: dict
 
 
 class SourceProcessor(Protocol):
@@ -130,12 +133,13 @@ class SourceProcessor(Protocol):
 # ---- Story ----------------------------------------------------------------------------------
 class SourceBundle(TypedDict):
     title: str
-    language: str
+    language: str            # ngôn ngữ ĐÍCH của truyện
+    source_language: str     # ngôn ngữ của transcript nguồn
     transcript: Path
 
 
 class StoryResult(TypedDict):
-    story: Path        # story.txt liền mạch, KHÔNG header chương (validator tất định kiểm lại)
+    sections: list[Path]   # các section/chương nội bộ theo thứ tự; Story Assembler (stage) dựng story.txt từ đây
     stats: dict
 
 

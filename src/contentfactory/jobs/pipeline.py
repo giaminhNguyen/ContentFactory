@@ -36,9 +36,9 @@ class Stage:
 
 STAGES: tuple[Stage, ...] = (
     Stage("source", NEW, SOURCE_PROCESSING, SOURCE_READY,
-          (), ("transcript", "metadata"), "source", ("source",)),
+          (), ("subtitle_raw", "transcript_structured", "transcript", "metadata"), "source", ("source",)),
     Stage("story", SOURCE_READY, STORY_RUNNING, STORY_READY,
-          ("transcript", "metadata"), ("story_text",), "story", ("story",)),
+          ("transcript", "metadata"), ("story_text", "story_report"), "story", ("story",)),
     Stage("tts", STORY_READY, TTS_RUNNING, AUDIO_READY,
           ("story_text",), ("audio_master",), "tts", ("tts", "audio")),
     Stage("audio", AUDIO_READY, AUDIO_PROCESSING, YOUTUBE_RENDER_READY,

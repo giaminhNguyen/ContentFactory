@@ -9,6 +9,7 @@ Audio là WAV thật (stdlib `wave`) để QA/ghép/cắt part có ý nghĩa; vi
 from __future__ import annotations
 
 import hashlib
+import random
 import shutil
 import wave
 from pathlib import Path
@@ -29,6 +30,16 @@ def hook(ctx: StageContext, point: str) -> None:
     if ctx.attempt <= cfg.get("fail_until_attempt", 0):
         raise StageError(ErrorClass(cfg.get("error_class", "TRANSIENT")), cfg.get("code", "FAKE_FAILURE"),
                          f"injected at {point}, attempt {ctx.attempt}")
+
+
+WORDS = ("đêm khuya gió mưa hẻm nhỏ bước chân xa dần ngọn đèn vàng cánh cửa gỗ tiếng động lạ người đàn ông áo đen "
+         "im lặng bóng tối kéo dài lá khô rơi con mèo trắng bờ sông lạnh sương mù tiếng chuông chùa vọng lại").split()
+
+
+def _paragraph(k: int) -> str:
+    """Đoạn giả có nội dung khác nhau thật sự (assembler sẽ loại đoạn gần trùng)."""
+    rnd = random.Random(k)
+    return f"Đoạn {k}. " + " ".join(rnd.choice(WORDS) for _ in range(45)) + "."
 
 
 def record_call(ctx: StageContext, name: str) -> None:
@@ -61,12 +72,18 @@ class FakeSource:
         hook(ctx, "source")
         record_call(ctx, "source")
         title = ctx.params.get("title") or "Truyện thử nghiệm"
+        lang = ctx.params.get("language", "vi")
+        raw = out_dir / "subtitle.vtt"
+        atomic_write_text(raw, "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nBản ghi giả lập.\n")
+        structured = out_dir / "structured.json"
+        atomic_write_json(structured, {"schema": 1, "cues": [], "sentences": [], "paragraphs": []})
         transcript = out_dir / "transcript.txt"
         atomic_write_text(transcript, f"Bản ghi giả lập cho nguồn: {src['value']}\n")
         meta = out_dir / "metadata.json"
-        atomic_write_json(meta, {"title": title, "language": ctx.params.get("language", "vi"),
+        atomic_write_json(meta, {"title": title, "language": lang,
                                  "description": f"Mô tả thử nghiệm cho {title}", "source": dict(src)})
-        return {"title": title, "language": ctx.params.get("language", "vi"), "transcript": transcript, "metadata": meta}
+        return {"title": title, "language": lang, "subtitle_raw": raw, "structured": structured,
+                "transcript": transcript, "metadata": meta, "stats": {}}
 
     def health(self) -> dict:
         return HEALTH
@@ -77,12 +94,15 @@ class FakeStory:
         hook(ctx, "story")
         record_call(ctx, "story")
         n = int(profile.get("paragraphs", 6))
-        paras = [f"Đoạn {k}. Nhân vật chính bước đi trong đêm khuya và nghĩ về {bundle['title']}. "
-                 f"Mọi chuyện chỉ mới bắt đầu ở điểm thứ {k}, và không ai biết điều gì đang chờ phía trước. "
-                 f"Gió thổi qua con hẻm nhỏ, mang theo mùi mưa cũ và tiếng bước chân xa dần." for k in range(1, n + 1)]
-        story = out_dir / "story.txt"
-        atomic_write_text(story, "\n\n".join(paras) + "\n")
-        return {"story": story, "stats": {"paragraphs": n}}
+        paras = [_paragraph(k) for k in range(1, n + 1)]
+        # 3 section CÓ heading và marker như engine thật hay sinh ra: Story Assembler phải gỡ sạch
+        sections, per = [], max(1, n // 3)
+        for s in range(3):
+            body = paras[s * per:(s + 1) * per] if s < 2 else paras[2 * per:]
+            p = out_dir / "sections" / f"section_{s + 1:02d}.md"
+            atomic_write_text(p, f"Chương {s + 1}: Mở đầu\n\n" + "\n".join(body) + "\n\n---\n(Còn tiếp)\n")
+            sections.append(p)
+        return {"sections": sections, "stats": {"paragraphs": n}}
 
     def health(self) -> dict:
         return HEALTH

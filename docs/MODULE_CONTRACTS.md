@@ -70,63 +70,62 @@ Mỗi adapter có `health() -> HealthReport{ok, details, fix_hint}` để `docto
 
 ## 1. SourceProcessor
 
-**Trách nhiệm:** biến *input người dùng* (URL YouTube, file transcript, text…) thành `source_bundle` chuẩn hóa cho Story. **Hiện không có trong 3 project (A2) ⇒ module mới.**
+**Trách nhiệm:** biến *input người dùng* (URL YouTube, file transcript, text…) thành bộ artifact chuẩn hóa cho Story. **Không có trong 3 project (A2) ⇒ module mới (Phase 2: `source/`).**
 
 ```python
 class SourceInput(TypedDict):
-    kind: Literal["youtube_url", "transcript_file", "text", "local_folder"]
+    kind: str            # youtube_url | transcript_file | text | local_folder
     value: str
-    options: dict        # ngôn ngữ phụ đề, ...
 
-class SourceBundle(TypedDict):
-    source_id: str
-    title: str
-    language: str
-    transcript: ArtifactRef        # source/transcript.txt, đã làm sạch
-    metadata: ArtifactRef          # source/metadata.json (url, kênh, độ dài, ngày tải…)
-    analysis: ArtifactRef | None   # source/analysis.json (nhân vật, chuỗi sự kiện, giọng điệu)
+class SourceResult(TypedDict):          # tất cả là Path trong workspace; orchestrator niêm phong thành artifact
+    title: str; language: str
+    subtitle_raw: Path                  # phụ đề gốc, nguyên byte
+    structured: Path                    # cue/câu/đoạn kèm start, end, text, gap_before
+    transcript: Path                    # clean transcript, không timestamp
+    metadata: Path                      # title, language, source{url, video_id, channel, duration, subtitle{lang,kind}}
+    stats: dict
 
 class SourceProcessor(Protocol):
-    def process(self, src: SourceInput, ctx: StageContext) -> SourceBundle: ...
-    def health(self) -> HealthReport: ...
+    def process(self, src: SourceInput, out_dir: Path, ctx: StageContext) -> SourceResult: ...
+    def health(self) -> dict: ...
 ```
 
-- **Vào:** `SourceInput`. **Ra:** `source/transcript.txt`, `source/metadata.json`, tùy chọn `source/analysis.json`.
-- **Lỗi:** URL không có phụ đề/transcript → `POLICY` (code `NO_TRANSCRIPT`); tải lỗi mạng → `TRANSIENT`.
-- **Cache key:** URL/nội dung + options + version processor.
-- **Triển khai:** mới (công cụ tải phụ đề chọn ở Phase 3). Phần "analysis" có thể là một lời gọi LLM; nếu StoryAdapter cần format riêng, `analysis.json` là điểm chuyển đổi.
+- **Artifact của stage:** `subtitle_raw`, `transcript_structured`, `transcript`, `metadata` (D-27). `metadata` **không** có `description` của video gốc.
+- **`structured.json`:** `cues[{i,start,end,text,gap_before}]`, `sentences[{i,start,end,text,gap_before,cue_range,interpolated_time,punctuation_added,capitalized,internal_pauses[{offset,gap}],paragraph}]`, `paragraphs[{i,sentence_range,start,end,gap_before}]`, `provenance{video_id,lang,kind,raw_sha256,parser_version,config,config_hash}`, `stats`, `clean_sha256`.
+- **Lỗi:** URL không phải YouTube / id sai / không có phụ đề / video không khả dụng → `POLICY` (`NOT_YOUTUBE_URL`, `BAD_VIDEO_ID`, `NO_SUBTITLES`, `VIDEO_UNAVAILABLE`); yêu cầu đăng nhập → `AUTH`; thiếu yt-dlp → `RESOURCE` (`YTDLP_MISSING`); lỗi mạng/429/timeout → `TRANSIENT`.
+- **Idempotency (không tải/làm lại khi còn hợp lệ):** raw theo `raw/download.json.sha256` (+ cache `runtime/cache/youtube/<video_id>/…` dùng chung giữa job); structured theo `provenance`; clean theo `clean_sha256`.
+- **Triển khai:** `YouTubeSourceProcessor` (D-25). Chưa có: phụ đề local file / ASR / `analysis.json` (nhân vật, chuỗi sự kiện).
 
 ## 2. StoryAdapter
 
-**Trách nhiệm:** từ `SourceBundle` + `StoryProfile` ⇒ **một** `story.txt` liền mạch, **không** header `Chapter/Section/Part`, không marker kỹ thuật (HANDOFF §5). Gồm cả Story Assembler (A5): đây là một phần bắt buộc của adapter hoặc stage ngay sau nó.
+**Trách nhiệm:** từ transcript nguồn ⇒ **các section nội bộ theo thứ tự**; **stage** (không phải adapter) dựng một `story.txt` liền mạch bằng **Story Assembler** + validator bất biến (HANDOFF §5, D-24).
 
 ```python
-class StoryProfile(TypedDict):
-    id: str; version: str
-    language: str                  # PHẢI khai báo, mặc định "vi" (DECISIONS D-04)
-    target_chars: int | None
-    genre: str | None
-    params: dict                   # tùy engine
+class SourceBundle(TypedDict):
+    title: str
+    language: str            # ngôn ngữ ĐÍCH (mặc định "vi", D-04)
+    source_language: str     # ngôn ngữ của transcript nguồn
+    transcript: Path
 
 class StoryResult(TypedDict):
-    story: ArtifactRef             # story/story.txt (kind=story_text)
-    sections: ArtifactRef | None   # story/sections/ (nội bộ, để debug; KHÔNG publish)
-    continuity: ArtifactRef | None # story/continuity.json (báo cáo kiểm)
-    stats: dict                    # chars, section_count, repeated_ngram_rate
+    sections: list[Path]     # section/chương nội bộ theo thứ tự (có thể có heading, marker: Assembler gỡ)
+    stats: dict
 
 class StoryAdapter(Protocol):
-    def generate(self, bundle: SourceBundle, profile: StoryProfile, ctx: StageContext) -> StoryResult: ...
-    def resume(self, ctx: StageContext) -> StoryResult: ...   # tiếp tục từ state trong workspace/story/
-    def health(self) -> HealthReport: ...
+    def generate(self, bundle: SourceBundle, profile: dict, out_dir: Path, ctx: StageContext) -> StoryResult: ...
+    def health(self) -> dict: ...
 ```
 
-- **Bất biến đầu ra (validator tất định chạy sau mọi implementation):** `story.txt` không chứa dòng khớp `^(第.+章|Chapter\s*\d+|Section\s*\d+|Part\s*\d+|Chương\s*\d+)`, không còn marker kỹ thuật (`<!--`, `[[`, `TODO`…), không rỗng, ngôn ngữ đúng `profile.language`, tỉ lệ lặp n-gram dưới ngưỡng.
-- **Lỗi:** engine cần xác nhận người (gate tương tác không auto-trả lời được) → `POLICY`/`AMBIGUOUS` code `NEEDS_HUMAN`; hết quota LLM → `TRANSIENT`/`RESOURCE`.
-- **Resume:** continuity nằm trong `workspace/story/` nên retry tiếp được ở section dang dở (HANDOFF §14: trong một branch, generation phải tuần tự theo state).
-- **Triển khai** (đã chốt, DECISIONS D-03/D-04):
-  - `DirectLLMStoryAdapter` (**chính**): orchestrator tự gọi LLM theo section với blueprint và state continuity riêng trong `workspace/job_x/story/`, ngôn ngữ theo `profile.language` (mặc định `vi`). Tham khảo `skills/story-long-write` làm tài liệu phương pháp, không phụ thuộc runtime của nó.
-  - `FixtureStoryAdapter`: đọc `story.txt` có sẵn — dùng ở Phase 1 để dựng pipeline end-to-end và cho test.
-  - `OhStoryCliAdapter` (điều khiển `story-long-write` qua `claude -p`): **không xây** — chỉ tiếng Trung, không headless (A3–A4). Chỉ xét lại nếu cần kênh truyện tiếng Trung.
+- **`profile`:** `chapters` (hoặc `target_chars`/`chapter_chars`), `book_name`, `max_removed_ratio`. Blueprint/continuity/sections nằm trong `out_dir` (workspace nội bộ), không vào output.
+- **Story Assembler** (`story/assembler.py`, tất định, `ASSEMBLER_VERSION`): gỡ heading/đường kẻ/marker/"còn tiếp"/tóm tắt chương trước; mỗi dòng là một đoạn → xuất đoạn cách nhau một dòng trống; trim phần đầu section chép lại đuôi section trước; nối câu bị cắt ở ranh giới section; loại câu lặp liền kề, đoạn trùng khít, đoạn gần trùng; lỗi `ASSEMBLER_REMOVED_TOO_MUCH` nếu loại > 35%. Ghi `assembly_report.json` (artifact `story_report`).
+- **Bất biến đầu ra (validator, chạy sau Assembler):** `story.txt` không rỗng; không có dòng mở đầu bằng `第N章` / `Chapter N` / `Section N` / `Part N` / `Chương N` / `Phần N`; không marker kỹ thuật (`<!--`, `[[`, `{{`, `TODO`, `#`); không quá 30% đoạn trùng. Vi phạm → `STORY_INVALID` (POLICY) và **không** ghi `story.txt`. (Chưa kiểm ngôn ngữ đúng `profile.language`.)
+- **Artifact của stage:** `story_text`, `story_report`.
+- **Lỗi của adapter:** `STORY_STEP_INCOMPLETE` / `STORY_TURN_LIMIT` / `STORY_MISSING_CHAPTERS` (POLICY); `CLAUDE_NOT_LOGGED_IN` (AUTH); `CLAUDE_CLI_MISSING` / `OH_STORY_MISSING` / `OH_STORY_DEPLOY_FAILED` (RESOURCE); `AGENT_NO_RESULT` / `AGENT_TIMEOUT` (TRANSIENT).
+- **Resume:** điều kiện xong của từng bước kiểm bằng file trên đĩa (`分支库/*/正典.md`, `分支提案.md`, `分支/*-B*.md`, `设定/分支设定.md`, `大纲/大纲.md` + `细纲_第*.md`, `追踪/_tracking-state.json`); chạy lại bỏ qua bước đã xong và tiếp tục từ chương chưa commit.
+- **Triển khai:**
+  - `StoryBranchAdapter` (**chính**, D-23): điều khiển oh-story qua `AgentRunner` (`ClaudeCliRunner` thật; `ScriptedOhStory` trong test). **Chưa chạy với LLM thật.**
+  - `FakeStory`: sinh 3 section có heading/marker để kiểm Assembler (test pipeline).
+  - Dự phòng chưa xây: S2 `DirectLLMStoryAdapter` (D-03).
 
 ## 3. TTSAdapter
 
@@ -340,8 +339,8 @@ Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `
 
 | Stage | queue → running → done | Module/adapter | Đầu vào → đầu ra (artifact kind) |
 |---|---|---|---|
-| source | NEW → SOURCE_PROCESSING → SOURCE_READY | SourceProcessor | — → transcript, metadata |
-| story | SOURCE_READY → STORY_RUNNING → STORY_READY | StoryAdapter + validator bất biến | transcript, metadata → story_text |
+| source | NEW → SOURCE_PROCESSING → SOURCE_READY | SourceProcessor | — → subtitle_raw, transcript_structured, transcript, metadata |
+| story | SOURCE_READY → STORY_RUNNING → STORY_READY | StoryAdapter + Story Assembler + validator bất biến | transcript, metadata → story_text, story_report |
 | tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTSAdapter + AudioProcessor | story_text → audio_master |
 | audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master → audio_youtube, audio_tiktok |
 | render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | RenderAdapter (GPU) | audio_youtube, metadata → video_youtube, thumbnail |
@@ -364,8 +363,18 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 | `AudioProcessor` | theo `ArtifactRef` | theo `Path`; `qa()` trả `AudioQAReport` | như trên |
 | `StoryAdapter.generate` | `(SourceBundle, profile, ctx)` | `(SourceBundle{title,language,transcript:Path}, profile, out_dir, ctx)` | adapter biết chỗ ghi |
 | `OutputPublisher.publish` | `(job, manifest, cfg)` | `(OutputRequest, ctx)` với đường dẫn artifact | Module không đọc DB/manifest, chỉ nhận artifact |
-| `RenderAdapter` | có `sync_source`, `status` | chỉ `render_video`, `render_thumbnail`, `health` | Source Sync và reconcile thuộc Phase 5 |
-| `PublishAdapter` | có `find()` | chỉ `publish`, `health` | tra cứu sau crash thuộc Phase 6; Phase 1 dựa vào `idempotency_key = stage_key` |
-| `TTSAdapter` | có `capabilities()` đầy đủ | `capabilities()` trả dict tự do | schema chính thức thuộc Phase 4 |
+| `RenderAdapter` | có `sync_source`, `status` | chỉ `render_video`, `render_thumbnail`, `health` | Source Sync và reconcile thuộc Phase 4 |
+| `PublishAdapter` | có `find()` | chỉ `publish`, `health` | tra cứu sau crash thuộc Phase 5; Phase 1 dựa vào `idempotency_key = stage_key` |
+| `TTSAdapter` | có `capabilities()` đầy đủ | `capabilities()` trả dict tự do | schema chính thức thuộc Phase 3 |
 | `StageContext` | có `secrets`, `deadline_s`, `on_progress` | có `params`, `inputs`, `config`, `cancel`, `log`, `stage_key`, `attempt` | thêm khi có nhu cầu thật |
 | Tên stage | `*_PLANNING/*_RENDERING`, `MASTER_AUDIO_READY` | theo danh sách Phase 1 (§9) | yêu cầu Phase 1; tương ứng `TTS_RUNNING`, `AUDIO_READY` |
+
+### Khác biệt thêm ở Phase 2
+
+| Mục | Trước | Sau | Lý do |
+|---|---|---|---|
+| `SourceResult` | `{title, language, transcript, metadata}` | thêm `subtitle_raw`, `structured`, `stats` | giữ raw + structured + clean (yêu cầu Phase 2) |
+| `StoryResult` | `{story: Path, stats}` | `{sections: [Path], stats}` | Assembler chạy ở stage cho mọi adapter; adapter không cần tự gộp |
+| `SourceBundle` | `{title, language, transcript}` | thêm `source_language` | Story cần biết ngôn ngữ nguồn khác ngôn ngữ đích |
+| Artifact | source: `transcript`, `metadata`; story: `story_text` | thêm `subtitle_raw`, `transcript_structured`, `story_report` | D-27 |
+| `ctx.config` | `output_dir` | không đổi; cache nằm trong constructor của `YouTubeSourceProcessor` (do registry truyền `runtime/cache`) | module không cần biết đường dẫn runtime |
