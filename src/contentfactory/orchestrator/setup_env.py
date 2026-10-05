@@ -88,6 +88,9 @@ class Setup:
     def _ask(self, q: str, default: str | None = None, secret: bool = False) -> str | None:
         if self.yes or not sys.stdin.isatty():
             return default
+        if secret:
+            import getpass
+            return getpass.getpass(f"{q}: ").strip() or default            # không hiện bí mật lên màn hình
         s = input(f"{q}{f' [{default}]' if default else ''}: ").strip()
         return s or default
 

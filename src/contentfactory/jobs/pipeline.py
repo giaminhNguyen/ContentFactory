@@ -101,11 +101,11 @@ STAGES: tuple[Stage, ...] = (
           checkpoint="từng part TikTok (trạng thái từng part trong checkpoint)", params_deps=("render", "fake"),
           config_deps=("render", "adapter_config"), deliverable=True),
     Stage("output", OUTPUT_READY, OUTPUT_PUBLISHING, UPLOAD_READY,
-          ("story_text", "metadata", "video_youtube", "thumbnail", "video_tiktok"),
+          ("metadata", "video_youtube", "thumbnail", "video_tiktok"),
           ("output_package", "publish_metadata"), "output", ("output", "sequence"),
           checkpoint="gói output (dựng rồi mới rename; gói đã có không bị ghi đè — phiên bản mới nằm bên cạnh)",
           params_deps=("language", "project", "channel", "fake"), config_deps=("output", "channel_config", "publishing"),
-          deliverable=True, optional=("tiktok_render_report",)),
+          deliverable=True, optional=("story_text", "tiktok_render_report")),      # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
     Stage("publish", UPLOAD_READY, UPLOADING, PUBLISHED,
           ("video_youtube", "thumbnail", "publish_metadata"),
           ("publish_result",), "publish", ("publish", "sequence"),

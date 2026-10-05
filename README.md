@@ -84,6 +84,10 @@ Thứ tự ưu tiên: tham số bạn gõ > preset kênh > mặc định. Chỉ 
 - Render ContentFlow video dài 10–60 phút và NVENC chưa kiểm chứng ở quy mô thật.
 - Thumbnail cần template + font tự đặt; chưa có UI (chỉ CLI); chưa có thông báo (email/Telegram); chỉ Windows được thử (script `.ps1`/`.cmd`).
 
+## Tài liệu
+
+`docs/USER_GUIDE.md` (dùng hằng ngày, chạy một phần pipeline), `docs/TROUBLESHOOTING.md` (mã lỗi và cách xử lý), `docs/PRODUCTION_CHECKLIST.md` (cái gì đã kiểm chứng thật, cái gì chưa), `docs/ARCHITECTURE.md` (tóm tắt kiến trúc).
+
 ## Dành cho người phát triển
 
 `HANDOFF.md` (thiết kế), `docs/DECISIONS.md` (quyết định D-01…), `docs/MODULE_CONTRACTS.md`, `docs/IMPLEMENTATION_PHASES.md`, `docs/DEVELOPER.md` (lệnh nâng cao, nhật ký phase). Lõi chỉ dùng stdlib, Python ≥ 3.10. Test: `python -m unittest discover -s tests -t .`.

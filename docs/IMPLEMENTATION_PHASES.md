@@ -89,7 +89,12 @@ Không bắt đầu Phase 7.
 **Đã làm (D-82…D-87):** `cf go <url> --channel K` (một lệnh), channel preset (TTS profile, pool, render, tiktok, audio, watermark, publishing), Auto Resume/Retry (có từ 2.9; `go` chờ + chỉ dẫn), Auto Cleanup, Auto Naming (làm sạch hình thức), Auto TTS profile, Auto pool, `doctor`, `setup.ps1`, `update.ps1`, `start.ps1`, `cf demo`, CLI cơ bản vs `--advanced`, E2E URL → gói output.
 **Chưa làm:** ≥3 job chồng stage ở quy mô thật (đo), giám sát daemon uploader, thông báo, UI, Linux/macOS, TTS thật (Phase 8), upload thật.
 
-## Phase 8 — Engine TTS thật + Auto-Profile bằng AI (HANDOFF §7–8)
+## Phase 8 — Kiểm chứng production và phát hành ✅ (đã xong trong phạm vi môi trường cho phép)
+
+**Đã làm (D-88):** harness `scripts/validate_real.py` (URL thật → source thật → audio ffmpeg thật → ContentFlow thật → output; SUBTITLE_ONLY; VIDEO_ONLY dài), `tests/test_phase8.py` (video-only không cần story, chẩn đoán, bí mật, upload không chặn render, kill/restart với ffmpeg + ContentFlow thật), sửa lỗi tìm thấy, `docs/{USER_GUIDE,TROUBLESHOOTING,ARCHITECTURE,PRODUCTION_CHECKLIST}.md`.
+**Chưa kiểm chứng:** Story thật (token), TTS thật, upload thật, NVENC, video dài 10–60 phút, Linux/macOS (xem `docs/PRODUCTION_CHECKLIST.md` §B).
+
+## Phase 8b — Engine TTS thật + Auto-Profile bằng AI (HANDOFF §7–8)
 
 **Đã có từ Phase 3:** Analyzer tĩnh, Auto Tune, `CommandTTS`, profile có evidence (D-57…D-63).
 **Làm:** onboard engine TTS thật đầu tiên và engine thứ hai (kiểm chứng contract tổng quát), nối LLM thật cho `ai_infer` của Analyzer và `AISegmentPlanner` (kiểm chứng chất lượng, chi phí), chạy Auto Tune trên engine thật, human review nghe thử, adapter HTTP tổng quát nếu engine cần, dọn dẹp cache TTS.

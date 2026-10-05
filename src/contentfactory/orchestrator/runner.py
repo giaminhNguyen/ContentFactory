@@ -72,6 +72,7 @@ class Orchestrator:
         self.monitor.adapters_health = self.monitor.adapters_health or self._adapters_health
         self._last_tick = 0.0
         self._last_cleanup = 0.0
+        self._manifest_lock = threading.Lock()
         self.pool_sync = PoolSyncService(self)
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
 
@@ -400,7 +401,8 @@ class Orchestrator:
     def _manifest(self, job_id: str) -> None:
         jd = job_dir(self.cfg.path("workspace"), job_id)
         if jd.exists():
-            M.write(self.store, jd, job_id, self.versions)
+            with self._manifest_lock:                       # dựng + ghi trong cùng một khóa: người ghi sau luôn thấy trạng thái mới hơn (không để bản cũ đè bản mới)
+                M.write(self.store, jd, job_id, self.versions)
 
     def _progress_fn(self, job_id: str, stage: str):
         last = [0.0]

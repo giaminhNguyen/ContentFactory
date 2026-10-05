@@ -97,6 +97,15 @@ class Doctor:
         loc = self.cfg.root / "config" / "config.local.json"
         self.add("config", g, "ok" if loc.exists() else "warn", "đã có config/config.local.json" if loc.exists() else "chưa có config/config.local.json (đang chạy cấu hình mặc định = adapter GIẢ)",
                  "" if loc.exists() else "chạy setup để cấu hình máy")
+        tracked = self.cfg.root / "config" / "config.json"                      # config.json được commit: không được chứa bí mật
+        try:
+            raw = json.loads(tracked.read_text(encoding="utf-8-sig")) if tracked.is_file() else {}
+        except (OSError, ValueError):
+            raw = {}
+        leaked = [k for k in ("token", "client_secret", "api_key", "password") if k in json.dumps(raw)]
+        if leaked:
+            self.add("config.secrets", g, "warn", f"config/config.json (được commit) có khóa nhạy cảm: {', '.join(leaked)}",
+                     "chuyển sang config/config.local.json hoặc config/secrets.local.env (không commit)")
 
     def media(self) -> None:
         g = "Media"

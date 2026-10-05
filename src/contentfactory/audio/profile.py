@@ -93,7 +93,3 @@ def resolve(params: dict | None) -> dict:
     if errs:
         raise StageError(ErrorClass.POLICY, "INVALID_AUDIO_PROFILE", "; ".join(errs), {"errors": errs})
     return prof
-
-
-def width_bytes(prof: dict) -> int:
-    return SAMPLE_FMTS[prof["format"]["sample_fmt"]]

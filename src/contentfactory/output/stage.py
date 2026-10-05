@@ -45,7 +45,7 @@ def run(ctx: StageContext, output: OutputPublisher, sequence) -> StageResult:
              for r in sorted(ctx.inputs["video_tiktok"], key=lambda r: r["meta"]["index"])]
     pkg = output.publish({
         "job_id": ctx.job_id, "project": project, "youtube_title": pm["youtube_title"], "description": pm["description"],
-        "output_root": Path(ctx.config["output_dir"]), "story": _ref_entry(ctx, ctx.inputs["story_text"][0]),
+        "output_root": Path(ctx.config["output_dir"]), "story": _ref_entry(ctx, ctx.inputs["story_text"][0]) if ctx.inputs.get("story_text") else None,
         "youtube_video": _ref_entry(ctx, ctx.inputs["video_youtube"][0]), "youtube_thumbnail": _ref_entry(ctx, ctx.inputs["thumbnail"][0]),
         "tiktok_parts": parts, "warnings": pm["warnings"]}, ctx)
     receipt = ctx.stage_dir / "receipt.json"

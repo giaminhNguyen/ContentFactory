@@ -532,7 +532,7 @@ class GoTest(RootCase):
         s = ops.summary(orc, bad, out.append)
         self.assertFalse(s["ok"])
         self.assertIn("LỖI", out[0])
-        self.assertIn(f"retry {bad}", out[0])
+        self.assertIn(f"retry {bad}", " ".join(out))
 
     def test_channel_init_and_list(self):
         cfg = load_config(self.root)

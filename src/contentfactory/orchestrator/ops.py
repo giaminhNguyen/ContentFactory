@@ -18,18 +18,9 @@ from ..contracts import ErrorClass, StageError
 from ..jobs import pipeline as P
 from ..jobs.workspace import job_dir
 from . import channels as CH
+from .diagnose import USER_ONLY_HOLDS, explain, format_lines
 from .config import Config, load_config
 
-USER_ONLY_HOLDS = {P.PAUSED_CREDENTIAL, P.PAUSED_MISSING_INPUT}
-ADVICE = {
-    P.PAUSED_CREDENTIAL: "cần đăng nhập/credential: chạy `yt-uploader login` (hoặc kiểm tra API key), rồi `resume {job}`",
-    P.PAUSED_MISSING_INPUT: "thiếu thứ người dùng phải cung cấp (asset thumbnail, pool video, ...): xem chi tiết rồi `resume {job}`",
-    P.PAUSED_QUOTA: "hết quota/giới hạn: tự tiếp tục khi tới thời điểm reset nếu `start` đang chạy; hoặc `resume {job}` sau đó",
-    P.PAUSED_TOKEN: "hết token/usage của dịch vụ AI: tự tiếp tục khi tới thời điểm reset nếu `start` đang chạy",
-    P.PAUSED_NETWORK: "mất mạng: tự tiếp tục khi có mạng nếu `start` đang chạy; hoặc `resume {job}`",
-    P.PAUSED_DISK: "hết chỗ trống đĩa: dọn dẹp (`cleanup`) rồi `resume {job}`",
-    P.PAUSED_RESOURCE: "một công cụ/dịch vụ chưa sẵn sàng (ffmpeg, daemon uploader, ContentFlow...): chạy `doctor`, rồi `resume {job}`",
-}
 
 
 # ====================================================================================== daemon uploader
@@ -118,7 +109,7 @@ def go(orc, value: str, channel: str | None = None, title: str | None = None, ki
 
 def summary(orc, jid: str, echo=print) -> dict:
     j = orc.store.get_job(jid)
-    res = {"job_id": jid, "state": j["state"], "hold": j.get("hold_reason"), "output_dir": None, "youtube_url": None, "ok": j["state"] == P.PUBLISHED}
+    res = {"job_id": jid, "state": j["state"], "hold": j.get("hold_reason"), "output_dir": None, "youtube_url": None, "ok": P.is_complete(j["state"], j.get("target_idx"))}
     jd = job_dir(orc.cfg.path("workspace"), jid)
     for a in orc.store.artifacts(jid):
         if a["kind"] in ("output_package", "publish_result"):
@@ -132,13 +123,15 @@ def summary(orc, jid: str, echo=print) -> dict:
                 res["youtube_url"] = d.get("remote_url")
     if res["ok"]:
         echo(f"XONG job {jid}")
-    elif j["state"] == P.FAILED:
-        e = j.get("last_error") or {}
-        echo(f"LỖI job {jid} ở stage {j['failed_stage']}: {e.get('code')}: {e.get('message', '')[:300]}\n  -> sửa nguyên nhân rồi `retry {jid}`")
-    elif j.get("hold_reason"):
-        echo(f"ĐANG GIỮ job {jid}: {j['hold_reason']} - {j.get('hold_detail')}\n  -> " + ADVICE.get(j["hold_reason"], "xem `doctor`").format(job=jid))
     else:
-        echo(f"job {jid}: {j['state']}")
+        d = explain(orc, jid)
+        head = {"failed": "LỖI", "waiting": "ĐANG CHỜ", "attention": "CẦN BẠN XỬ LÝ"}.get(d["status"])
+        if head:
+            echo(f"{head} job {jid}")
+            for ln in format_lines(d):
+                echo(ln)
+        else:
+            echo(f"job {jid}: {j['state']}")
     if res["output_dir"]:
         echo(f"  Output : {res['output_dir']}")
     if res["youtube_url"]:
@@ -172,12 +165,12 @@ CHANNEL_TEMPLATE = {
     "_doc": "Channel preset (Auto Mode). Chỉnh file này một lần; mỗi lần chạy chỉ cần URL + tên kênh. name: tên hiển thị (thumbnail/mô tả). "
             "sequence.last_used: số Full Audio đã đăng trước đó. watermark: file trong thư mục kênh (không bắt buộc). "
             "preset.tts_profile: tên profile trong tts_profiles/ (trống = tự chọn). preset.pools: pool video nguồn cho youtube/tiktok (trống = tự chọn). "
-            "preset.render.youtube/tiktok: override profile render. publishing: privacy, account_id, tags, playlists, made_for_kids.",
+            "preset.render.youtube/tiktok: override profile render. preset.tiktok: speed/target_part_sec (trống = theo config). publishing: privacy, account_id, tags, playlists, made_for_kids.",
     "title_template": "[Full Audio {sequence}] | {project_title}",
     "description_template": "{project_title}\n\n{channel_name}",
     "sequence": {"last_used": 0},
     "publishing": {"privacy": "private", "made_for_kids": False},
-    "preset": {"tts_profile": None, "pools": {}, "render": {}, "tiktok": {"speed": 2.0, "target_part_sec": 600}},
+    "preset": {"tts_profile": None, "pools": {}, "render": {}, "tiktok": {}},
 }
 
 

@@ -80,7 +80,7 @@ class ResumeTest(RootCase):
         jid = a.submit(params())
         ta = threading.Thread(target=a.run)
         tb = threading.Thread(target=b.run)
-        ta.start(); tb.start(); ta.join(30); tb.join(30)
+        ta.start(); tb.start(); ta.join(120); tb.join(120)            # lease 1 s: dưới tải nặng job có thể bị nhận lại vài lần trước khi xong
         self.assertEqual(a.store.get_job(jid)["state"], P.PUBLISHED)
         self.assertEqual(self.runs(a, jid), {s.name: ["succeeded"] for s in P.STAGES})
 

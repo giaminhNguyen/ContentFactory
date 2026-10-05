@@ -79,8 +79,9 @@ class BuiltinOutputPublisher:
         parts = sorted(req["tiktok_parts"], key=lambda p: p["index"])
         width = max(2, len(str(len(parts))))
         thumb_ext = req["youtube_thumbnail"]["path"].suffix.lower() or ".jpg"
-        plan = [("story.txt", "story", req["story"]), ("youtube/video.mp4", "youtube_video", req["youtube_video"]),
-                (f"youtube/thumbnail{thumb_ext}", "youtube_thumbnail", req["youtube_thumbnail"])]
+        plan = [("story.txt", "story", req["story"])] if req.get("story") else []         # job chạy từ audio có sẵn thì không có truyện
+        plan += [("youtube/video.mp4", "youtube_video", req["youtube_video"]),
+                 (f"youtube/thumbnail{thumb_ext}", "youtube_thumbnail", req["youtube_thumbnail"])]
         plan += [(f"tiktok/part_{p['index']:0{width}d}.mp4", "tiktok_part", p) for p in parts]
         texts = {"youtube/title.txt": req["youtube_title"] + "\n", "youtube/description.txt": req["description"] + "\n"}
         sig = hashlib.sha256(json.dumps({"files": [(rel, e["sha256"]) for rel, _, e in plan], "texts": texts,
@@ -115,7 +116,7 @@ class BuiltinOutputPublisher:
                 files.append(row)
             for rel, text in texts.items():
                 files.append({"path": rel, "role": rel.split("/")[1].split(".")[0], **_text_entry(tmp / rel, text)})
-            atomic_write_text(tmp / "README.txt", self._readme(req, version, supersedes, files, parts, width, final.name))
+            atomic_write_text(tmp / "README.txt", self._readme(req, version, supersedes, files, parts, width))
             files.append({"path": "README.txt", "role": "readme"})
             atomic_write_json(tmp / "project.json", self._project_json(req, version, supersedes, sig, files, parts))
             os.replace(tmp, final)
@@ -133,7 +134,7 @@ class BuiltinOutputPublisher:
         return {"schema": SCHEMA, "job_id": req["job_id"], "version": version, "supersedes": supersedes,
                 "created": datetime.now().isoformat(timespec="seconds"), "content_sig": sig,
                 "project": {k: req["project"].get(k) for k in ("id", "title", "title_source", "language", "channel_id", "channel_name", "sequence")},
-                "story": {"file": "story.txt", "sha256": by["story.txt"]["sha256"], "bytes": by["story.txt"]["bytes"]},
+                "story": ({"file": "story.txt", "sha256": by["story.txt"]["sha256"], "bytes": by["story.txt"]["bytes"]} if "story.txt" in by else None),
                 "youtube": {"video": next(f["path"] for f in yt if f["role"] == "youtube_video"),
                             "thumbnail": next(f["path"] for f in yt if f["role"] == "youtube_thumbnail"),
                             "title_file": "youtube/title.txt", "description_file": "youtube/description.txt", "title": req["youtube_title"]},
@@ -143,7 +144,7 @@ class BuiltinOutputPublisher:
                 "note": "Thư mục này thuộc về bạn. Pipeline không đọc lại và không sửa nó; render lại sẽ tạo phiên bản mới bên cạnh."}
 
     @staticmethod
-    def _readme(req: OutputRequest, version: int, supersedes: str | None, files: list[dict], parts: list[dict], width: int, dirname: str) -> str:
+    def _readme(req: OutputRequest, version: int, supersedes: str | None, files: list[dict], parts: list[dict], width: int) -> str:
         p = req["project"]
         by = {f["path"]: f for f in files}
 
@@ -154,7 +155,7 @@ class BuiltinOutputPublisher:
                  f"Kênh      : {p.get('channel_name') or p.get('channel_id')}", f"Số tập    : Full Audio {p['sequence']}" if p.get("sequence") else None,
                  f"Ngôn ngữ  : {p.get('language')}", f"Phiên bản : {version}" + (f"  (thay thế bản trước: {supersedes}; bản cũ được giữ nguyên)" if supersedes else ""),
                  "", "NỘI DUNG THƯ MỤC", "----------------",
-                 "story.txt                : truyện đầy đủ, không đánh số chương",
+                 "story.txt                : truyện đầy đủ, không đánh số chương" if "story.txt" in by else None,
                  "youtube/video.mp4        : video YouTube hoàn chỉnh (" + mb("youtube/video.mp4") + ")",
                  "youtube/thumbnail.*      : ảnh thumbnail",
                  "youtube/title.txt        : tiêu đề dùng khi đăng", "youtube/description.txt  : mô tả dùng khi đăng",

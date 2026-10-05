@@ -449,6 +449,16 @@
 - **Đã kiểm chứng:** `setup` thật trên máy này (venv + pip + build uploader + doctor, trong thư mục tạm); E2E giả URL→gói output với FakeYtDlp/ScriptedOhStory + ffmpeg thật (audio) + worker ContentFlow giả.
 - **Chưa làm / chưa kiểm chứng:** TTS thật (Phase 8); upload thật; giám sát/khởi động lại daemon uploader giữa chừng; thông báo; UI; ≥3 job chồng stage ở quy mô thật (có lane theo tài nguyên từ Phase 2.9/5, chưa đo); `setup`/`update` trên Linux/macOS (script chỉ `.ps1`/`.cmd`; lõi Python portable nhưng chưa thử); tự cài Python/ffmpeg chỉ qua winget và cần mở lại terminal.
 
+### D-88 ✅ Phase 8 — kiểm chứng production: sửa lỗi tìm thấy và quy ước chẩn đoán
+- **`story_text` là đầu vào TÙY CHỌN của stage `output`**: job chạy từ audio có sẵn (`VIDEO_ONLY`) không có truyện nhưng vẫn phải ra gói output hoàn chỉnh khi nới target tới `publish`. Gói không có `story.txt`; `project.json.story = null`; README bỏ dòng story. (Trước đó `set_target(publish)` lỗi `thiếu artifact story_text` và người dùng không có gói để mở.)
+- **Chẩn đoán dùng chung** (`orchestrator/diagnose.py`): `explain()` trả job, stage, lý do/mã, provider, artifact đầu vào cần/có, số lần thử, checkpoint, đường đi tiếp (`auto`/`manual`/`retry` + hành động hợp lệ) và đường dẫn log; `ui_status()` gom về `running/queued/waiting/attention/completed/failed` (đạt đích sớm cũng là `completed`). CLI (`status`, `go`) và UI đều dùng ⇒ thông điệp không lệch nhau. Người dùng không cần đọc stack trace; chi tiết ở `job.log.jsonl`.
+- **Không rơi thành `UNEXPECTED` khi cấu hình ContentFlow sai**: không khởi động được worker (thiếu thư mục/Python) ⇒ `CONTENTFLOW_MISSING` (RESOURCE ⇒ giữ job) kèm thông điệp nói rõ khoá cấu hình sai.
+- **Ghi file dùng chung đồng thời** (`fsutil.atomic_write`): tên file tạm riêng cho từng người ghi (pid+thread) và thử lại ngắn khi `os.replace` bị `PermissionError` (Windows). Trước đây hai job cùng nội dung chạy song song (cùng khóa cache TTS) dẫm lên cùng `<key>.json.part` ⇒ một job `FAILED: UNEXPECTED PermissionError`. `TTSManager._cache_put` giờ là best-effort (cache không bao giờ làm hỏng job).
+- **Manifest ghi tuần tự** (khoá dựng+ghi): trước đây hai người ghi đồng thời có thể để bản cũ đè bản mới (test flaky dưới tải: `manifest.hold` mất).
+- **Bí mật**: `doctor` cảnh báo khi `config/config.json` (được commit) chứa khoá nhạy cảm; `setup` nhập client_secret không hiện lên màn hình; có test quét toàn bộ dữ liệu sinh ra (output/workspace/runtime/log/DB/`status`/`doctor --json`).
+- **Dọn code chết**: bỏ `JobStore.update_hold_detail`, `audio.profile.width_bytes`, tham số thừa của `_readme`. Fake adapter/fixture còn dùng bởi test được giữ.
+- **Chưa kiểm chứng ở Phase 8** (cần điều kiện ngoài, xem `docs/PRODUCTION_CHECKLIST.md`): Story thật (token), TTS thật, upload thật (OAuth), NVENC, video 10–60 phút, Linux/macOS.
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:

@@ -80,6 +80,14 @@ class ContentFlowRender:
         return {"ok": ok, "worker_version": d.get("version"), "capabilities": d.get("capabilities"),
                 **({} if ok else {"error": "worker không có khả năng render (thiếu ffmpeg/ffprobe, hoặc thiếu Pillow cho ContentFlow?)"})}
 
+    def _spawn_error(self, e: OSError) -> StageError:
+        """Không khởi động được worker: nói rõ cấu hình nào sai (thư mục ContentFlow hay Python), là vấn đề tài nguyên (giữ job), không phải lỗi vĩnh viễn."""
+        if not self.root.is_dir():
+            msg = f"thư mục ContentFlow không tồn tại: {self.root} (tools.contentflow.root; chạy setup để clone module)"
+        else:
+            msg = f"không chạy được {self.python!r} (tools.contentflow.python): {e}"
+        return StageError(ErrorClass.RESOURCE, "CONTENTFLOW_MISSING", msg, resource="runtime")
+
     def version(self) -> str:
         """Phiên bản ContentFlow (git HEAD + phiên bản worker): vào khóa cache và dấu vân tay pool."""
         if self._version is None:
@@ -113,9 +121,8 @@ class ContentFlowRender:
             try:
                 p = subprocess.Popen([self.python, "-m", "media_worker", "run", "--request", str(req_file), "--base-dir", str(self.base_dir.resolve())],
                                      cwd=str(self.root), stdout=subprocess.PIPE, stderr=ef, stdin=subprocess.DEVNULL, env=self._env())
-            except FileNotFoundError:
-                raise StageError(ErrorClass.RESOURCE, "CONTENTFLOW_MISSING", f"không chạy được {self.python!r} (tools.contentflow.python)",
-                                 resource="runtime") from None
+            except OSError as e:
+                raise self._spawn_error(e) from None
 
             def read() -> None:
                 for raw in iter(p.stdout.readline, b""):
@@ -319,8 +326,11 @@ class ContentFlowRender:
         cancel = getattr(ctx, "cancel", None)
         events: list[dict] = []
         with tempfile_stderr(pool_dir) as ef:
-            p = subprocess.Popen([self.python, str(SHIM), str(rf)], cwd=str(self.root), stdout=subprocess.PIPE, stderr=ef, stdin=subprocess.DEVNULL,
-                                 env=self._env())
+            try:
+                p = subprocess.Popen([self.python, str(SHIM), str(rf)], cwd=str(self.root), stdout=subprocess.PIPE, stderr=ef, stdin=subprocess.DEVNULL,
+                                     env=self._env())
+            except OSError as e:
+                raise self._spawn_error(e) from None
             q: queue.Queue = queue.Queue()
 
             def read() -> None:

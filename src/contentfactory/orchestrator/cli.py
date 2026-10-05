@@ -66,6 +66,14 @@ def _print_status(orc: Orchestrator, job_id: str) -> None:
             print("      " + " ".join(f"{k}={v['state']}" + (f"({v['error']})" if v.get("error") else "") for k, v in sub.items()))
 
 
+def _print_diagnosis(orc: Orchestrator, job_id: str) -> None:
+    """Job lỗi/giữ: in nguyên nhân, provider, số lần thử, checkpoint và đường đi tiếp (không cần đọc log thô)."""
+    from .diagnose import explain, format_lines
+    d = explain(orc, job_id)
+    if d["status"] in ("failed", "waiting", "attention"):
+        print("\n".join(format_lines(d)))
+
+
 def _print_links(orc: Orchestrator, job_id: str) -> None:
     """Gói output và liên kết YouTube (nếu đã đăng) — lấy từ artifact trong workspace, không đọc output/."""
     from ..jobs.workspace import job_dir
@@ -309,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "status":
         for j in ([orc.store.get_job(a.job_id)] if a.job_id else orc.store.list_jobs()):
             _print_status(orc, j["id"])
+            _print_diagnosis(orc, j["id"])
             _print_links(orc, j["id"])
     return 0
 

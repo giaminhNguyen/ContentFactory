@@ -447,10 +447,6 @@ class JobStore:
             self._note(c, job_id, j["state"], now, f"resumed ({'auto' if auto else 'manual'}) from {j['hold_reason']}")
         return "released"
 
-    def update_hold_detail(self, job_id: str, detail: str) -> None:
-        with self._tx() as c:
-            c.execute("UPDATE jobs SET hold_detail=? WHERE id=? AND hold_reason IS NOT NULL", (detail[:500], job_id))
-
     # -- checkpoint, import, cấu hình -------------------------------------------------------
     def set_checkpoint(self, job_id: str, stage: str, info: dict, now: float | None = None) -> None:
         now = now or time.time()

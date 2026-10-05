@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,10 +14,18 @@ def atomic_write(path: Path, write: Callable[[Path], None]) -> Path:
     """Gọi write(tmp) rồi os.replace(tmp, path): path chỉ tồn tại khi file hoàn chỉnh."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
+    # tên tạm riêng cho từng người ghi: hai job ghi cùng một file dùng chung (cache) không được dẫm lên file tạm của nhau
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.part")
     try:
         write(tmp)
-        os.replace(tmp, path)
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:                         # Windows: đích đang được mở/thay bởi tiến trình khác -> thử lại ngắn rồi mới báo lỗi
+                if attempt == 7:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
     finally:
         if tmp.exists():
             tmp.unlink()

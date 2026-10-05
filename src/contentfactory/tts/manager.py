@@ -265,5 +265,8 @@ class TTSManager:
     @staticmethod
     def _cache_put(cache_dir: Path, key: str, src: Path, meta: dict) -> None:
         d = cache_dir / key[:2]
-        _link_or_copy(src, d / f"{key}.wav")
-        atomic_write_json(d / f"{key}.json", meta)
+        try:
+            _link_or_copy(src, d / f"{key}.wav")
+            atomic_write_json(d / f"{key}.json", meta)
+        except OSError:
+            pass                                            # cache chỉ là tối ưu: không bao giờ làm hỏng job (vd hai job ghi cùng khóa cùng lúc)
