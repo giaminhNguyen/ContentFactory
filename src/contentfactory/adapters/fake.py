@@ -3,6 +3,8 @@
 Chèn lỗi / độ trễ qua job.params["fake"][<điểm>] (xem `hook`):
   {"sleep_s": 30, "attempt": 1}              ngủ (huỷ được) chỉ ở attempt 1, để test kill/resume
   {"fail_until_attempt": 2, "error_class": "TRANSIENT", "code": "X"}   lỗi cho tới hết attempt 2
+  thêm "resource": "network|token|quota|disk|runtime|credential|input", "retry_after_s": N, "resume_after_s": N
+  {"fail_while_file": "<path>", ...}          lỗi chừng nào file đó còn tồn tại (test mô phỏng "tài nguyên đã hồi phục")
 Điểm: source, story, tts_chunk_<n>, render_youtube, render_tiktok, publish.
 Audio là WAV thật (stdlib `wave`) để QA/ghép/cắt part có ý nghĩa; video/thumbnail chỉ là byte giả.
 """
@@ -11,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import random
 import shutil
+import time
 import wave
 from pathlib import Path
 
@@ -27,9 +30,12 @@ def hook(ctx: StageContext, point: str) -> None:
     if cfg.get("sleep_s") and cfg.get("attempt") in (None, ctx.attempt):
         ctx.log("fake_sleep", point=point, seconds=cfg["sleep_s"])
         ctx.cancel.wait(cfg["sleep_s"])
-    if ctx.attempt <= cfg.get("fail_until_attempt", 0):
+    still_down = bool(cfg.get("fail_while_file")) and Path(cfg["fail_while_file"]).exists()   # tài nguyên do test điều khiển
+    if ctx.attempt <= cfg.get("fail_until_attempt", 0) or still_down:
         raise StageError(ErrorClass(cfg.get("error_class", "TRANSIENT")), cfg.get("code", "FAKE_FAILURE"),
-                         f"injected at {point}, attempt {ctx.attempt}")
+                         f"injected at {point}, attempt {ctx.attempt}", resource=cfg.get("resource"),
+                         retry_after_s=cfg.get("retry_after_s"),
+                         resume_after=time.time() + cfg["resume_after_s"] if cfg.get("resume_after_s") else None)
 
 
 WORDS = ("đêm khuya gió mưa hẻm nhỏ bước chân xa dần ngọn đèn vàng cánh cửa gỗ tiếng động lạ người đàn ông áo đen "

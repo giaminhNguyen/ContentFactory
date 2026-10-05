@@ -157,16 +157,19 @@ class ProviderChain:
                                  "code": e.code, "message": e.message[:300], "seconds": round(time.time() - t0, 2)})
                 ctx.log("source_provider_failed", "warning", provider=p.name, code=e.code, error_class=e.error_class.value)
                 if e.code in DEFINITIVE:
-                    raise StageError(e.error_class, e.code, e.message, {**e.detail, "attempts": attempts}) from None
+                    raise StageError(e.error_class, e.code, e.message, {**e.detail, "attempts": attempts}, resource=e.resource,
+                                 retry_after_s=e.retry_after_s, resume_after=e.resume_after) from None
                 errors.append(e)
                 continue
             attempts.append({"provider": p.name, "status": "ok", "seconds": round(time.time() - t0, 2)})
             ctx.log("source_provider_ok", provider=p.name, fmt=res.get("subtitle_format"), kind=res.get("subtitle_kind"))
             return res, attempts
         if not errors:
-            raise StageError(ErrorClass.RESOURCE, "NO_SOURCE_PROVIDER", "không provider nào khả dụng", {"attempts": attempts})
+            raise StageError(ErrorClass.RESOURCE, "NO_SOURCE_PROVIDER", "không provider nào khả dụng", {"attempts": attempts},
+                             resource="runtime")
         pick = next((e for e in errors if e.error_class == ErrorClass.TRANSIENT), errors[0])   # còn hy vọng retry thì ưu tiên báo TRANSIENT
-        raise StageError(pick.error_class, pick.code, pick.message, {**pick.detail, "attempts": attempts})
+        raise StageError(pick.error_class, pick.code, pick.message, {**pick.detail, "attempts": attempts},
+                         resource=pick.resource, retry_after_s=pick.retry_after_s, resume_after=pick.resume_after)
 
     def _enrich(self, res: SourceResult, providers: list[SourceProvider], src: SourceInput, ctx: StageContext,
                 attempts: list[dict]) -> SourceResult:

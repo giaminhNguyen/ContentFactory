@@ -161,7 +161,7 @@
 - **Phụ đề:** khóa `sha256(kind, định danh nguồn, ngôn ngữ ưu tiên)`; dấu vân tay trong job (`subtitle_raw.meta.json`) + cache chung `runtime/cache/source/<key>/`; sha256 raw sai thì khôi phục từ cache rồi mới tới mạng; khóa theo khóa cache để job song song cùng nguồn chỉ tải một lần (test race, đã mutation-check). Đổi ngôn ngữ ưu tiên ⇒ khóa khác ⇒ tải lại; `refresh_source` ép tải lại.
 - **Transcript:** dùng lại structured khi `(raw_sha256, format, parser_version, config_hash)` không đổi; clean theo `clean_sha256`. Đổi raw/định dạng/phiên bản/cấu hình ⇒ dựng lại, không tải lại.
 - **Story:** assembly chỉ dựng lại khi sha256 các section đổi; adapter lưu dấu vân tay đầu vào (`sha256(transcript)`, tiêu đề, ngôn ngữ, tên sách, phiên bản adapter) trong `adapter_state.json`: không đổi ⇒ không gọi agent nào; đổi ⇒ cất workspace oh-story cũ sang `oh-story.stale-<fp>` và làm lại từ đầu. Số chương mục tiêu không nằm trong dấu vân tay (tăng số chương chỉ viết tiếp).
-- **Giới hạn:** chưa có `rerun --from <stage>` (đã thiết kế bằng `start_stage`/`target_stage` ở D-36, chưa triển khai): vô hiệu hóa theo tầng xảy ra khi một stage chạy lại (crash/retry/job mới), không phải khi người dùng bắt chạy lại giữa pipeline.
+- **Giới hạn:** chưa có `rerun --from <stage>` cho job đã xong giữa pipeline (Phase 2.9 có `start_stage`/`target_stage` + `from_job` ở D-36/D-51, nhưng chưa có lệnh rerun riêng): vô hiệu hóa theo tầng xảy ra khi một stage chạy lại (crash/retry/job mới), không phải khi người dùng bắt chạy lại giữa pipeline.
 
 ### D-35 ✅ Môi trường chạy của Subtitle_supperVip
 - Cần Python env riêng có `youtube-transcript-api` (README của module: 3.12+; máy audit chỉ có 3.10 và 3.13, chạy được trên 3.13 và cả 3.10 qua test với stub). Cấu hình `supervip.python`, hoặc `backend/.venv` nếu có, nếu không thì dùng Python hiện tại. `health()` chạy bridge `health` (nạp code thật của module) để báo thiếu; `doctor`/`setup` tự động cài env để phase sau.
@@ -173,7 +173,7 @@
 - **Use case tối thiểu và cách biểu diễn:** chỉ tải subtitle (`source→source`); chỉ tạo story (`source→story`); chạy đến TTS (`target=tts`); TTS từ `story.txt` có sẵn (`start=tts`, import `story_text`); render từ audio có sẵn (`start=audio` hoặc `render_youtube`, import `audio_*` + `metadata`); full. Bảng đầy đủ ở HANDOFF §15A.
 - **Hợp lệ / skip:** sha256 khớp + qua validator của kind + `stage_key` khớp. Import phải qua validator (một `story.txt` có sẵn vẫn qua validator bất biến). Stage trước `start_stage` không bao giờ chạy; thiếu input ⇒ từ chối lúc tạo job, hoặc `PAUSED_MISSING_INPUT` nếu mất lúc chạy.
 - **Vì sao theo kind:** khớp cách pipeline đã khai báo `requires`/`produces` (Phase 1); stage `tts` chỉ cần `story_text`, không cần biết Story đã chạy thế nào.
-- **Hiện trạng:** đã có `requires`/`produces`, resume theo file, `stage_key` được lưu; **chưa có** `start_stage`/`target_stage`, import, skip theo validator. Đây cũng là cách thực hiện "đổi watermark chỉ build lại nhánh YouTube" (D-34 từng ghi là thiếu `rerun --from`).
+- **Hiện trạng (Phase 2.9): ĐÃ TRIỂN KHAI.** `jobs/pipeline.py` (hợp đồng stage), `jobs/plan.py` (planner), `orchestrator/stages.py` (`StageContract`: validate/skip/`stage_key`), `orchestrator/validation.py` (validator theo kind), import/`from_job` ở `Orchestrator.submit`. Xem D-50…D-56.
 
 ### D-37 ✅ Tách lỗi tài nguyên tạm thời (hold/PAUSED) khỏi lỗi vĩnh viễn
 - **Quyết định:** lỗi tài nguyên tạm thời **không phải job failure**. Job bị *hold* với lý do `PAUSED_NETWORK | PAUSED_TOKEN | PAUSED_QUOTA | PAUSED_DISK | PAUSED_RESOURCE | PAUSED_CREDENTIAL | PAUSED_MISSING_INPUT`; lỗi vĩnh viễn là `FAILED_PERMANENT`.
@@ -197,12 +197,12 @@
 - Backoff mũ có **jitter ±20%**, sàn 1 s, trần 5 phút, ngân sách theo lớp lỗi (TRANSIENT mặc định 3).
 - **`Retry-After`** của provider (giây hoặc HTTP-date) là cận dưới: `delay = max(backoff, Retry-After)`; nếu quá ngưỡng (mặc định 10 phút) thì chuyển thành hold có `resume_after` thay vì ngủ trong hàng đợi.
 - Không polling/retry dày: probe có cooldown riêng; nhịp scheduler 0,5 s nội bộ không phải tần suất gọi dịch vụ ngoài.
-- **Hiện trạng:** backoff cố định `[2, 10, 60]` s, 3 lần, không jitter, không đọc `Retry-After`.
+- **Hiện trạng (Phase 2.9): ĐÃ TRIỂN KHAI** ở `jobs/policy.py` (`RetryPolicy`, `outcome_for` — hàm thuần, test bằng bảng). Mặc định: `[2, 10, 60]` s, 3 lần, jitter ±20%, sàn 1 s, trần 300 s, ngưỡng `Retry-After` 600 s. `db.fail()` giữ làm wrapper tương thích (không jitter).
 
 ### D-41 ✅ Config snapshot theo job
 - Lúc bắt đầu, snapshot **cấu hình ngữ nghĩa** (adapters/providers, ngôn ngữ, dựng câu, `story_branch`, `tiktok`, mẫu output, retry, `auto_resume` đã resolve, start/target) vào DB (JSON + hash) và manifest. **Không** snapshot: đường dẫn máy, giới hạn đồng thời, lease/heartbeat, và **secrets** (không bao giờ vào snapshot/manifest/log).
 - Đổi global config không làm đổi job đang chạy; đổi config của job chỉ bằng hành động explicit (`config set`), ghi `config_revision`; chỉ stage có `stage_key` bị ảnh hưởng mới chạy lại.
-- **Hiện trạng:** mới có một phần (`job_defaults` được gộp vào `params` lúc tạo job); adapters/providers/retry/source vẫn đọc từ config global lúc chạy và adapter được dựng một lần cho cả orchestrator ⇒ **một thay đổi global sẽ ảnh hưởng job đang chạy**. Đây là khoảng cách cần đóng khi triển khai.
+- **Hiện trạng (Phase 2.9): ĐÃ TRIỂN KHAI** ở `orchestrator/snapshot.py`. Snapshot = `adapters, source, supervip, youtube, story_branch, retry, output` (+ `auto_resume`, start/target), secrets bị che, không có config máy (đường dẫn, lease, giới hạn đồng thời). Adapter của job dựng từ snapshot (tái dùng bộ adapter mặc định khi hash adapter khớp). `config_revision` tăng khi đổi bằng `set_job_config`. Job tạo trước migration (không snapshot) dùng config global như cũ.
 
 ### D-42 ✅ Ghi chú thiết kế chung cho job control
 - Mọi hành động thay đổi cách chạy của một job đều **explicit** (`resume`, `config set`, `retry`); mọi tự động hóa (Auto Resume) đều có điều kiện, có giới hạn và để lại dấu vết (`transitions`, log, manifest).
@@ -242,6 +242,35 @@
 
 ### D-49 ✅ Đánh số phase hiện hành
 - Phase 3 = TTS; Phase 4 = Audio (AudioProcessor: audio YouTube có watermark, tăng tốc + cắt part TikTok); Phase 5 = Render (ContentFlow adapter, profile 16:9/9:16, Source Sync, thumbnail); Phase 6 = Publishing (Metadata Builder, Sequence Manager, publish package, `yt_uploader`); Phase 7 = Bất đồng bộ + vận hành; Phase 8 = TTS Auto-Profile. Thay cho cách đánh số ở D-28.
+
+### D-50 ✅ Migration DB có phiên bản; hold là cột, không phải state mới
+- `SCHEMA` Phase 1 giữ nguyên (v0). `PRAGMA user_version` = 1 thêm **cột/bảng** (`start_stage`, `target_stage`, `target_idx`, `hold_*`, `resume_after`, `hold_sig`, `auto_resumes_without_progress`, `needs_user`, `auto_resume`, `config_snapshot/hash/revision`, `checkpoint`, `progress`; bảng `resource_status`). DB mới và DB cũ cùng đi qua `JobStore._migrate`: chỉ `ADD COLUMN`, một transaction, tuần tự hóa bằng `BEGIN IMMEDIATE`, sao lưu `<db>.bak-v0` (qua `sqlite3.backup`) nếu DB đã có job. Job cũ: `target_stage` NULL = chạy full; `snapshot` NULL = dùng config global (hành vi cũ).
+- **Vì sao hold là cột:** máy trạng thái, bảng chuyển hợp lệ và mọi test Phase 1–2.5 giữ nguyên; `state` luôn là *vị trí pipeline*, `hold_reason` chỉ ngăn `claim`. `FAILED_PERMANENT` ≡ `FAILED`.
+- `nonterminal_count()` nay đếm job **active** (chưa terminal, chưa đạt target, không bị giữ) → `run()` thoát khi chỉ còn job bị giữ/đã đạt target; `--forever` để theo dõi và auto resume.
+
+### D-51 ✅ Planner: `plan_job(start, target, provided, has_input)`
+- Duyệt ngược theo **kind** từ target: stage cần chạy nếu là `deliverable` (render_youtube, render_tiktok, output, publish) hoặc sinh ra kind còn thiếu cho stage sau. `start_stage` tường minh = cận dưới; không chỉ định = stage sớm nhất thực sự cần. Thiếu kind đầu vào cho đoạn chạy ⇒ lỗi **ngay lúc `submit`** (không tạo job nửa vời). `Orchestrator.plan()` / `contentfactory plan` xem trước (không tạo job).
+- `MODES`: `FULL, SUBTITLE_ONLY, STORY_ONLY, THROUGH_TTS, TTS_ONLY, VIDEO_ONLY` là tên gọi cho cặp (start, target). `VIDEO_ONLY` đích là `render_tiktok` (cả hai render đều `deliverable` nên cùng chạy).
+
+### D-52 ✅ Skip khi artifact hợp lệ; `stage_key` theo khai báo (đóng R26)
+- Stage bị bỏ qua (`stage_runs.status = 'skipped'`, state vẫn tiến) khi **mọi output job thực sự cần** (`consumed_outputs`) đã có, file còn nguyên (tồn tại, size, **sha256**), qua validator theo kind, và nếu do chính stage sinh thì `stage_key` khớp. Artifact import (`stage = 'import'`) là "provided". File import bị sửa/xóa ⇒ không skip; thiếu input lúc chạy ⇒ `PAUSED_MISSING_INPUT`.
+- `stage_key` = sha256(stage, `params_deps`, `config_deps`, adapter đã khai báo, sha256 các input). Đổi `made_for_kids` không làm TTS chạy lại; đổi `tts.*` thì có (test `test_stage_key_depends_only_on_declared_deps`). Chưa dùng cache-hit **liên job** (vẫn như cũ); `from_job` sao chép artifact đã kiểm.
+
+### D-53 ✅ Phân loại lỗi và hold
+- `StageError` thêm `resource` (`network|provider|token|quota|disk|runtime|credential|input`), `retry_after_s`, `resume_after`. Các điểm ném lỗi của Source/Subtitle_supperVip/yt-dlp/Claude CLI đã được gắn `resource`. Ánh xạ: RESOURCE → hold theo `resource`; AUTH → `PAUSED_CREDENTIAL`; TRANSIENT hết ngân sách + có `resource` → hold; `Retry-After` > ngưỡng → hold có `resume_after`; POLICY + `resource="input"` → `PAUSED_MISSING_INPUT`; POLICY/AMBIGUOUS → `FAILED_PERMANENT`. Hold **không** tiêu `retry_used`.
+- **Giới hạn trung thực:** nhận diện "hết token/quota" dựa trên mẫu chuỗi trong thông báo (yt-dlp 429, Claude "usage limit"…), chưa kiểm chứng với lỗi thật; không parse được thời điểm reset thì dùng mặc định (`token_hold_default_s` 900 s, `quota_hold_default_s` 3600 s).
+
+### D-54 ✅ Auto Resume và Resource Monitor (Phase 2.9: khung + probe cơ bản)
+- `ResourceMonitor` (`orchestrator/monitor.py`) + `ResourceProbe` (`contracts.py`). Có sẵn probe `network` (TCP), `disk` (`shutil.disk_usage`, ngưỡng GB theo stage), `CallableProbe`; hold theo thời gian (`token/quota`) hồi phục khi tới `resume_after`; `runtime/credential` dùng `health()` của adapter; `missing_input` kiểm lại file. Cooldown mũ (`base_s`→`max_s`), probe lỗi không làm sập scheduler. **Không AI.** Probe riêng (GPU/NVENC, quota provider) do Phase sau đăng ký.
+- `auto_resume_default = true`; `job.auto_resume` chốt vào snapshot. **ON:** mỗi `tick_s` (mặc định 1 s) scheduler gọi monitor cho job bị giữ, hợp lệ ⇒ `release_hold(auto=True)` ⇒ chạy lại từ checkpoint. **OFF:** monitor vẫn cập nhật `resource_status` nhưng job chờ `resume`/`resume --now`; `resume` bị từ chối (`still_down`) khi tài nguyên còn hỏng.
+- **Không vô hạn:** `hold_sig` = băm checkpoint; hai lần hold liên tiếp cùng checkpoint ⇒ đếm "không tiến triển"; đạt `max_auto_resumes_without_progress` (5) ⇒ `needs_user=1`, dừng auto (job vẫn `PAUSED_*`, không `FAILED`); người dùng `resume` vẫn được và xóa cờ.
+
+### D-55 ✅ Checkpoint chi tiết
+- Handler gọi `ctx.progress(done, total, detail)` ⇒ `jobs.checkpoint` (JSON theo stage) + `jobs.progress`. Đã gắn: Source (3 bước), TTS (từng segment/chunk), Audio (YouTube, từng part TikTok), Render (video/thumbnail, từng part TikTok). Ghi có throttle 50 ms (cập nhật cuối luôn ghi). **Nguồn sự thật để resume vẫn là file/artifact trên đĩa**; `checkpoint` là tiến độ để hiển thị và để phát hiện "không tiến triển". Story theo section và upload YouTube retry không render lại: cơ chế file/section đã có từ Phase 2, `ctx.progress` cho Story/Publish sẽ gắn cùng adapter thật (Phase 6).
+
+### D-56 ✅ Phạm vi Phase 2.9 và những gì CHƯA làm
+- Chưa có: `pause` chủ động, `cancel`, `rerun --from <stage>` giữa pipeline cho job đã xong (dùng `from_job` + start_stage), cache liên job, probe GPU/quota thật, tách Resource Monitor thành tiến trình riêng, `ctx.progress` trong Story/Publish. Ngưỡng đĩa và các hằng retry là **ước lượng**, chỉnh theo máy.
+- Test thời gian dùng lease 1 s nên nhạy với máy đang quá tải (một lần hiếm gặp đã thấy fail do một tiến trình `find /` chạy nền; chạy lại xanh).
 
 ## 2. Câu hỏi còn mở
 
@@ -297,13 +326,9 @@ Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt 
 - Metadata (mô tả, kênh) đầy đủ phụ thuộc yt-dlp (không có trong supervip); thiếu cả hai thì title = video id.
 - Chưa có ASR khi video không có phụ đề nào, chưa có `doctor`/`setup` tự dựng env cho supervip.
 
-## 7. Hiện trạng job control sau Phase 2.5
+## 7. Hiện trạng job control sau Phase 2.9
 
-Thiết kế D-36…D-42 là **tài liệu**; code chưa đổi. Những điều **không** đúng trong code hiện tại, để không ai hiểu nhầm:
-- Không có `start_stage`/`target_stage`/import: job luôn đi `NEW → … → PUBLISHED`.
-- `RESOURCE`/`AUTH` đi thẳng vào `FAILED`; không có hold, không có Auto Resume, không có Resource Monitor.
-- Backoff cố định, không jitter, không `Retry-After`.
-- Config global được đọc lúc chạy; thay đổi config có thể ảnh hưởng job đang chạy.
+D-36…D-42 đã **triển khai** ở Phase 2.9 (xem D-50…D-56). Còn lại chưa làm: `pause`/`cancel`/`rerun --from`, cache liên job theo `stage_key`, probe GPU/quota thật, `ctx.progress` cho Story/Publish. Tương thích: job tạo trước migration chạy full với config global như cũ.
 
 ## 8. Hiện trạng metadata/publishing sau bước này
 

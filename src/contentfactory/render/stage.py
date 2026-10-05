@@ -18,6 +18,7 @@ def run_youtube(ctx: StageContext, render: RenderAdapter) -> StageResult:
     ctx.cancel.check()
     if not thumb.is_file():
         render.render_thumbnail({"title": meta["title"], "channel_name": ctx.params.get("channel", ""), "output": thumb}, ctx)
+    ctx.progress(2, 2, "video+thumbnail")
     return StageResult([ctx.draft(video, "video_youtube"), ctx.draft(thumb, "thumbnail")])
 
 
@@ -31,4 +32,5 @@ def run_tiktok(ctx: StageContext, render: RenderAdapter) -> StageResult:
         if not out.is_file():
             render.render_video({"audio": ctx.path(ref), "output": out, "profile": prof}, ctx)
         arts.append(ctx.draft(out, "video_tiktok", index=i))
+        ctx.progress(len(arts), len(ctx.inputs["audio_tiktok"]), "parts")
     return StageResult(arts, {"parts": len(arts)})

@@ -77,6 +77,10 @@ def classify_error(stderr: str) -> StageError:
         return StageError(ErrorClass.POLICY, "VIDEO_UNAVAILABLE", tail)
     if re.search(r"sign in to confirm|not a bot|login required|cookies", s):
         return StageError(ErrorClass.AUTH, "YOUTUBE_SIGNIN_REQUIRED", tail)
+    if re.search(r"429|too many requests|rate.?limit", s):          # bị giới hạn tốc độ: tài nguyên TẠM THỜI (quota)
+        return StageError(ErrorClass.TRANSIENT, "YTDLP_FAILED", tail, resource="quota")
+    if re.search(r"timed out|connection|network|name or service|temporary failure|unable to download|getaddrinfo", s):
+        return StageError(ErrorClass.TRANSIENT, "YTDLP_FAILED", tail, resource="network")
     return StageError(ErrorClass.TRANSIENT, "YTDLP_FAILED", tail)
 
 
@@ -94,9 +98,10 @@ class YtDlp:
                                encoding="utf-8", errors="replace", timeout=self.timeout)
         except FileNotFoundError:
             raise StageError(ErrorClass.RESOURCE, "YTDLP_MISSING",
-                             f"không chạy được {self.cmd!r}; cài bằng `pip install yt-dlp` hoặc đặt youtube.yt_dlp_cmd") from None
+                             f"không chạy được {self.cmd!r}; cài bằng `pip install yt-dlp` hoặc đặt youtube.yt_dlp_cmd",
+                             resource="runtime") from None
         except subprocess.TimeoutExpired:
-            raise StageError(ErrorClass.TRANSIENT, "YTDLP_TIMEOUT", f">{self.timeout}s") from None
+            raise StageError(ErrorClass.TRANSIENT, "YTDLP_TIMEOUT", f">{self.timeout}s", resource="network") from None
         if p.returncode != 0:
             raise classify_error(p.stderr)
         return p.stdout

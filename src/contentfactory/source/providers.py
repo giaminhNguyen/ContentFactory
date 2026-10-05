@@ -77,9 +77,10 @@ class SubtitleSupperVipProvider:
             p = subprocess.run([self.python, str(BRIDGE), *args], capture_output=True, text=True, encoding="utf-8",
                                errors="replace", timeout=self.timeout, env=env)
         except FileNotFoundError:
-            raise StageError(ErrorClass.RESOURCE, "SUPERVIP_UNAVAILABLE", f"không chạy được {self.python!r}") from None
+            raise StageError(ErrorClass.RESOURCE, "SUPERVIP_UNAVAILABLE", f"không chạy được {self.python!r}",
+                             resource="runtime") from None
         except subprocess.TimeoutExpired:
-            raise StageError(ErrorClass.TRANSIENT, "SUPERVIP_TIMEOUT", f">{self.timeout}s") from None
+            raise StageError(ErrorClass.TRANSIENT, "SUPERVIP_TIMEOUT", f">{self.timeout}s", resource="network") from None
         lines = [l for l in p.stdout.splitlines() if l.strip()]
         try:
             return json.loads(lines[-1])
@@ -95,9 +96,9 @@ class SubtitleSupperVipProvider:
         if kind == "LanguageUnavailable":
             return StageError(ErrorClass.POLICY, "LANGUAGE_UNAVAILABLE", msg)
         if kind == "BlockedByYouTube":                 # IP bị chặn/rate limit: chờ hoặc đổi mạng, không phải lỗi dữ liệu
-            return StageError(ErrorClass.RESOURCE, "YOUTUBE_BLOCKED", msg)
+            return StageError(ErrorClass.RESOURCE, "YOUTUBE_BLOCKED", msg, resource="network")
         if kind == "BridgeError" and err.get("type") in ("ModuleNotFoundError", "ImportError"):
-            return StageError(ErrorClass.RESOURCE, "SUPERVIP_DEPENDENCY_MISSING", msg)
+            return StageError(ErrorClass.RESOURCE, "SUPERVIP_DEPENDENCY_MISSING", msg, resource="runtime")
         return StageError(ErrorClass.TRANSIENT, "SUPERVIP_ERROR", f"{err.get('type', kind)}: {msg}")
 
     def acquire(self, src: SourceInput, work_dir: Path, ctx: StageContext, prefs: dict) -> SourceResult:

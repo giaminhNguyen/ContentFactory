@@ -444,22 +444,24 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 | Cấu hình | `youtube.preferred_langs`, `youtube.reconstruct` | `source.providers`, `source.languages`, `source.allow_translation`, `source.reconstruct`, `supervip.*`, `youtube.yt_dlp_*` (chỉ fallback) | nhiều provider |
 | Adapter name | `youtube` | `provider_chain` | |
 
-## 11. Job control (thiết kế đã chốt, chưa triển khai)
+## 11. Job control (đã triển khai ở Phase 2.9)
 
 > Nguồn: `HANDOFF.md` §15A–§15C; quyết định `DECISIONS.md` D-36…D-42. Mục này là **hợp đồng đích**; phần "Hiện trạng" cho biết code đang ở đâu.
 
 ### 11.1 Hiện trạng so với thiết kế
 
-| Năng lực | Đã có trong code | Còn thiếu |
+| Năng lực | Mã | Ghi chú |
 |---|---|---|
-| Stage có `requires`/`produces` theo kind | ✅ `jobs/pipeline.py`, kiểm khi seal | — |
-| Resume theo checkpoint | ✅ lease + reuse file (chunk TTS, section Story, raw/transcript Source) | ghi tiến độ chi tiết vào DB |
-| `stage_key` | ✅ tính và lưu | dùng để quyết định skip/chạy lại |
-| `start_stage` / `target_stage` / import / `from_job` | ❌ | toàn bộ |
-| Hold / `PAUSED_*` / Auto Resume / Resume Now | ❌ (`RESOURCE` hiện đi thẳng vào `FAILED`) | toàn bộ |
-| Resource Monitor | ❌ (chỉ có `health()` rời rạc ở adapter) | toàn bộ |
-| Retry có jitter, `Retry-After` | ❌ (backoff cố định 2/10/60 s, 3 lần) | toàn bộ |
-| Config snapshot theo job | ⚠️ một phần: `job_defaults` được gộp vào `params` lúc tạo job | adapters/providers/retry/… vẫn đọc từ config global lúc chạy |
+| Stage có `requires`/`produces`, `params_deps`/`config_deps`, `deliverable`, `checkpoint` | ✅ `jobs/pipeline.py` | `Stage.required_inputs/produced_outputs` là bí danh |
+| `start_stage`/`target_stage`, `MODES`, planner | ✅ `jobs/plan.py`, `Orchestrator.submit/plan/set_target` | lỗi spec bị từ chối lúc submit |
+| Import artifact (`inputs`) và `from_job` | ✅ `Orchestrator._prepare_imports/_register_imports` | validator theo kind, copy vào `import/` |
+| Skip khi hợp lệ, `stage_key` theo khai báo | ✅ `orchestrator/stages.py` (`StageContract`) | cache liên job: chưa |
+| Hold / `PAUSED_*` / Auto Resume / `resume [--now]` | ✅ `jobs/db.py`, `jobs/policy.py`, `Orchestrator._monitor_tick/resume` | `FAILED` ≡ `FAILED_PERMANENT` |
+| Resource Monitor | ✅ khung + probe network/disk/time-based (`orchestrator/monitor.py`) | probe GPU/quota thật: chưa |
+| Retry có jitter, `Retry-After` | ✅ `jobs/policy.py` | |
+| Config snapshot theo job, `set_job_config` | ✅ `orchestrator/snapshot.py` | |
+| Checkpoint chi tiết (`ctx.progress`) | ✅ Source, TTS, Audio, Render | Story/Publish: chưa |
+| `pause` chủ động, `cancel`, `rerun --from` | ❌ | D-56 |
 
 ### 11.2 JobSpec
 
@@ -581,9 +583,9 @@ class RetryPolicy(TypedDict):
 
 `delay = clamp(base_s × factor^n, floor_s, cap_s) × (1 ± jitter)`, rồi `max(delay, retry_after_s)`.
 
-### 11.9 CLI đích
+### 11.9 CLI (đã có trừ `pause`)
 
-`submit [--start-stage S] [--target-stage T] [--import kind=path]… [--from-job ID] [--auto-resume | --no-auto-resume]`, `pause <job>`, `resume <job> [--now]`, `config set <job> key=value`, `resources` (trạng thái monitor), `status` (hiển thị hold, resource, checkpoint).
+`submit [--mode M] [--start S] [--target T] [--artifact kind=path]… [--metadata-title T] [--from-job ID] [--auto-resume on|off]`, `plan` (cùng tham số, không tạo job), `resume <job> [--now]`, `config <job> [--auto-resume on|off] [--target STAGE] [--patch JSON]`, `resources`, `status` (hiển thị start/target, hold, tiến độ). Chưa có: `pause`.
 
 ## 12. Project, Channel Config và Publishing metadata (thiết kế đã chốt, chưa triển khai)
 

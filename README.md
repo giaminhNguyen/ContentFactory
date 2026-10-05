@@ -2,7 +2,7 @@
 
 Pipeline biến một nguồn truyện/video thành 1 video YouTube và N video TikTok. Thiết kế: `HANDOFF.md`; audit và quyết định: `docs/`.
 
-Trạng thái: **Phase 2 (+ tích hợp Subtitle_supperVip)** — orchestrator lõi (SQLite, state machine, queue theo stage, checkpoint, retry, resume) + **Source thật** (`SourceAdapter` nhiều provider: Subtitle_supperVip chính, yt-dlp dự phòng → Transcript Processor) + **Story** (`StoryBranchAdapter` điều khiển oh-story, Story Assembler). TTS/Render/Upload vẫn là fake. Thiết kế job control (stage-based pipeline, pause/auto-resume, Resource Monitor, config snapshot) đã chốt trong `HANDOFF.md` §15A–§15C nhưng **chưa triển khai**. Story **chưa được kiểm chứng với LLM thật** (xem `docs/DECISIONS.md` D-23).
+Trạng thái: **Phase 2.9 (lõi căn chỉnh với kiến trúc cuối: start/target stage, hold/auto resume, config snapshot) trên nền Phase 2 + Subtitle_supperVip** — orchestrator lõi (SQLite, state machine, queue theo stage, checkpoint, retry, resume) + **Source thật** (`SourceAdapter` nhiều provider: Subtitle_supperVip chính, yt-dlp dự phòng → Transcript Processor) + **Story** (`StoryBranchAdapter` điều khiển oh-story, Story Assembler). TTS/Render/Upload vẫn là fake. Thiết kế job control (stage-based pipeline, pause/auto-resume, Resource Monitor, config snapshot) đã chốt trong `HANDOFF.md` §15A–§15C nhưng **chưa triển khai**. Story **chưa được kiểm chứng với LLM thật** (xem `docs/DECISIONS.md` D-23).
 
 ```powershell
 # Python >= 3.10, không cần cài gói ngoài để chạy test
@@ -15,6 +15,14 @@ python -m contentfactory submit --input "https://youtu.be/x" --set made_for_kids
 python -m contentfactory run                   # chạy tới khi hết việc; Ctrl-C để dừng êm, chạy lại sẽ resume
 python -m contentfactory status
 python -m contentfactory retry <job_id>        # job FAILED: chạy lại đúng stage lỗi
+
+# điều khiển job (Phase 2.9)
+python -m contentfactory plan   --input "https://youtu.be/x" --mode THROUGH_TTS          # xem stage nào chạy/bỏ qua
+python -m contentfactory submit --mode TTS_ONLY --artifact story_text=story.txt           # TTS từ story.txt có sẵn
+python -m contentfactory submit --mode VIDEO_ONLY --artifact audio_master=a.wav --metadata-title "Tiêu đề"
+python -m contentfactory resume <job_id> [--now]       # job đang PAUSED_* (Auto Resume tắt hoặc muốn ép đo lại)
+python -m contentfactory config <job_id> --auto-resume off
+python -m contentfactory resources                     # trạng thái Resource Monitor
 ```
 
 ## Source + Story thật (Phase 2)

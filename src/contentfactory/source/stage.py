@@ -39,6 +39,7 @@ def run(ctx: StageContext, source: SourceAdapter) -> StageResult:
     if res.get("status", "ok") != "ok":
         e = res.get("error") or {}
         raise StageError(ErrorClass(e.get("error_class", "TRANSIENT")), e.get("code", "SOURCE_FAILED"), e.get("message", ""))
+    ctx.progress(1, 3, "subtitle acquired")
     raw = Path(res["raw_subtitle_path"])
     if not raw.is_file() or raw.stat().st_size == 0:
         raise StageError(ErrorClass.POLICY, "EMPTY_OUTPUT", "phụ đề thô rỗng")
@@ -47,6 +48,8 @@ def run(ctx: StageContext, source: SourceAdapter) -> StageResult:
     out = tp.process(raw, res["subtitle_format"], ctx.stage_dir, ctx,
                      {"provider": res.get("provider"), "video_id": res.get("video_id"), "lang": res.get("language"),
                       "kind": res.get("subtitle_kind")})
+
+    ctx.progress(2, 3, "transcript processed")
 
     def rel(p: Path) -> str:
         return p.resolve().relative_to(ctx.workspace.resolve()).as_posix()

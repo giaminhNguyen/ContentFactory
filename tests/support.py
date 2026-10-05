@@ -16,7 +16,8 @@ from contentfactory.orchestrator.runner import Orchestrator
 
 REPO = Path(__file__).resolve().parents[1]
 FAST = {"poll_s": 0.02, "heartbeat_s": 0.2, "lease_s": 1.0,
-        "retry": {"max_attempts": 3, "backoff_s": [0.05, 0.05], "max_interruptions": 5}}
+        "retry": {"max_attempts": 3, "backoff_s": [0.05, 0.05], "max_interruptions": 5, "jitter": 0, "floor_s": 0},
+        "monitor": {"tick_s": 0.02, "base_s": 0.05, "max_s": 0.2}}
 
 BASE_PARAMS = {"input": {"kind": "youtube_url", "value": "https://youtu.be/test"},
                "title": "Truyện ma đêm khuya", "made_for_kids": False,

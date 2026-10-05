@@ -22,21 +22,28 @@ from typing import Any, Callable, Protocol, TypedDict
 
 class ErrorClass(str, Enum):
     TRANSIENT = "TRANSIENT"    # tự retry có backoff
-    RESOURCE = "RESOURCE"      # môi trường thiếu (ffmpeg, GPU, đĩa): sửa rồi retry thủ công
+    RESOURCE = "RESOURCE"      # tài nguyên tạm thời thiếu (mạng, quota, token, đĩa, GPU/runtime): job bị GIỮ (PAUSED_*)
     POLICY = "POLICY"          # input/config sai: không retry mù
-    AUTH = "AUTH"              # credential hỏng: cần người
+    AUTH = "AUTH"              # credential thiếu/hết hạn/thu hồi: PAUSED_CREDENTIAL
     AMBIGUOUS = "AMBIGUOUS"    # không rõ đã hoàn tất chưa (vd upload): cần kiểm tra
     CANCELLED = "CANCELLED"    # dừng có chủ đích (shutdown), không tính là lỗi
 
 
 class StageError(Exception):
-    def __init__(self, error_class: ErrorClass, code: str, message: str = "", detail: dict | None = None):
+    """Lỗi của một stage. `resource` cho orchestrator biết đây là lỗi TÀI NGUYÊN tạm thời (và loại nào) để GIỮ job
+    thay vì cho thất bại: network | provider | quota | token | disk | runtime | credential | input.
+    `retry_after_s`: Retry-After của provider (giây). `resume_after`: thời điểm reset đã biết (epoch)."""
+
+    def __init__(self, error_class: ErrorClass, code: str, message: str = "", detail: dict | None = None, *,
+                 resource: str | None = None, retry_after_s: float | None = None, resume_after: float | None = None):
         super().__init__(f"{error_class.value}:{code}: {message}")
         self.error_class, self.code, self.message, self.detail = error_class, code, message, detail or {}
+        self.resource, self.retry_after_s, self.resume_after = resource, retry_after_s, resume_after
 
     def to_dict(self) -> dict:
-        return {"error_class": self.error_class.value, "code": self.code,
-                "message": self.message, "detail": self.detail}
+        return {"error_class": self.error_class.value, "code": self.code, "message": self.message,
+                "detail": self.detail, "resource": self.resource, "retry_after_s": self.retry_after_s,
+                "resume_after": self.resume_after}
 
 
 class CancelToken:
@@ -95,6 +102,8 @@ class StageContext:
     config: dict
     cancel: CancelToken
     log: Callable[..., None]                   # log(event, level="info", **fields)
+    # progress(done, total=None, detail="", **extra): ghi checkpoint (tiến độ) của stage vào DB để resume/hiển thị
+    progress: Callable[..., None] = field(default=lambda *a, **k: None)
 
     def path(self, ref: ArtifactRef) -> Path:
         return self.workspace / ref["path"]
@@ -107,6 +116,23 @@ class StageContext:
 
     def draft(self, path: Path, kind: str, **meta: Any) -> ArtifactDraft:
         return ArtifactDraft(Path(path).resolve().relative_to(self.workspace.resolve()).as_posix(), kind, meta)
+
+
+# ---- Resource Monitor -----------------------------------------------------------------------
+class ResourceStatus(TypedDict):
+    resource: str                  # network | disk | runtime | credential | quota | token | ...
+    ok: bool
+    detail: str
+    checked_at: float
+    next_check_at: float
+    retry_after: float | None
+
+
+class ResourceProbe(Protocol):
+    """Kiểm tra DETERMINISTIC (không LLM, có timeout) một loại tài nguyên."""
+    resource: str
+
+    def check(self) -> tuple[bool, str]: ...      # (ok, chi tiết)
 
 
 # ---- Source ---------------------------------------------------------------------------------

@@ -916,7 +916,7 @@ Failure state tách riêng theo stage để retry đúng chỗ.
 
 ## 15A. Stage-based artifact pipeline
 
-> **Trạng thái:** thiết kế đã chốt, **chưa triển khai** trong code (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42).
+> **Trạng thái:** **đã triển khai ở Phase 2.9** (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42 và D-50…D-56). Phần chưa làm ghi ở D-56.
 
 ContentFactory **không phải pipeline bắt buộc chạy từ đầu đến cuối**. Pipeline là một chuỗi *stage* nối với nhau bằng **artifact**. Mỗi stage phải:
 
@@ -961,7 +961,7 @@ Một artifact **hợp lệ** khi: (a) file tồn tại và khớp sha256/kích 
 
 ## 15B. Resource pause / resume
 
-> **Trạng thái:** thiết kế đã chốt, **chưa triển khai** trong code (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42).
+> **Trạng thái:** **đã triển khai ở Phase 2.9** (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42 và D-50…D-56). Phần chưa làm ghi ở D-56.
 
 Phân biệt **lỗi tài nguyên tạm thời** với **lỗi vĩnh viễn**. Lỗi tài nguyên tạm thời **không phải job failure**: không tiêu ngân sách retry, không ghi lỗi vĩnh viễn.
 
@@ -1029,7 +1029,7 @@ Monitor chạy khi stage báo lỗi tài nguyên, định kỳ **chỉ cho resou
 
 ## 15C. Config snapshot theo job
 
-> **Trạng thái:** thiết kế đã chốt, **chưa triển khai** trong code (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42).
+> **Trạng thái:** **đã triển khai ở Phase 2.9** (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42 và D-50…D-56). Phần chưa làm ghi ở D-56.
 
 - Lúc **bắt đầu** job, snapshot **cấu hình ngữ nghĩa** hiệu lực vào DB (JSON + hash) và manifest: adapters/providers, ngôn ngữ, cấu hình dựng câu, `story_branch`, `tiktok`, mẫu tên output, retry policy, `auto_resume` (đã resolve từ default), `start_stage`/`target_stage`.
 - **Không** snapshot: đường dẫn máy, giới hạn đồng thời theo tài nguyên, lease/heartbeat (cấu hình của máy chạy), và **secrets** (không bao giờ ghi vào snapshot, manifest hay log).

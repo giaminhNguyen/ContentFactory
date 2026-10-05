@@ -90,7 +90,8 @@ class ClaudeCliRunner:
             p = subprocess.Popen(self.command(session), cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
         except FileNotFoundError:
-            raise StageError(ErrorClass.RESOURCE, "CLAUDE_CLI_MISSING", f"không chạy được {self.cmd!r}") from None
+            raise StageError(ErrorClass.RESOURCE, "CLAUDE_CLI_MISSING", f"không chạy được {self.cmd!r}",
+                             resource="runtime") from None
         try:
             return self._drive(p, prompt, ctx)
         finally:
@@ -159,6 +160,9 @@ class ClaudeCliRunner:
         p.wait(timeout=60)
         text = str(result.get("result", ""))
         err = "".join(err_buf)
+        # hết usage/token của tài khoản: tài nguyên TẠM THỜI (PAUSED_TOKEN); thời điểm reset không parse được thì dùng mặc định
+        if re.search(r"usage limit|rate limit|too many requests|credit balance|overloaded|quota", text + err, re.I):
+            raise StageError(ErrorClass.RESOURCE, "CLAUDE_USAGE_LIMIT", (text or err)[:300], resource="token")
         if re.search(r"not logged in|invalid api key|please run /login|authentication", text + err, re.I):
             raise StageError(ErrorClass.AUTH, "CLAUDE_NOT_LOGGED_IN", (text or err)[:300])
         if not result:
@@ -175,11 +179,11 @@ def _safe_name(title: str, limit: int = 60) -> str:
 def _deploy(oh_story_root: Path, ws: Path, python: str) -> None:
     deploy = oh_story_root / "scripts" / "bench" / "deploy.py"
     if not deploy.is_file():
-        raise StageError(ErrorClass.RESOURCE, "OH_STORY_MISSING", f"không thấy {deploy}")
+        raise StageError(ErrorClass.RESOURCE, "OH_STORY_MISSING", f"không thấy {deploy}", resource="runtime")
     r = subprocess.run([python, str(deploy), "deploy", "--pkg", str(oh_story_root), "--host", "claude-code",
                         "--proj", str(ws)], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
-        raise StageError(ErrorClass.RESOURCE, "OH_STORY_DEPLOY_FAILED", (r.stderr or r.stdout)[-400:])
+        raise StageError(ErrorClass.RESOURCE, "OH_STORY_DEPLOY_FAILED", (r.stderr or r.stdout)[-400:], resource="runtime")
     if shutil.which("git"):
         subprocess.run(["git", "init", "-q"], cwd=ws, capture_output=True)
 

@@ -19,7 +19,9 @@ def run(ctx: StageContext, audio: AudioProcessor) -> StageResult:
                                      ctx.stage_dir / "tiktok", ctx)
     if not parts:
         raise StageError(ErrorClass.POLICY, "NO_TIKTOK_PARTS", "không có part nào")
+    ctx.progress(1, 1 + len(parts), "youtube audio")
     arts = [ctx.draft(yt, "audio_youtube", **yt_info)]
     for i, p in enumerate(parts, 1):
         arts.append(ctx.draft(p, "audio_tiktok", index=i, duration_sec=audio.qa(p)["duration_sec"]))
+        ctx.progress(1 + i, 1 + len(parts), "tiktok parts")
     return StageResult(arts, {"tiktok_parts": len(parts), **yt_info})

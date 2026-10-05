@@ -54,6 +54,7 @@ def run(ctx: StageContext, tts: TTSAdapter, audio: AudioProcessor) -> StageResul
                 raise StageError(ErrorClass.TRANSIENT, "CHUNK_QA_FAILED", f"chunk {seg['index']}")
         chunks.append(out)
         ctx.log("tts_chunk_done", index=seg["index"], total=len(segments), reused=was_reused)
+        ctx.progress(len(chunks), len(segments), "segments")
     master = ctx.workspace / "audio" / "master.wav"
     atomic_write(master, lambda tmp: audio.assemble(chunks, [s["pause_after_ms"] for s in segments], tmp, ctx))
     qa = audio.qa(master)

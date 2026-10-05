@@ -34,11 +34,18 @@ Mỗi phase có **đầu ra kiểm chứng được**; chưa đạt thì chưa s
 **Thiết kế job control (chỉ tài liệu, chưa code):** stage-based artifact pipeline (`start_stage`/`target_stage`, import, skip theo artifact hợp lệ), hold/`PAUSED_*` thay cho fail với lỗi tài nguyên tạm thời, Resource Monitor deterministic, Auto Resume (global default `true`, override theo job), retry/backoff có jitter và `Retry-After`, config snapshot theo job. Xem HANDOFF §15A–§15C, MODULE_CONTRACTS §11, DECISIONS D-36…D-42.
 Không bắt đầu TTS (Phase 3).
 
+### Phase 2.9 — căn chỉnh lõi với kiến trúc pipeline cuối ✅ (không phải Phase 3)
+
+**Đã làm:** hợp đồng stage mở rộng + `start_stage`/`target_stage` (planner, `MODES`, import artifact, `from_job`, skip khi hợp lệ, `stage_key` theo khai báo); hold `PAUSED_*` tách khỏi `FAILED_PERMANENT`; checkpoint chi tiết; Auto Resume (global + theo job, có trần không-tiến-triển); khung Resource Monitor; retry có jitter/`Retry-After`; config snapshot theo job; migration DB có phiên bản và sao lưu. Chi tiết: `DECISIONS.md` D-50…D-56, `MODULE_CONTRACTS.md` §11.
+**Tương thích:** SCHEMA Phase 1 không đổi; cả 116 test Phase 0–2.5 vẫn pass nguyên vẹn; job cũ không snapshot/target chạy như trước.
+**Kiểm chứng:** +31 test (`test_stage_control`, `test_pause_resume`): Source→Story, Story artifact→Audio, Audio artifact→Video, skip artifact hợp lệ, lỗi tài nguyên → `PAUSED` (không `FAILED`), Auto Resume ON/OFF, trần không tiến triển, đĩa đầy → resume, restart giữ checkpoint/start/target, stage đã xong không chạy lại, snapshot cô lập, migration v0→v1, bảng policy; kiểm đột biến cho cổng OFF và trần auto-resume.
+Không bắt đầu TTS (Phase 3).
+
 ## Việc chờ (chưa xếp phase)
 
 | Việc | Mục tiêu | Ghi chú |
 |---|---|---|
-| **Job control layer** | `start_stage`/`target_stage` + import artifact + skip theo validator; hold/`PAUSED_*` + Auto Resume + Resume Now; Resource Monitor; retry có jitter/`Retry-After`; config snapshot theo job | thiết kế đã chốt (D-36…D-42), chưa triển khai. **Đề xuất làm trước Phase 3**: TTS cần `target_stage`, `PAUSED_DISK`/`PAUSED_RESOURCE` và checkpoint theo chunk |
+| ~~Job control layer~~ | ✅ **đã làm ở Phase 2.9** | xem trên; còn lại: `pause`/`cancel`/`rerun --from`, cache liên job, probe GPU/quota thật |
 | Kiểm chứng Story thật | chạy `scripts/run_real_job.py URL --chapters 3 --max-budget-usd 2` trên một video tiếng Việt | quyết định giữ S1 hay chuyển S2 (D-23) |
 | Spike ContentFlow thật | cài Pillow/pytest, chạy test ContentFlow, render thật vài phút audio với NVENC | R6, R7, R14 |
 | Spike yt_uploader thật | build, tạo OAuth client, upload `private` lên kênh thử, đặt thumbnail, thử `idempotency_key` | R4; bỏ qua nếu chưa có OAuth client + kênh thử |

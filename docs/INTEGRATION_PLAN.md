@@ -141,7 +141,7 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 | R23 | Job control (start/target stage, hold/auto-resume, Resource Monitor, config snapshot) mới ở mức thiết kế: hiện `RESOURCE`/`AUTH` đi thẳng vào `FAILED` và config global có thể đổi job đang chạy | Trung | Triển khai trước TTS (`IMPLEMENTATION_PHASES.md`); đóng khoảng cách snapshot (D-41) |
 | R24 | Resource Monitor đo sai (quota/token thường không đo trực tiếp được) ⇒ resume vội hoặc chờ vô ích | Thấp–Trung | chỉ dùng thời điểm reset do provider báo, không đoán; Auto Resume có trần `max_auto_resumes_without_progress` và cờ `needs_user` |
 | R25 | Thumbnail với `project.title` dài: ContentFlow có bố cục tiêu đề cố định, khả năng wrapping/font sizing chưa được kiểm chứng; thiết kế cấm cắt/đổi title | Trung | Kiểm chứng ở Phase 5; không vừa ở cỡ chữ tối thiểu thì lỗi rõ ràng (D-44) |
-| R26 | `stage_key` hiện băm toàn bộ `params`: khi skip theo `stage_key` được triển khai, đổi `project.title` sẽ vô hiệu hóa cả TTS/Audio | Trung | khai báo phụ thuộc theo stage (D-48, MODULE_CONTRACTS §12.4) trước khi bật skip |
+| ~~R26~~ (đã đóng ở Phase 2.9: `stage_key` theo khai báo) | `stage_key` hiện băm toàn bộ `params`: khi skip theo `stage_key` được triển khai, đổi `project.title` sẽ vô hiệu hóa cả TTS/Audio | Trung | khai báo phụ thuộc theo stage (D-48, MODULE_CONTRACTS §12.4) trước khi bật skip |
 | R27 | Sequence: kênh đã có video đánh số thủ công trước đó có thể xung đột với số được cấp; YouTube title vượt 100 ký tự với title dài | Thấp–Trung | `sequence.last_used` trong Channel Config để nối tiếp; `TITLE_TOO_LONG` báo lỗi thay vì cắt (D-45, D-47) |
 
 ## 6. Kiểm tra nhất quán với HANDOFF
