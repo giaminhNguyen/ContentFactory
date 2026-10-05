@@ -35,6 +35,7 @@ from .config import Config, _merge
 from .handlers import HANDLERS
 from .log import EventLog
 from .monitor import DiskProbe, NetworkProbe, ResourceMonitor
+from .pools import PoolSyncService
 from .registry import build_adapters
 from .snapshot import (adapters_hash, apply_patch, build_snapshot, config_hash, effective_config)
 from .stages import StageContract
@@ -66,6 +67,7 @@ class Orchestrator:
         self.monitor.input_check = self.monitor.input_check or self._inputs_ok
         self.monitor.adapters_health = self.monitor.adapters_health or self._adapters_health
         self._last_tick = 0.0
+        self.pool_sync = PoolSyncService(self)
 
     # -- dựng mặc định --------------------------------------------------------------------------
     def _default_monitor(self) -> ResourceMonitor:
@@ -240,6 +242,26 @@ class Orchestrator:
         self._manifest(job_id)
         return "resumed"
 
+    def rerender_part(self, job_id: str, part: int) -> str:
+        """Ép render lại ĐÚNG một part TikTok (xóa output + khóa của part đó): job phải đang xếp hàng/bị giữ/FAILED ở stage render_tiktok.
+        Job đã đi qua stage này thì chưa rewind được (D-56). FAILED thì đưa về hàng như `retry`. Trả trạng thái job sau đó."""
+        job = self.store.get_job(job_id)
+        if job is None:
+            raise ValueError(f"không có job {job_id}")
+        st = P.BY_NAME["render_tiktok"]
+        queued = job["state"] == st.queue_state
+        failed_here = job["state"] == P.FAILED and job["failed_stage"] == "render_tiktok"
+        if not (queued or failed_here):
+            raise ValueError(f"job {job_id} đang ở {job['state']}: chỉ render lại part khi job xếp hàng/bị giữ/FAILED ở render_tiktok")
+        base = job_dir(self.cfg.path("workspace"), job_id) / st.workdir / f"part_{int(part):02d}.mp4"
+        for f in (base, base.with_name(base.name + ".key.json")):
+            f.unlink(missing_ok=True)
+        self.log.emit("render_part_invalidated", job_id=job_id, part=int(part))
+        if failed_here:
+            self.retry(job_id)
+        self._manifest(job_id)
+        return self.store.get_job(job_id)["state"]
+
     def set_auto_resume(self, job_id: str, value: bool) -> None:
         self.store.set_auto_resume(job_id, value)
         self._manifest(job_id)
@@ -279,6 +301,7 @@ class Orchestrator:
                 self._manifest(j["id"])
         hb_stop = threading.Event()
         threading.Thread(target=self._heartbeat, args=(hb_stop,), daemon=True).start()
+        self.pool_sync.start()                      # Source Sync nền, dùng chung: không chiếm slot của stage nào
         executor = ThreadPoolExecutor(max_workers=int(self.cfg.data.get("max_workers", 8)))
         futures: set[Future] = set()
         self.log.emit("orchestrator_started", owner=self.owner)
@@ -298,6 +321,7 @@ class Orchestrator:
             pass
         finally:
             self.cancel.set()                       # handler hợp tác trả CANCELLED => job về hàng, không mất retry
+            self.pool_sync.stop()
             executor.shutdown(wait=True)
             hb_stop.set()
             self.log.emit("orchestrator_stopped", owner=self.owner)
@@ -347,9 +371,9 @@ class Orchestrator:
     def _progress_fn(self, job_id: str, stage: str):
         last = [0.0]
 
-        def progress(done, total=None, detail: str = "", **extra) -> None:
+        def progress(done, total=None, detail: str = "", force: bool = False, **extra) -> None:
             now = time.time()
-            if not (total is not None and done >= total) and now - last[0] < 0.05:   # chặn ghi DB dồn dập
+            if not force and not (total is not None and done >= total) and now - last[0] < 0.05:   # chặn ghi DB dồn dập (force: đổi trạng thái, không bỏ)
                 return
             last[0] = now
             try:
@@ -381,7 +405,8 @@ class Orchestrator:
                                workspace=jd, stage_dir=jd / stage.workdir, params=claim.params, inputs=inputs,
                                config={"output_dir": str(self.cfg.path("output")),
                                        "tts_cache_dir": str(self.cfg.path("runtime") / "cache" / "tts"),
-                                       "source": sem.get("source", self.cfg.data.get("source", {}))},
+                                       "source": sem.get("source", self.cfg.data.get("source", {})),
+                                       "render": sem.get("render", self.cfg.data.get("render", {}))},
                                cancel=self.cancel, log=log, progress=self._progress_fn(job_id, stage.name))
             log("stage_started", stage_key=(key or "")[:12])
             t0 = time.time()

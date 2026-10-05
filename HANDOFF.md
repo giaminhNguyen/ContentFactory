@@ -252,7 +252,7 @@ workspace/<job>/source/
 
 ## 4B. Project metadata, Channel Config và Publishing metadata
 
-> **Trạng thái:** thiết kế đã chốt, **chưa triển khai**. Thumbnail làm ở **Phase 5 (Render)**; Metadata Builder, Sequence Manager và publish package làm ở **Phase 6 (Publishing)**. Xem `docs/DECISIONS.md` D-43…D-49, `docs/MODULE_CONTRACTS.md` §12.
+> **Trạng thái:** thiết kế đã chốt, **chưa triển khai** phần metadata. Thumbnail đã tích hợp ở Phase 5 (renderer thật, nhưng tiêu đề vẫn là placeholder `meta["title"]`); `project.title`, Metadata Builder, Sequence Manager và publish package làm ở **Phase 6 (Publishing)**. Xem `docs/DECISIONS.md` D-43…D-49, `docs/MODULE_CONTRACTS.md` §12.
 
 ### Canonical project title
 
@@ -775,7 +775,7 @@ Watermark phải dễ thay theo channel.
 
 ## 11. TikTok Audio và Video
 
-> **Trạng thái:** phần **audio** đã triển khai ở Phase 4 (D-67): tăng tốc giữ cao độ (rubberband), split thông minh ~`target_part_sec`, part cuối ngắn hơn được. Phần **video** TikTok thuộc Phase 5.
+> **Trạng thái:** phần **audio** đã triển khai ở Phase 4 (D-67): tăng tốc giữ cao độ (rubberband), split thông minh ~`target_part_sec`, part cuối ngắn hơn được. Phần **video** TikTok **đã triển khai ở Phase 5** (từng part = một video 9:16, D-73).
 
 TikTok cũng phải output thành **video**, không chỉ audio.
 
@@ -819,6 +819,8 @@ Các thông số này phải là config, không hardcode.
 
 ## 12. Render profile
 
+> **Trạng thái:** **đã triển khai ở Phase 5** (`docs/MODULE_CONTRACTS.md` §5, `docs/DECISIONS.md` D-70…D-75): profile YouTube/TikTok ở `config.render.profiles` + `params.render`, chạy thật với ContentFlow. `audio_speed`/`target_part_duration_sec` ở §12 thực tế là `params.tiktok.speed/target_part_sec` (Phase 4).
+
 Ví dụ YouTube:
 
 ```yaml
@@ -844,6 +846,8 @@ tiktok:
 
 ## 13. Source Sync
 
+> **Trạng thái:** **đã triển khai ở Phase 5** (D-72): Source Sync nền, dùng chung, chỉ làm lại khi nguồn/tùy chọn đổi; CLI `contentfactory pools`.
+
 Source Sync là background/shared preprocessing task.
 
 Không đặt source normalization vào từng story job.
@@ -865,6 +869,8 @@ Chỉ sync lại khi source/profile thay đổi.
 ---
 
 ## 14. Pipeline concurrency
+
+> **Trạng thái:** phần render **đã triển khai ở Phase 5** (D-74): lane `gpu` riêng, Story/TTS/Audio không bị render chặn (có test). Upload (Phase 6) và vận hành bất đồng bộ đầy đủ (Phase 7) chưa làm.
 
 Không chạy tuyến tính kiểu:
 

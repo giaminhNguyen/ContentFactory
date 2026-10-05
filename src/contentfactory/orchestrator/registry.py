@@ -16,6 +16,7 @@ from ..adapters import fake
 from ..audio.processor import FfmpegAudio
 from ..adapters.story_branch import StoryBranchAdapter
 from ..output.publisher import BuiltinOutputPublisher
+from ..render.contentflow import ContentFlowRender
 from ..source.chain import ProviderChain
 from ..tts.planner import RuleSegmentPlanner
 from ..source.providers import LocalSubtitleProvider, PlainTextProvider, SubtitleSupperVipProvider, YtDlpProvider
@@ -35,6 +36,19 @@ def _source_chain(cfg: Config) -> ProviderChain:
                           "allow_translation": src.get("allow_translation", False)})
 
 
+def _contentflow(cfg: Config) -> ContentFlowRender:
+    t = cfg.data.get("tools", {})
+    cf = t.get("contentflow", {})
+    def p(v, default):
+        v = Path(v or default)
+        return v if v.is_absolute() else cfg.root / v
+    return ContentFlowRender({"root": p(cf.get("root"), "modules/ContentFlow"), "python": cf.get("python"),
+                              "base_dir": p(cf.get("base_dir"), "config/contentflow"),
+                              "pools_dir": p(cfg.data.get("render", {}).get("pools_dir"), "runtime/pools"),
+                              "ffprobe": t.get("ffprobe"), "sync_wait_s": cf.get("sync_wait_s", 3600),
+                              "verify_output": cf.get("verify_output", True)})
+
+
 def _factories(cfg: Config) -> dict:
     sb = cfg.data.get("story_branch", {})
     oh_root = Path(sb.get("oh_story_root") or cfg.root / "modules" / "oh-story-claudecode")
@@ -47,6 +61,7 @@ def _factories(cfg: Config) -> dict:
         ("story", "story_branch"): lambda: StoryBranchAdapter(sb, oh_root),
         ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
+        ("render", "contentflow"): lambda: _contentflow(cfg),
         ("output", "builtin"): lambda: BuiltinOutputPublisher(cfg["output"]),
     }
 

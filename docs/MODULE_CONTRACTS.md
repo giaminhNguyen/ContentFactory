@@ -238,58 +238,26 @@ class AudioProcessor(Protocol):
 - **Quy tắc:** `speed`, `target_part_sec` đến từ profile/config; split ưu tiên ranh giới câu/đoạn, cho phép dao động (D-67). **Watermark** là asset của channel; đổi watermark chỉ chạy lại stage `audio` (và trong stage chỉ làm lại nhánh YouTube) (D-66).
 - **Lỗi:** thiếu ffmpeg/ffprobe → `RESOURCE` (`FFMPEG_MISSING`, job giữ `PAUSED_RESOURCE`); đầy đĩa → `RESOURCE disk`; file hỏng/không decode được → `POLICY` (`AUDIO_DECODE_FAILED`, `AUDIO_UNREADABLE`); thiếu chunk/chunk rỗng → `POLICY` (`MISSING_CHUNKS`, `CHUNK_EMPTY`); audio im lặng/rỗng → `POLICY` (`AUDIO_SILENT`, `WATERMARK_SILENT`); QA không đạt → `POLICY AUDIO_QA_FAILED`; ffmpeg lỗi không rõ → `TRANSIENT`.
 
-## 5. RenderAdapter
+## 5. RenderAdapter (đã triển khai ở Phase 5)
 
-**Trách nhiệm:** nhận audio + source pool + profile ⇒ video MP4 / thumbnail; đồng bộ source pool. Bọc ContentFlow qua **worker subprocess** (không import trực tiếp).
+**Trách nhiệm:** một audio + profile + source pool ⇒ một video MP4 / thumbnail; chuẩn bị source pool dùng chung. Bọc ContentFlow qua **worker subprocess** (không import, không sửa module). Quyết định: `DECISIONS.md` D-70…D-75. Mã: `render/` (`profile`, `frames`, `pools`, `sync_shim`, `contentflow`, `manager`, `stage`) và `orchestrator/pools.py`.
 
 ```python
-class RenderProfile(TypedDict):
-    id: str                          # "youtube" | "tiktok" | ...
-    aspect_ratio: str; resolution: str
-    frame_path: str                  # PNG overlay QUYẾT ĐỊNH kích thước output của ContentFlow
-    config_overrides: dict           # video_generator.viewport / frame_layouts / encoding ... (params.config)
-    source_pool: str                 # tên pool trong config/pools.yaml
-    selection_mode: str; fps: int
-    encoder: str | None
-
-class RenderRequest(TypedDict):
-    audio: ArtifactRef
-    profile: RenderProfile
-    output_path: str                 # tuyệt đối, trong workspace/render/
-    thumbnail: "ThumbnailRequest | None"
-
-class ThumbnailRequest(TypedDict):
-    image: ArtifactRef | None        # ảnh nhân vật
-    channel_name: str                # = channel.name từ Channel Config (§12), KHÔNG phải id
-    title: str                       # = project.title (§12): không AI tạo title khác; không cắt/đổi title
-    highlight: Literal["auto","manual","none"]; highlight_text: str | None
-    output_path: str                 # .jpg/.png
-
-class RenderResult(TypedDict):
-    video: ArtifactRef | None; thumbnail: ArtifactRef | None
-    warnings: list[str]; clips_used: list[str]   # nếu worker báo; KHÔNG đảm bảo tái tạo (A20)
-
-class SyncRequest(TypedDict):
-    raw_dir: str; size: str; fps: int; remove_audio: bool; quality: str
-
 class RenderAdapter(Protocol):
-    def sync_source(self, req: SyncRequest, ctx: StageContext) -> ArtifactRef: ...   # trỏ tới <raw>/_synced + source_profile.json
-    def render_video(self, req: RenderRequest, ctx: StageContext) -> RenderResult: ...
-    def render_thumbnail(self, req: ThumbnailRequest, ctx: StageContext) -> ArtifactRef: ...
-    def status(self, idempotency_key: str, output_dir: str) -> JobStatus: ...         # hỏi lại sau crash
-    def health(self) -> HealthReport: ...
+    requires_pool: bool                                           # True với ContentFlow; FakeRender: False
+    def render_video(self, req: dict, ctx) -> dict: ...           # req: audio, audio_sha256, profile (flat), output, pool, key, part?, on_progress?
+    def render_thumbnail(self, req: dict, ctx) -> Path: ...       # req: title, channel_name, output, image?, highlight, highlight_text, config_overrides, key
+    def prepare_pool(self, pool: dict, ctx=None) -> dict: ...     # Source Sync DÙNG CHUNG: idempotent, trả ngay nếu nguồn không đổi
+    def pool_status(self, pool: dict) -> dict: ...                # {name, ready, syncing, reason, fingerprint, raw_files, todo, dir}
+    def version(self) -> str: ...                                  # git HEAD ContentFlow + phiên bản worker
+    def health(self) -> dict: ...
 ```
-
-- **Ánh xạ sang ContentFlow `media_worker`:**
-  - `render_video` → `python -m media_worker run --request req.json`, `type=render`, `inputs=[{audio, path, sha256}, {video_dir}, {frame}]`, `params={video_dir, fps, selection_mode, source_processing, encoder, output_name, config=<profile.config_overrides>}`; `idempotency_key = stage_key`; `output_dir` tuyệt đối riêng mỗi lần gọi (worker ghi `.worker_state.json` và `.work/` vào đó).
-  - `render_thumbnail` → `type=thumbnail`.
-  - `sync_source` → worker **không có** job type sync (A10): dùng một shim nhỏ **nằm trong orchestrator** gọi `source_sync.sync_videos(SyncOptions)`; không sửa ContentFlow.
-  - Đọc stdout JSON-lines để lấy progress/warning; exit 0/3/4/2 ánh xạ OK/FAILED/CANCELLED/USAGE. `media_worker status` dùng để reconcile sau crash.
-  - Video pool truyền vào là `<raw>/_synced` (render quét không đệ quy).
-- **Profile** (A8): "youtube" = frame 16:9 1920×1080 + layout; "tiktok" = frame 9:16 1080×1920 (frame mặc định của ContentFlow). **Cần tạo frame 16:9 và layout** — việc thuộc config/asset của orchestrator.
-- **TikTok:** gọi `render_video` **một lần mỗi part** với audio `part_NN`.
-- **Lỗi** ánh xạ từ `VideoError.code`: `FFMPEG_MISSING/DISK_FULL/GPU_UNAVAILABLE`→RESOURCE (`resource`: ffmpeg/GPU→`runtime`, DISK_FULL→`disk`; ⇒ hold `PAUSED_RESOURCE`/`PAUSED_DISK`, §11.4), `MISSING_INPUT/INVALID_CONFIG`→POLICY, `FFMPEG_FAILED/TIMEOUT`→TRANSIENT, cancel→CANCELLED. Timeout 3600 s/lệnh ffmpeg là trần cứng (rủi ro R7).
-- **Cache key:** `audio.sha256 + profile + pool_fingerprint(source_profile.json) + ContentFlow commit`. **Nền ngẫu nhiên không seed** ⇒ cùng key có thể ra video khác; coi video là artifact đã cache, không tái sinh để "so sánh".
+- **Ánh xạ sang `media_worker`:** `render_video` → `type=render`, `inputs=[audio(+sha256), frame, video_dir]`, `params={fps, selection_mode, source_processing, encoder, output_name, config={video_generator: {viewport, video.fps}, …profile.config_overrides}}`, `output_dir` = thư mục của file đích, `idempotency_key` = khóa nội dung do Render Manager đặt; `render_thumbnail` → `type=thumbnail`; `prepare_pool` → shim `sync_shim.py` gọi `source_sync.sync_videos`; `status` → `media_worker status`. Events JSON-lines: `started/progress/artifact/completed/failed`; exit 0/3/4/2.
+- **Profile** (`render/profile.py`, D-71): `id, aspect_ratio, resolution, fps, source_pool, selection_mode (shuffle|random|sequential), source_processing (auto|normal|fast), encoder, deadline_s, frame_path?, viewport?, config_overrides, retry{max_attempts, backoff_s}, thumbnail{enabled, highlight, highlight_text, image, config_overrides}` (chỉ YouTube). `config.render = {profiles, pools{<tên>: {raw_dir, sync{size, fps, quality, remove_audio, encoder}}}, pools_dir, pool_sync_background, pool_sync_interval_s}`; `tools.contentflow = {root, python, base_dir, sync_wait_s, verify_output}`.
+- **Stage `render_youtube`** (`requires audio_youtube, metadata`; `produces video_youtube, thumbnail, youtube_render_report`) và **`render_tiktok`** (`requires audio_tiktok`; `produces video_tiktok (một per part, meta.index), tiktok_render_report`): `Render Manager` (D-73): khóa nội dung + sidecar, retry riêng từng output, part lỗi TRANSIENT không chặn part khác (`RENDER_PARTS_FAILED`), checkpoint `outputs`/`parts`. Cả hai dùng lane tài nguyên `gpu` (D-74).
+- **Lỗi** (D-70): `FFMPEG_MISSING/GPU_UNAVAILABLE`→RESOURCE `runtime`, `DISK_FULL`→RESOURCE `disk`, `MISSING_INPUT`→POLICY `resource=input` (giữ job `PAUSED_MISSING_INPUT`), `INVALID_CONFIG`→POLICY, `FFMPEG_FAILED/TIMEOUT/INTERNAL_ERROR`→TRANSIENT, `RENDER_WORKER_DIED`/`RENDER_OUTPUT_INVALID`→TRANSIENT, hủy→CANCELLED; pool: `POOL_NOT_CONFIGURED`/`MISSING_INPUT`→POLICY `resource=input`, `POOL_SYNC_FAILED`→POLICY, `POOL_SYNC_TIMEOUT`→TRANSIENT.
+- **Cache key:** audio sha256 + profile + dấu vân tay pool + phiên bản ContentFlow (+ part). Nền ngẫu nhiên không seed (D-08) ⇒ cùng key có thể ra video khác nếu render lại; coi video là artifact đã cache.
+- **CLI:** `contentfactory pools [--sync]`, `retry-part <job> <n>`; `status` hiển thị trạng thái từng part.
 
 ## 6. PublishAdapter
 
@@ -392,8 +360,8 @@ Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `
 | story | SOURCE_READY → STORY_RUNNING → STORY_READY | StoryAdapter + Story Assembler + validator bất biến | transcript, metadata → story_text, story_report |
 | tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTS Manager + TTSAdapter + AudioProcessor + SegmentPlanner | story_text → audio_master, tts_manifest, audio_timeline |
 | audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master (+ audio_timeline tùy chọn) → narration_master, audio_youtube, audio_tiktok, audio_report |
-| render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | RenderAdapter (GPU) | audio_youtube, metadata → video_youtube, thumbnail |
-| render_tiktok | TIKTOK_RENDER_READY → TIKTOK_RENDERING → OUTPUT_READY | RenderAdapter (GPU) | audio_tiktok → video_tiktok |
+| render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | Render Manager + RenderAdapter (lane gpu) | audio_youtube, metadata → video_youtube, thumbnail, youtube_render_report |
+| render_tiktok | TIKTOK_RENDER_READY → TIKTOK_RENDERING → OUTPUT_READY | Render Manager + RenderAdapter (lane gpu) | audio_tiktok → video_tiktok (từng part), tiktok_render_report |
 | output | OUTPUT_READY → OUTPUT_PUBLISHING* → UPLOAD_READY | OutputPublisher | story_text, metadata, video_*, thumbnail → output_package |
 | publish | UPLOAD_READY → UPLOADING* → PUBLISHED | PublishAdapter (**YouTube**) | video_youtube, thumbnail, metadata, story_text → publish_result |
 
@@ -490,7 +458,7 @@ class Stage:                         # mở rộng bảng ở §9
 |---|---|
 | `story_text` | `story.validate.validate_story_text` (không heading/marker/rỗng/lặp) |
 | `audio_master`, `narration_master`, `audio_youtube`, `audio_tiktok` | validator WAV của `orchestrator/validation.py` (đọc header cả WAVE_FORMAT_EXTENSIBLE, frames > 0); QA đầy đủ bằng `AudioProcessor.qa_full` trong stage |
-| `audio_timeline`, `audio_report` | JSON hợp lệ |
+| `audio_timeline`, `audio_report`, `youtube_render_report`, `tiktok_render_report` | JSON hợp lệ |
 | `tts_manifest` | JSON hợp lệ (schema §3.4) |
 | `video_youtube`, `video_tiktok`, `thumbnail` | tồn tại, đọc được, kích thước hợp lệ |
 | `transcript`, `transcript_structured`, `subtitle_raw`, `metadata` | khớp sha256 + provenance (`raw_sha256`, `parser_version`, `config_hash`) |

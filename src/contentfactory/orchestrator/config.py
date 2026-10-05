@@ -13,7 +13,14 @@ DEFAULTS: dict = {
     # Cấu hình truyền vào adapter nạp bằng "package.module:Class": {"tts": {...}} => Class(config). Adapter mới không cần sửa core.
     "adapter_config": {},
     # công cụ ngoài (cấu hình của MÁY, không vào snapshot): None = tìm trên PATH
-    "tools": {"ffmpeg": None, "ffprobe": None},
+    "tools": {"ffmpeg": None, "ffprobe": None,
+              # ContentFlow (Phase 5): root = repo ContentFlow, python = Python có Pillow (+ ffmpeg trên PATH), base_dir = nơi chứa config.json/assets của
+              # ContentFlow do orchestrator quản lý (frame, template, font thumbnail) — không sửa module
+              "contentflow": {"root": "modules/ContentFlow", "python": None, "base_dir": "config/contentflow", "sync_wait_s": 3600,
+                              "verify_output": True}},
+    # Render (Phase 5): profile YouTube/TikTok và source pool (cấu hình NGỮ NGHĨA: vào snapshot). Ví dụ pool:
+    #   "pools": {"gameplay": {"raw_dir": "D:/videos/gameplay", "sync": {"quality": "balanced"}}}  (size/fps mặc định theo profile)
+    "render": {"profiles": {}, "pools": {}, "pools_dir": "runtime/pools", "pool_sync_background": True, "pool_sync_interval_s": 300},
     "limits": {"default": 2, "gpu": 1},                     # đồng thời theo tài nguyên (D-15)
     # retry (D-40): backoff có jitter, sàn/trần, ưu tiên Retry-After; quá ngưỡng thì GIỮ job thay vì ngủ trong hàng đợi
     "retry": {"max_attempts": 3, "backoff_s": [2, 10, 60], "max_interruptions": 5, "jitter": 0.2, "cap_s": 300,

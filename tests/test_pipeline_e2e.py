@@ -46,7 +46,7 @@ class E2ETest(RootCase):
         self.assertTrue({"README.txt", "project.json", "story.txt", "youtube/video.mp4", "youtube/thumbnail.jpg",
                          "youtube/title.txt", "youtube/description.txt", "tiktok/part_01.mp4"} <= files)
         m = json.loads((self.job_dir(jid) / "manifest.json").read_text(encoding="utf-8"))
-        n_parts = len(m["stages"]["render_tiktok"]["artifacts"])
+        n_parts = len([a for a in m["stages"]["render_tiktok"]["artifacts"] if a["kind"] == "video_tiktok"])
         self.assertGreaterEqual(n_parts, 2)
         self.assertEqual(sum(f.startswith("tiktok/") for f in files), n_parts)
         self.assertEqual(validate_story_text((proj / "story.txt").read_text(encoding="utf-8")), [])

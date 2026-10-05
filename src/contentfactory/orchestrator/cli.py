@@ -1,4 +1,4 @@
-"""CLI: python -m contentfactory [--root DIR] {submit,plan,run,status,retry,resume,config,resources}"""
+"""CLI: python -m contentfactory [--root DIR] {submit,plan,run,status,retry,retry-part,resume,config,resources,pools}"""
 from __future__ import annotations
 
 import argparse
@@ -55,6 +55,10 @@ def _print_status(orc: Orchestrator, job_id: str) -> None:
     for s in P.STAGES:
         r = [x for x in runs if x["stage"] == s.name]
         print(f"  {s.name:15} attempts={len(r)} " + (r[-1]["status"] if r else "-"))
+        cp = (j.get("checkpoint") or {}).get(s.name) or {}
+        sub = cp.get("parts") or cp.get("outputs")
+        if sub:                                           # trạng thái từng output của stage render (part TikTok, video, thumbnail)
+            print("      " + " ".join(f"{k}={v['state']}" + (f"({v['error']})" if v.get("error") else "") for k, v in sub.items()))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -91,6 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     cf.add_argument("--target")
     cf.add_argument("--patch", help="JSON gộp sâu vào config ngữ nghĩa của job")
     sub.add_parser("resources", help="trạng thái Resource Monitor")
+    pl = sub.add_parser("pools", help="trạng thái source pool (Source Sync dùng chung); --sync để đồng bộ ngay")
+    pl.add_argument("--sync", action="store_true")
+    rp = sub.add_parser("retry-part", help="render lại đúng một part TikTok của job (ở render_tiktok)")
+    rp.add_argument("job_id")
+    rp.add_argument("part", type=int)
     a = ap.parse_args(argv)
 
     orc = Orchestrator(load_config(_root(a.root)), echo=a.verbose)
@@ -110,6 +119,19 @@ def main(argv: list[str] | None = None) -> int:
             orc.set_target(a.job_id, a.target)
         if a.patch:
             print(f"revision {orc.set_job_config(a.job_id, json.loads(a.patch))}")
+    elif a.cmd == "pools":
+        r = orc.adapters.get("render")
+        if not getattr(r, "requires_pool", False):
+            print("adapter render hiện tại không dùng source pool (adapters.render != contentflow)")
+        else:
+            if a.sync:
+                orc.pool_sync.sync()
+            for name, spec in orc.pool_sync.specs().items():
+                s = r.pool_status(spec)
+                print(f"{name:20} {'READY' if s['ready'] else 'NOT READY'}{' (đang đồng bộ)' if s['syncing'] else ''} raw={s['raw_files']} "
+                      f"todo={s['todo']} [{s['reason']}] {s['dir']}")
+    elif a.cmd == "retry-part":
+        print(f"job {a.job_id}: part {a.part} -> {orc.rerender_part(a.job_id, a.part)}")
     elif a.cmd == "resources":
         for st in orc.store.list_resource_status():
             print(f"{st['resource']:12} {'OK ' if st['ok'] else 'DOWN'} failures={st['failures']} {st['detail']}")

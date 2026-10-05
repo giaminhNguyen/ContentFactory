@@ -256,8 +256,14 @@ class ThumbnailRequest(TypedDict):
 
 
 class RenderAdapter(Protocol):
+    """Một audio -> một video (MODULE_CONTRACTS §5). Request ngoài `audio/profile/output` còn có `key` (khóa idempotency do Render Manager đặt),
+    `pool` (kết quả prepare_pool), `part`, `on_progress(pct)`."""
+    requires_pool: bool                              # True: stage phải có source pool đã đồng bộ (adapter ContentFlow); fake thì không
     def render_video(self, req: RenderRequest, ctx: StageContext) -> dict: ...
     def render_thumbnail(self, req: ThumbnailRequest, ctx: StageContext) -> Path: ...
+    def prepare_pool(self, pool: dict, ctx: Any = None) -> dict: ...   # Source Sync DÙNG CHUNG; idempotent, trả ngay nếu nguồn không đổi
+    def pool_status(self, pool: dict) -> dict: ...
+    def version(self) -> str: ...                    # phiên bản engine render (vào khóa cache và dấu vân tay pool)
     def health(self) -> dict: ...
 
 

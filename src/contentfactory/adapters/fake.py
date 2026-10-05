@@ -5,7 +5,7 @@ Chèn lỗi / độ trễ qua job.params["fake"][<điểm>] (xem `hook`):
   {"fail_until_attempt": 2, "error_class": "TRANSIENT", "code": "X"}   lỗi cho tới hết attempt 2
   thêm "resource": "network|token|quota|disk|runtime|credential|input", "retry_after_s": N, "resume_after_s": N
   {"fail_while_file": "<path>", ...}          lỗi chừng nào file đó còn tồn tại (test mô phỏng "tài nguyên đã hồi phục")
-Điểm: source, story, tts_chunk_<n>, render_youtube, render_tiktok, publish.
+Điểm: source, story, tts_chunk_<n>, render_youtube, render_tiktok, render_tiktok_part_<n>, publish.
 Audio là WAV thật (stdlib `wave`) để QA/ghép/cắt part có ý nghĩa; video/thumbnail chỉ là byte giả.
 """
 from __future__ import annotations
@@ -192,9 +192,22 @@ class FakeAudio:
 
 
 class FakeRender:
+    requires_pool = False                                   # fake không cần source pool
+
+    def prepare_pool(self, pool, ctx=None) -> dict:
+        return {"dir": None, "fingerprint": "fake", "reused": True}
+
+    def pool_status(self, pool) -> dict:
+        return {"name": pool.get("name"), "ready": True, "syncing": False}
+
+    def version(self) -> str:
+        return "fake-render-1"
+
     def render_video(self, req, ctx: StageContext) -> dict:
         pid = req["profile"]["id"]
         hook(ctx, f"render_{pid}")
+        if req.get("part"):
+            hook(ctx, f"render_{pid}_part_{req['part']}")
         record_call(ctx, f"render_{pid}:{req['output'].name}")
         sha = sha256_file(req["audio"])[:12]
         atomic_write_bytes(req["output"], f"FAKE-MP4|profile={pid}|audio_sha={sha}\n".encode())

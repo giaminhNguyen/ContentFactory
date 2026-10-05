@@ -68,10 +68,13 @@ Không bắt đầu Audio (Phase 4).
 **Ràng buộc giữ nguyên:** không phụ thuộc publishing metadata (D-48).
 Không bắt đầu Render (Phase 5).
 
-## Phase 5 — Render
+## Phase 5 — Render (tích hợp ContentFlow) ✅ (đã xong; kiểm chứng với ContentFlow thật ở mức adapter)
 
-**Làm:** `ContentFlowRenderAdapter` (worker subprocess), Source Sync shim + kiểm tra sau sync (R8), profile YouTube 16:9 (tạo frame + layout, R6) và TikTok 9:16, **thumbnail dùng `channel.name` + `project.title`** (D-44: wrapping/font sizing, không đổi/cắt title; asset, nén ≤2 MiB, R5), reconcile sau crash.
-**Xong khi:** từ audio ra `youtube/video.mp4` 1920×1080 + thumbnail hợp lệ và N file `tiktok/part_NN.mp4` 1080×1920; đo thời gian render 40–60 phút (R7); thumbnail với title dài vẫn đọc được mà `project.title` giữ nguyên.
+**Đã làm:** `ContentFlowRender` bọc `media_worker` (subprocess JSON-lines, hủy, ánh xạ lỗi, replay theo `idempotency_key`, kiểm kết quả bằng ffprobe); profile YouTube 16:9 và TikTok 9:16 (frame trong suốt đúng kích thước do ta sinh); Source Sync **dùng chung và chạy nền** (dấu vân tay, chỉ tin file do mình ghi nhận, khóa liên tiến trình, thread nền, CLI `pools`); Render Manager (khóa nội dung + sidecar nên không render lại video hợp lệ, retry riêng từng output, part lỗi không chặn part khác, trạng thái từng part trong checkpoint/`status`/report, `retry-part`); lane render riêng (`gpu` = 1) nên Story/TTS/Audio tiếp tục. Xem `DECISIONS.md` D-70…D-75, `MODULE_CONTRACTS.md` §5.
+**Kiểm chứng:** +49 test (`tests/test_render.py`; tổng 315, +3 test thật bỏ qua nếu không có `CF_TEST_CONTENTFLOW_PYTHON`): profile/frame/pool/lock/ánh xạ lỗi (thuần), adapter với `media_worker`+`source_sync` giả cùng giao thức (replay, hủy, lỗi có kiểu, worker chết, sync một lần + dùng lại + nguồn đổi + file cụt + 4 luồng đồng thời chỉ 1 sync + chờ hủy được), pipeline đầy đủ (pool đồng bộ đúng một lần qua nhiều job; **part 03 lỗi ⇒ chỉ part 03 được retry**, part khác render đúng một lần; retry thủ công chỉ render part 03; `retry-part`; DISK_FULL/thiếu template/thiếu pool ⇒ giữ job, không FAILED), **đồng thời** (job kẹt ở render YouTube: job B, C, job story-only mới vẫn chạy; mỗi lúc một job render; trạng thái part `done/rendering/pending` rõ ràng), sync nền không chặn Story/TTS; **ContentFlow thật** (Source Sync thật, render 16:9 và 9:16 đúng kích thước/độ dài, replay, output sai kích thước bị loại, thumbnail thiếu/có asset); kiểm đột biến (bỏ kiểm hợp lệ, dừng ở part lỗi đầu tiên, tin file đích bất kỳ, nới lane gpu). Test suite của ContentFlow trong venv tạm có Pillow: 312 pass, 12 skip.
+**Sửa trên đường:** `progress()` bỏ rơi cập nhật trạng thái dồn dập (throttle 50 ms) ⇒ thêm `force` cho đổi trạng thái; adapter đóng pipe stdout của worker (ResourceWarning).
+**Chưa kiểm chứng / chưa làm:** NVENC, render dài 10–60 phút ở quy mô thật (trần 3600 s mỗi lệnh ffmpeg của ContentFlow, R7), thumbnail với template/font thật của bạn (repo ContentFlow không có asset, R5), pipeline story→publish với ContentFlow thật, `scripts/setup` cho Pillow/venv, tiêu đề thumbnail theo `project.title` (Phase 6). Mặc định `adapters.render` vẫn là `fake`.
+Không bắt đầu Publishing (Phase 6).
 
 ## Phase 6 — Publishing
 
