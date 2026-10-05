@@ -1,0 +1,7 @@
+# Module nguồn: repo git độc lập, pin bằng modules.lock (xem docs/DECISIONS.md D-01)
+modules/*/
+
+# Dữ liệu chạy
+workspace/
+output/
+runtime/
