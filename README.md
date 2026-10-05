@@ -2,7 +2,7 @@
 
 Pipeline biến một nguồn truyện/video thành 1 video YouTube và N video TikTok. Thiết kế: `HANDOFF.md`; audit và quyết định: `docs/`.
 
-Trạng thái: **Phase 2 (+ tích hợp Subtitle_supperVip)** — orchestrator lõi (SQLite, state machine, queue theo stage, checkpoint, retry, resume) + **Source thật** (`SourceAdapter` nhiều provider: Subtitle_supperVip chính, yt-dlp dự phòng → Transcript Processor) + **Story** (`StoryBranchAdapter` điều khiển oh-story, Story Assembler). TTS/Render/Upload vẫn là fake. Story **chưa được kiểm chứng với LLM thật** (xem `docs/DECISIONS.md` D-23).
+Trạng thái: **Phase 2 (+ tích hợp Subtitle_supperVip)** — orchestrator lõi (SQLite, state machine, queue theo stage, checkpoint, retry, resume) + **Source thật** (`SourceAdapter` nhiều provider: Subtitle_supperVip chính, yt-dlp dự phòng → Transcript Processor) + **Story** (`StoryBranchAdapter` điều khiển oh-story, Story Assembler). TTS/Render/Upload vẫn là fake. Thiết kế job control (stage-based pipeline, pause/auto-resume, Resource Monitor, config snapshot) đã chốt trong `HANDOFF.md` §15A–§15C nhưng **chưa triển khai**. Story **chưa được kiểm chứng với LLM thật** (xem `docs/DECISIONS.md` D-23).
 
 ```powershell
 # Python >= 3.10, không cần cài gói ngoài để chạy test

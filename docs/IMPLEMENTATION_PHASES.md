@@ -25,17 +25,19 @@ Mỗi phase có **đầu ra kiểm chứng được**; chưa đạt thì chưa s
 **Kiểm chứng:** ba mẫu phụ đề (auto-caption rolling, manual bị cắt giữa câu, có timestamp gap); `story.txt` không heading (stage + validator); rerun không tải/làm lại artifact còn hợp lệ (cùng workspace và job mới cùng URL); resume story theo bước và theo lô chương; `ClaudeCliRunner` chạy với tiến trình giả lập CLI thật (kết quả, tác vụ nền, lỗi đăng nhập, huỷ giữa lượt); deploy oh-story thật vào thư mục tạm không sửa module; **YouTube thật**: phụ đề thủ công + auto-caption thật. Đã phá code có chủ đích 7 chỗ ở phần mới và test bắt cả 7.
 **Chưa kiểm chứng:** lượt Claude thật (tiếng Việt qua oh-story, cổng xác nhận, chi phí) và phụ đề tiếng Việt thật. Xem `DECISIONS.md` D-23, §5.
 
-### Phase 2 mở rộng — tích hợp Subtitle_supperVip ✅ (không phải Phase 3)
+### Phase 2.5 — tích hợp Subtitle_supperVip + thiết kế job control ✅ (không phải Phase 3)
 
 **Đã làm:** audit `Subtitle_supperVip` (`CURRENT_SYSTEM_AUDIT.md` §6–§7); `SourceAdapter` + `SourceProvider` + `SourceResult` mới; `ProviderChain` (fallback, cache chung, khóa chống tải trùng, dấu vân tay trong workspace); providers `supervip` (bridge tới code của module), `ytdlp` (fallback), `local`, `text`; `TranscriptProcessor` tách riêng và nhận cả `srt/vtt/json/txt`; bố cục `source/{source.json, subtitle_raw.*, transcript_structured.json, transcript_clean.txt}`; vô hiệu hóa cache của Story theo dấu vân tay đầu vào; gỡ `YouTubeSourceProcessor` cũ; cập nhật `HANDOFF.md` (§2, §2A, §3, §4, §4A, §5, §15, §19, §20, §21).
 **Sửa lỗi phát hiện trên đường:** `Orchestrator.run()` không dùng lại được sau lần dừng đầu tiên (token huỷ không reset); race khi hai job cùng nguồn chạy song song cùng tải.
 **Kiểm chứng:** 116 test (stdlib), gồm chạy **code thật của Subtitle_supperVip** với stub thư viện mạng; cây thư mục của module không bị đụng; **YouTube thật**: supervip và yt-dlp cho transcript sạch giống hệt nhau (similarity 1.0), fallback và rerun (0,0 s) đúng. **Chưa kiểm chứng:** phụ đề tiếng Việt thật.
+**Thiết kế job control (chỉ tài liệu, chưa code):** stage-based artifact pipeline (`start_stage`/`target_stage`, import, skip theo artifact hợp lệ), hold/`PAUSED_*` thay cho fail với lỗi tài nguyên tạm thời, Resource Monitor deterministic, Auto Resume (global default `true`, override theo job), retry/backoff có jitter và `Retry-After`, config snapshot theo job. Xem HANDOFF §15A–§15C, MODULE_CONTRACTS §11, DECISIONS D-36…D-42.
 Không bắt đầu TTS (Phase 3).
 
 ## Việc chờ (chưa xếp phase)
 
 | Việc | Mục tiêu | Ghi chú |
 |---|---|---|
+| **Job control layer** | `start_stage`/`target_stage` + import artifact + skip theo validator; hold/`PAUSED_*` + Auto Resume + Resume Now; Resource Monitor; retry có jitter/`Retry-After`; config snapshot theo job | thiết kế đã chốt (D-36…D-42), chưa triển khai. **Đề xuất làm trước Phase 3**: TTS cần `target_stage`, `PAUSED_DISK`/`PAUSED_RESOURCE` và checkpoint theo chunk |
 | Kiểm chứng Story thật | chạy `scripts/run_real_job.py URL --chapters 3 --max-budget-usd 2` trên một video tiếng Việt | quyết định giữ S1 hay chuyển S2 (D-23) |
 | Spike ContentFlow thật | cài Pillow/pytest, chạy test ContentFlow, render thật vài phút audio với NVENC | R6, R7, R14 |
 | Spike yt_uploader thật | build, tạo OAuth client, upload `private` lên kênh thử, đặt thumbnail, thử `idempotency_key` | R4; bỏ qua nếu chưa có OAuth client + kênh thử |

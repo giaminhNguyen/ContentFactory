@@ -140,6 +140,8 @@ Nguyên tắc cốt lõi:
 
 > Module không gọi chặt trực tiếp lẫn nhau. Module giao tiếp bằng job state + artifact + manifest.
 
+> Pipeline **không bắt buộc chạy từ đầu đến cuối**: mỗi stage là một đơn vị độc lập với input/output artifact rõ ràng (§15A).
+
 ---
 
 ## 4. Ví dụ một phiên chạy
@@ -835,6 +837,132 @@ Failure state tách riêng theo stage để retry đúng chỗ.
 
 > **Triển khai thực tế** (`docs/DECISIONS.md` D-21): `NEW -> SOURCE_PROCESSING -> SOURCE_READY -> STORY_RUNNING -> STORY_READY -> TTS_RUNNING -> AUDIO_READY -> AUDIO_PROCESSING -> YOUTUBE_RENDER_READY -> YOUTUBE_RENDERING -> TIKTOK_RENDER_READY -> TIKTOK_RENDERING -> OUTPUT_READY -> OUTPUT_PUBLISHING -> UPLOAD_READY -> UPLOADING -> PUBLISHED`, cộng `FAILED` kèm `failed_stage` để retry đúng stage. Danh sách ở trên là bản thiết kế ban đầu.
 
+> Job bị **giữ** vì tài nguyên tạm thời (hold, §15B) **không đổi state**: vị trí trong pipeline được giữ nguyên, hold chỉ ngăn runner nhận job.
+
+---
+
+## 15A. Stage-based artifact pipeline
+
+> **Trạng thái:** thiết kế đã chốt, **chưa triển khai** trong code (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42).
+
+ContentFactory **không phải pipeline bắt buộc chạy từ đầu đến cuối**. Pipeline là một chuỗi *stage* nối với nhau bằng **artifact**. Mỗi stage phải:
+
+- có input artifact rõ ràng (`requires`) và output artifact rõ ràng (`produces`), khai báo theo **kind** chứ không theo tên stage;
+- chạy độc lập, retry độc lập, resume độc lập;
+- bị **skip** nếu output hợp lệ đã tồn tại.
+
+Pipeline không được buộc người dùng chạy lại stage thượng nguồn nếu artifact cần thiết đã có và hợp lệ.
+
+### Job: `start_stage` và `target_stage`
+
+| Trường | Ý nghĩa | Mặc định |
+|---|---|---|
+| `start_stage` | stage đầu tiên được phép chạy; các stage trước nó không chạy | stage đầu của pipeline |
+| `target_stage` | stage cuối cùng cần hoàn tất; runner không nhận stage sau nó | `publish` (toàn bộ) |
+| `inputs` | artifact đưa từ ngoài vào (`kind -> đường dẫn`) hoặc tham chiếu job khác (`from_job`) | rỗng |
+
+Job **đạt đích** khi job ở `done_state` của `target_stage`.
+
+Use case tối thiểu:
+
+| Use case | `start_stage` | `target_stage` | `inputs` |
+|---|---|---|---|
+| Chỉ tải subtitle | `source` | `source` | — |
+| Chỉ tạo story | `source` | `story` | — (hoặc `start_stage=story` + `transcript`) |
+| Chạy đến TTS rồi dừng | mặc định | `tts` | — |
+| TTS từ `story.txt` có sẵn | `tts` | `tts` hoặc xa hơn | `story_text = story.txt` |
+| Render video từ audio có sẵn | `audio` (hoặc `render_youtube` nếu đã có audio YouTube/TikTok) | `render_tiktok` hoặc xa hơn | `audio_master` (hoặc `audio_youtube` + `audio_tiktok`) + `metadata` (ít nhất tiêu đề) |
+| Full pipeline | mặc định | mặc định | — |
+
+### Artifact hợp lệ và skip
+
+Một artifact **hợp lệ** khi: (a) file tồn tại và khớp sha256/kích thước đã ghi; (b) qua **validator của kind** (`story_text`: validator bất biến — không heading, không marker; `audio_*`: kiểm audio; `video_*`: file đọc được); (c) `stage_key` hiện tại khớp, gồm sha256 input, tham số liên quan, phần config snapshot liên quan và phiên bản processor.
+
+- Stage có **mọi** output hợp lệ ⇒ **skip** (ghi nhận `skipped_valid`).
+- Có output không hợp lệ ⇒ chạy; stage phía sau trong `[start_stage, target_stage]` có `stage_key` đổi theo nên tự chạy lại; stage ngoài khoảng đó không bị đụng tới.
+- Stage **trước** `start_stage` không bao giờ chạy: input của `start_stage` phải có sẵn (import hoặc đã có trong job). Thiếu ⇒ từ chối ngay lúc tạo job; nếu file bị mất lúc đang chạy ⇒ `PAUSED_MISSING_INPUT`.
+
+**Import artifact:** file ngoài được đăng ký như artifact của stage giả `import`, kèm sha256 và provenance (đường dẫn gốc), và **phải qua validator của kind** — một `story.txt` có sẵn vẫn phải qua validator bất biến. **Reuse từ job khác** (`from_job`): copy vào workspace của job mới (workspace vẫn cô lập), ghi provenance.
+
+---
+
+## 15B. Resource pause / resume
+
+> **Trạng thái:** thiết kế đã chốt, **chưa triển khai** trong code (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42).
+
+Phân biệt **lỗi tài nguyên tạm thời** với **lỗi vĩnh viễn**. Lỗi tài nguyên tạm thời **không phải job failure**: không tiêu ngân sách retry, không ghi lỗi vĩnh viễn.
+
+Job bị **giữ (hold)** kèm lý do; state (vị trí pipeline) không đổi, hold chỉ ngăn runner nhận job.
+
+| Lý do | Nguyên nhân | Điều kiện hồi phục | Auto Resume |
+|---|---|---|---|
+| `PAUSED_NETWORK` | mất mạng, provider không với tới | probe mạng + health provider OK | có |
+| `PAUSED_TOKEN` | hết token/usage của LLM | tới thời điểm reset do provider báo | có (theo thời gian) |
+| `PAUSED_QUOTA` | hết quota API (vd YouTube) | `resume_after` từ provider / `Retry-After` / thời điểm reset | có (theo thời gian) |
+| `PAUSED_DISK` | đầy đĩa | dung lượng trống ≥ ngưỡng của stage | có |
+| `PAUSED_RESOURCE` | GPU / runtime cục bộ / ffmpeg / engine không sẵn sàng | probe runtime OK | có |
+| `PAUSED_CREDENTIAL` | credential thiếu / hết hạn / bị thu hồi | credential trở lại hợp lệ (token tự làm mới, hoặc người dùng đăng nhập lại) | chỉ khi probe thấy sẵn sàng; **không** retry theo timer |
+| `PAUSED_MISSING_INPUT` | input artifact biến mất hoặc chưa được cung cấp | artifact xuất hiện và hợp lệ | chỉ khi monitor thấy input hợp lệ |
+| `FAILED_PERMANENT` | lỗi cấu hình/dữ liệu/logic, `AMBIGUOUS` (cần người xác nhận), hết ngân sách retry mà nguyên nhân không phải tài nguyên | người dùng sửa rồi `retry` | **không** |
+
+`FAILED_PERMANENT` chính là trạng thái `FAILED` (kèm `failed_stage`) đã có trong code; tên cũ được giữ để không phá tương thích.
+
+**Ánh xạ lỗi:** `TRANSIENT` → retry có backoff; hết ngân sách mà nguyên nhân là tài nguyên (mạng, provider) → hold; `RESOURCE` → hold ngay, lý do theo trường `resource` của lỗi; `AUTH` → `PAUSED_CREDENTIAL`; `POLICY` → `FAILED_PERMANENT` (riêng thiếu input → `PAUSED_MISSING_INPUT`); `AMBIGUOUS` → `FAILED_PERMANENT`; `CANCELLED` → trả về hàng, không tính lỗi.
+
+### Checkpoint
+
+Checkpoint phải đủ chi tiết để resume **đúng vị trí**, không làm lại artifact/stage đã hoàn thành:
+
+| Stage | Điểm resume |
+|---|---|
+| Source | bước chưa xong (tải phụ đề → parse → dựng câu) |
+| Story | section/chương chưa hoàn thành (theo tracking của oh-story) |
+| TTS | segment/chunk chưa hoàn thành |
+| Render YouTube | video/thumbnail chưa xong |
+| Render TikTok | part lỗi hoặc chưa render (các part xong giữ nguyên) |
+
+Tiến độ được ghi vào DB (checkpoint + progress) để hiển thị và để đo "có tiến triển hay không".
+
+### Resource Monitor
+
+Code **deterministic**, không dùng AI. Kiểm tra khi phù hợp:
+
+| Resource | Cách kiểm tra |
+|---|---|
+| network | DNS/TCP tới các host cấu hình |
+| API / provider health | `health()` của adapter, `GET /health` |
+| quota / token | chỉ khi xác định được (thời điểm reset từ lỗi provider, `Retry-After`); nếu không xác định được thì chỉ dựa vào thời gian, **không đoán** |
+| disk | dung lượng trống so với ngưỡng theo stage |
+| GPU / runtime cục bộ | `nvidia-smi`, thử encoder ffmpeg, `media_worker health`, `health()` của engine TTS |
+| credential | `health()` của adapter, file token, hạn dùng |
+
+Monitor chạy khi stage báo lỗi tài nguyên, định kỳ **chỉ cho resource đang có job bị giữ** (cooldown tăng dần, có sàn tối thiểu), và ngay trước `Resume Now`. Kết quả ghi vào DB để CLI/UI đọc. Monitor cập nhật trạng thái dù Auto Resume bật hay tắt; **chỉ Auto Resume mới được phép đưa job trở lại hàng đợi**.
+
+### Auto Resume
+
+- Cấu hình global `auto_resume_default = true`; mỗi job có `auto_resume = true | false` (không đặt = thừa kế). Giá trị hiệu lực được **chốt vào config snapshot lúc tạo job** (§15C), nên đổi default không âm thầm đổi job đang có.
+- **ON:** job đang hold vì điều kiện tự hồi phục sẽ được đưa lại hàng đợi khi resource hợp lệ, resume từ checkpoint, không chạy lại artifact/stage đã xong.
+- **OFF:** monitor vẫn cập nhật trạng thái resource (job hiển thị "resource đã sẵn sàng") nhưng job không tự chạy; chỉ tiếp tục khi người dùng gọi **Resume / Resume Now**.
+- Chỉ áp dụng cho điều kiện có khả năng tự hồi phục. **Không tự resume vô hạn:** nếu `max_auto_resumes_without_progress` (mặc định 5) lần liên tiếp không có checkpoint tiến thêm thì job giữ nguyên ở trạng thái paused kèm cờ `needs_user` (không chuyển FAILED, không lặp thêm). `FAILED_PERMANENT` và lỗi cấu hình không bao giờ tự resume.
+- **Resume Now:** probe resource trước; nếu vẫn hỏng thì giữ hold (cập nhật lý do), không đốt retry.
+
+### Retry policy
+
+- Lỗi tạm thời: exponential backoff **có jitter** (±20%), trần 5 phút, sàn 1 giây, ngân sách theo lớp lỗi.
+- **Ưu tiên `Retry-After`** của provider (giây hoặc HTTP-date): `delay = max(backoff, Retry-After)`. Nếu `Retry-After` quá lớn (mặc định > 10 phút) thì không chờ trong hàng đợi mà chuyển thành hold (`PAUSED_QUOTA`/`PAUSED_NETWORK`) với `resume_after`.
+- **Không polling/retry quá dày:** probe có cooldown riêng (ví dụ network 30 s tăng gấp đôi tới 5 phút, disk 60 s); nhịp scheduler nội bộ không phải tần suất gọi dịch vụ ngoài.
+
+---
+
+## 15C. Config snapshot theo job
+
+> **Trạng thái:** thiết kế đã chốt, **chưa triển khai** trong code (xem `docs/IMPLEMENTATION_PHASES.md`, `docs/MODULE_CONTRACTS.md` §11, `docs/DECISIONS.md` D-36…D-42).
+
+- Lúc **bắt đầu** job, snapshot **cấu hình ngữ nghĩa** hiệu lực vào DB (JSON + hash) và manifest: adapters/providers, ngôn ngữ, cấu hình dựng câu, `story_branch`, `tiktok`, mẫu tên output, retry policy, `auto_resume` (đã resolve từ default), `start_stage`/`target_stage`.
+- **Không** snapshot: đường dẫn máy, giới hạn đồng thời theo tài nguyên, lease/heartbeat (cấu hình của máy chạy), và **secrets** (không bao giờ ghi vào snapshot, manifest hay log).
+- Đổi global config **không** làm đổi job đang chạy. Đổi config của một job phải là hành động **explicit** (`config set <job> key=value`), ghi `config_revision` vào manifest; chỉ stage có `stage_key` bị ảnh hưởng mới chạy lại.
+- Adapter của job được dựng từ snapshot của job, không từ global tại thời điểm chạy.
+
 ---
 
 ## 16. Workspace và Output phải tách hoàn toàn
@@ -1002,6 +1130,11 @@ Version từng repo/module phải pin theo commit/version để máy mới repro
 19. Một nguồn state duy nhất: DB của ContentFactory. DB/queue của module bên ngoài chỉ là chi tiết cài đặt của provider.
 20. Timestamp của phụ đề được giữ cho tới sau bước dựng lại transcript; không coi mỗi dòng caption là một câu.
 21. Mỗi tầng cache (phụ đề, transcript, story) có dấu vân tay riêng; đầu vào thượng nguồn đổi thì vô hiệu hóa phần phía sau.
+22. Pipeline là chuỗi stage nối bằng artifact, không bắt buộc chạy từ đầu đến cuối: job có `start_stage`/`target_stage`; stage skip nếu output hợp lệ (§15A).
+23. Lỗi tài nguyên tạm thời (mạng, token, quota, đĩa, GPU/runtime, credential, thiếu input) làm job **paused**, không phải failed; chỉ lỗi vĩnh viễn mới `FAILED_PERMANENT` (§15B).
+24. Resource Monitor là code deterministic, không dùng AI; Auto Resume bật mặc định, override theo job, chỉ cho điều kiện tự hồi phục và không bao giờ vô hạn.
+25. Retry/backoff có jitter, ưu tiên `Retry-After`, không polling dày.
+26. Mỗi job snapshot config ngữ nghĩa lúc bắt đầu; đổi config của job đang chạy chỉ qua hành động explicit (§15C).
 
 ---
 
@@ -1022,6 +1155,8 @@ Các phần cần triển khai chi tiết ở bước sau:
 - TikTok renderer profile cụ thể;
 - naming/version policy cho output package;
 - uploader policy và retry/rate-limit;
+- triển khai job control layer: `start_stage`/`target_stage`, import artifact, hold/auto-resume, Resource Monitor, config snapshot (đã thiết kế ở §15A–§15C);
+- cách xác định token/usage còn lại của Claude mà không tốn lượt LLM (hiện chỉ biết thời điểm reset khi provider báo);
 - fallback ASR khi video không có phụ đề nào;
 - bước sinh tiêu đề/mô tả riêng (không dùng của nguồn);
 - UI/CLI cuối cùng.

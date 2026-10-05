@@ -138,6 +138,8 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 | R20 | Cây làm việc của module có thay đổi chưa commit (README, dev.ps1, start.ps1), nhánh `Update`; remote không clone được từ máy này ⇒ pin SHA không tái tạo 100% | Thấp | code backend khớp HEAD; ghi chú trong `modules.lock` |
 | R21 | Metadata đầy đủ cần `YOUTUBE_API_KEY` + quota; thiếu thì title phải lấy qua yt-dlp | Thấp | `ProviderChain` bổ sung title; fallback cuối là video id |
 | R22 | Bridge gọi cả hàm private (`_video_details`) và hàm nội bộ của module ⇒ đổi nội bộ có thể vỡ bridge | Thấp–Trung | test bridge với code thật của module; bridge chỉ import `app.services.*` |
+| R23 | Job control (start/target stage, hold/auto-resume, Resource Monitor, config snapshot) mới ở mức thiết kế: hiện `RESOURCE`/`AUTH` đi thẳng vào `FAILED` và config global có thể đổi job đang chạy | Trung | Triển khai trước TTS (`IMPLEMENTATION_PHASES.md`); đóng khoảng cách snapshot (D-41) |
+| R24 | Resource Monitor đo sai (quota/token thường không đo trực tiếp được) ⇒ resume vội hoặc chờ vô ích | Thấp–Trung | chỉ dùng thời điểm reset do provider báo, không đoán; Auto Resume có trần `max_auto_resumes_without_progress` và cờ `needs_user` |
 
 ## 6. Kiểm tra nhất quán với HANDOFF
 

@@ -35,9 +35,9 @@ Dùng một phân lớp thống nhất, ánh xạ từ `ContentFlow.VideoError` 
 ```python
 class ErrorClass(Enum):
     TRANSIENT   # tự retry với backoff (mạng, ffmpeg crash, 5xx, 429)
-    RESOURCE    # môi trường thiếu (ffmpeg, GPU, đầy đĩa) -> doctor/chờ, retry sau khi sửa
+    RESOURCE    # tài nguyên tạm thời thiếu (mạng, quota, token, đĩa, GPU/runtime) -> job bị GIỮ (PAUSED_*), resume khi Resource Monitor báo sẵn sàng (§11)
     POLICY      # input/config sai -> KHÔNG retry, cần sửa
-    AUTH        # credential hết hạn/thu hồi -> cần người
+    AUTH        # credential hết hạn/thiếu/thu hồi -> PAUSED_CREDENTIAL; chỉ resume khi credential hợp lệ trở lại (§11)
     AMBIGUOUS   # không rõ đã hoàn tất chưa (vd upload) -> cần kiểm tra, không retry mù
     CANCELLED
 
@@ -129,7 +129,7 @@ class SourceAdapter(Protocol):         # điểm vào của stage; ProviderChain
 - **Cache & idempotency:** `cache_key = sha256(kind, định danh nguồn, ngôn ngữ ưu tiên)`. (1) job: `subtitle_raw.meta.json` + raw còn đúng sha256 ⇒ dùng lại; (2) cache chung `runtime/cache/source/<key>/` ⇒ copy vào job; (3) gọi provider. Khóa theo `cache_key` nên hai job cùng nguồn chạy song song chỉ tải một lần. `refresh_source: true` bỏ qua (1)(2).
 - **Không chạm state pipeline:** chain chỉ đọc/ghi file trong workspace của job và cache; DB/queue của module bên ngoài không bao giờ được dùng.
 
-**Mã lỗi provider supervip** (map từ exception của module qua bridge): `SubtitleUnavailable → NO_SUBTITLES` (POLICY), `LanguageUnavailable → LANGUAGE_UNAVAILABLE` (POLICY), `BlockedByYouTube → YOUTUBE_BLOCKED` (RESOURCE), thiếu thư viện → `SUPERVIP_DEPENDENCY_MISSING` (RESOURCE), lỗi khác/crash/timeout → `SUPERVIP_ERROR`/`SUPERVIP_BRIDGE_FAILED`/`SUPERVIP_TIMEOUT` (TRANSIENT), không chạy được Python → `SUPERVIP_UNAVAILABLE` (RESOURCE).
+**Mã lỗi provider supervip** (map từ exception của module qua bridge): `SubtitleUnavailable → NO_SUBTITLES` (POLICY), `LanguageUnavailable → LANGUAGE_UNAVAILABLE` (POLICY), `BlockedByYouTube → YOUTUBE_BLOCKED` (RESOURCE, `resource=network` ⇒ hold `PAUSED_NETWORK`, §11.4), thiếu thư viện → `SUPERVIP_DEPENDENCY_MISSING` (RESOURCE), lỗi khác/crash/timeout → `SUPERVIP_ERROR`/`SUPERVIP_BRIDGE_FAILED`/`SUPERVIP_TIMEOUT` (TRANSIENT), không chạy được Python → `SUPERVIP_UNAVAILABLE` (RESOURCE).
 
 **Transcript Processor** (`source/transcript.py`, ContentFactory sở hữu): `process(raw, format, out_dir, ctx, provenance)` = `raw subtitle → timestamp-aware parser (srt/vtt/json/txt) → structured transcript → caption reconstruction → duplicate cleanup → punctuation/paragraph → clean transcript`.
 - Timestamp **không bị xóa**: `transcript_structured.json` có `cues[{i,start,end,text,gap_before}]`, `sentences[{i,start,end,text,gap_before,cue_range,interpolated_time,punctuation_added,capitalized,internal_pauses,paragraph}]`, `paragraphs[{i,sentence_range,start,end,gap_before}]`, `provenance{raw_sha256,format,parser_version,config,config_hash,...}`, `stats`, `clean_sha256`. Văn bản thuần (`txt`) dùng cùng schema với `start/end = null`.
@@ -292,7 +292,7 @@ class RenderAdapter(Protocol):
   - Video pool truyền vào là `<raw>/_synced` (render quét không đệ quy).
 - **Profile** (A8): "youtube" = frame 16:9 1920×1080 + layout; "tiktok" = frame 9:16 1080×1920 (frame mặc định của ContentFlow). **Cần tạo frame 16:9 và layout** — việc thuộc config/asset của orchestrator.
 - **TikTok:** gọi `render_video` **một lần mỗi part** với audio `part_NN`.
-- **Lỗi** ánh xạ từ `VideoError.code`: `FFMPEG_MISSING/DISK_FULL/GPU_UNAVAILABLE`→RESOURCE, `MISSING_INPUT/INVALID_CONFIG`→POLICY, `FFMPEG_FAILED/TIMEOUT`→TRANSIENT, cancel→CANCELLED. Timeout 3600 s/lệnh ffmpeg là trần cứng (rủi ro R7).
+- **Lỗi** ánh xạ từ `VideoError.code`: `FFMPEG_MISSING/DISK_FULL/GPU_UNAVAILABLE`→RESOURCE (`resource`: ffmpeg/GPU→`runtime`, DISK_FULL→`disk`; ⇒ hold `PAUSED_RESOURCE`/`PAUSED_DISK`, §11.4), `MISSING_INPUT/INVALID_CONFIG`→POLICY, `FFMPEG_FAILED/TIMEOUT`→TRANSIENT, cancel→CANCELLED. Timeout 3600 s/lệnh ffmpeg là trần cứng (rủi ro R7).
 - **Cache key:** `audio.sha256 + profile + pool_fingerprint(source_profile.json) + ContentFlow commit`. **Nền ngẫu nhiên không seed** ⇒ cùng key có thể ra video khác; coi video là artifact đã cache, không tái sinh để "so sánh".
 
 ## 6. PublishAdapter
@@ -325,7 +325,7 @@ class PublishAdapter(Protocol):
 
 - **Ánh xạ sang yt_uploader:** daemon `yt-uploader serve --headless` chạy nền; adapter là HTTP client tới `127.0.0.1:8973`, Bearer = nội dung `<datadir>/api_token`. `POST /api/v1/jobs` kèm `idempotency_key`, rồi poll `GET /api/v1/jobs/{id}` (hoặc `?idempotency_key=`). Health: `GET /api/v1/health` (`features` phải có `idempotency_key`, `resume_probe`).
 - **Điều kiện:** `video`/`thumbnail` phải nằm trên đĩa của máy chạy daemon; thumbnail ≤ 2 MiB (adapter phải tự kiểm/nén JPG trước khi gửi, R5).
-- **Ánh xạ lỗi:** `auth_revoked`→AUTH, `quotaExceeded`→RESOURCE (không retry trong ngày), `rate_limited`/5xx→TRANSIENT, `AMBIGUOUS_UPLOAD`→AMBIGUOUS (người xác nhận rồi `retry?force=true`). Job `failed` **không tự retry** ⇒ retry là việc của orchestrator (có giới hạn).
+- **Ánh xạ lỗi:** `auth_revoked`→AUTH, `quotaExceeded`→RESOURCE (`resource=quota` ⇒ hold `PAUSED_QUOTA` tới thời điểm reset, không retry trong ngày, §11.4), `rate_limited`/5xx→TRANSIENT, `AMBIGUOUS_UPLOAD`→AMBIGUOUS (người xác nhận rồi `retry?force=true`). Job `failed` **không tự retry** ⇒ retry là việc của orchestrator (có giới hạn).
 - **Bất biến:** một `idempotency_key` ⇒ tối đa một video trên YouTube. Job `completed` không retry được.
 - `TikTokPublishAdapter`: **không tồn tại**; TikTok chỉ được xuất file bởi OutputPublisher (D-06).
 
@@ -440,3 +440,144 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 | Mô tả video | `meta.description` có thể dùng làm mô tả đăng | output/publish luôn dùng 300 ký tự đầu của `story.txt` | không đăng lại mô tả của nguồn (D-31) |
 | Cấu hình | `youtube.preferred_langs`, `youtube.reconstruct` | `source.providers`, `source.languages`, `source.allow_translation`, `source.reconstruct`, `supervip.*`, `youtube.yt_dlp_*` (chỉ fallback) | nhiều provider |
 | Adapter name | `youtube` | `provider_chain` | |
+
+## 11. Job control (thiết kế đã chốt, chưa triển khai)
+
+> Nguồn: `HANDOFF.md` §15A–§15C; quyết định `DECISIONS.md` D-36…D-42. Mục này là **hợp đồng đích**; phần "Hiện trạng" cho biết code đang ở đâu.
+
+### 11.1 Hiện trạng so với thiết kế
+
+| Năng lực | Đã có trong code | Còn thiếu |
+|---|---|---|
+| Stage có `requires`/`produces` theo kind | ✅ `jobs/pipeline.py`, kiểm khi seal | — |
+| Resume theo checkpoint | ✅ lease + reuse file (chunk TTS, section Story, raw/transcript Source) | ghi tiến độ chi tiết vào DB |
+| `stage_key` | ✅ tính và lưu | dùng để quyết định skip/chạy lại |
+| `start_stage` / `target_stage` / import / `from_job` | ❌ | toàn bộ |
+| Hold / `PAUSED_*` / Auto Resume / Resume Now | ❌ (`RESOURCE` hiện đi thẳng vào `FAILED`) | toàn bộ |
+| Resource Monitor | ❌ (chỉ có `health()` rời rạc ở adapter) | toàn bộ |
+| Retry có jitter, `Retry-After` | ❌ (backoff cố định 2/10/60 s, 3 lần) | toàn bộ |
+| Config snapshot theo job | ⚠️ một phần: `job_defaults` được gộp vào `params` lúc tạo job | adapters/providers/retry/… vẫn đọc từ config global lúc chạy |
+
+### 11.2 JobSpec
+
+```python
+class ImportSpec(TypedDict, total=False):
+    path: str                       # file ngoài đưa vào, vd story.txt
+    from_job: str                   # hoặc tham chiếu artifact của job khác
+    stage: str
+
+class JobSpec(TypedDict, total=False):
+    params: dict                    # như hiện nay (input, language, story_profile, ...)
+    start_stage: str | None         # None = stage đầu
+    target_stage: str | None        # None = publish
+    inputs: dict[str, ImportSpec]   # kind -> nguồn
+    auto_resume: bool | None        # None = thừa kế auto_resume_default tại thời điểm tạo job
+```
+
+Ràng buộc kiểm lúc tạo job: `start_stage` ≤ `target_stage`; mọi kind trong `requires` của `start_stage` phải được thỏa bởi `inputs` hoặc artifact hợp lệ đã có; mỗi import phải qua validator của kind. Vi phạm ⇒ từ chối (POLICY), không tạo job.
+
+### 11.3 Hợp đồng stage mở rộng
+
+```python
+class Stage:                         # mở rộng bảng ở §9
+    requires: tuple[str, ...]        # kind đầu vào
+    produces: tuple[str, ...]        # kind đầu ra
+    validators: dict[str, Validator] # kind -> kiểm tra tính hợp lệ của artifact
+    checkpoint: CheckpointSchema     # điểm resume của stage (mô tả bên dưới)
+```
+
+| Kind | Validator |
+|---|---|
+| `story_text` | `story.validate.validate_story_text` (không heading/marker/rỗng/lặp) |
+| `audio_master`, `audio_youtube`, `audio_tiktok` | `AudioProcessor.qa` (đọc được, duration > 0, không im lặng bất thường) |
+| `video_youtube`, `video_tiktok`, `thumbnail` | tồn tại, đọc được, kích thước hợp lệ |
+| `transcript`, `transcript_structured`, `subtitle_raw`, `metadata` | khớp sha256 + provenance (`raw_sha256`, `parser_version`, `config_hash`) |
+
+**Quy tắc skip:** stage được skip khi mọi kind trong `produces` có artifact mà (a) sha256/kích thước khớp, (b) qua validator, (c) `stage_key` lưu khớp `stage_key` hiện tại. Ngược lại chạy; stage sau trong khoảng `[start_stage, target_stage]` tự chạy lại vì `stage_key` đổi.
+
+**Điểm resume (`checkpoint`):** Source = bước (tải/parse/dựng câu); Story = chương/section chưa commit; TTS = chunk/segment chưa xong; Render TikTok = part chưa xong/lỗi. Handler báo tiến độ (`ctx.progress(done, total, detail)`), orchestrator ghi vào DB.
+
+### 11.4 `StageError` mở rộng và ánh xạ kết quả
+
+```python
+class StageError(Exception):
+    error_class: ErrorClass
+    code: str
+    resource: str | None            # network | token | quota | disk | runtime | credential | input
+    retry_after_s: float | None     # từ Retry-After của provider
+    resume_after: float | None      # epoch: thời điểm reset đã biết (quota/token)
+```
+
+| Điều kiện | Kết quả |
+|---|---|
+| `TRANSIENT`, còn ngân sách | queue lại sau `max(backoff có jitter, retry_after_s)` |
+| `TRANSIENT`, hết ngân sách, `resource` ∈ {network, provider} | hold `PAUSED_NETWORK` |
+| `TRANSIENT`, hết ngân sách, không phải tài nguyên | `FAILED_PERMANENT` |
+| `RESOURCE` | hold ngay: `network→PAUSED_NETWORK`, `token→PAUSED_TOKEN`, `quota→PAUSED_QUOTA`, `disk→PAUSED_DISK`, `runtime→PAUSED_RESOURCE` |
+| `AUTH` | hold `PAUSED_CREDENTIAL` |
+| `POLICY` + `resource="input"` | hold `PAUSED_MISSING_INPUT` |
+| `POLICY` còn lại, `AMBIGUOUS` | `FAILED_PERMANENT` |
+| `CANCELLED` | trả về hàng, không tính lỗi |
+| `retry_after_s` > ngưỡng (mặc định 10 phút) | không chờ trong hàng: hold (`PAUSED_QUOTA`/`PAUSED_NETWORK`) với `resume_after` |
+
+Hold không tăng `retry_used` và không đổi `state`.
+
+### 11.5 Trường hold của job (DB)
+
+`hold_reason` (null | một trong bảng ở HANDOFF §15B), `hold_detail`, `hold_since`, `resume_after`, `auto_resumes_without_progress`, `needs_user` (bool), `checkpoint` (JSON theo stage), `progress`. `FAILED_PERMANENT` ≡ `state == FAILED` hiện tại. Runner **không nhận** job có `hold_reason`. Chuyển đổi: `hold(job, reason, detail, resume_after)`, `release(job)` (Auto Resume hoặc `resume`), `resume_now(job)` (probe trước).
+
+### 11.6 Resource Monitor
+
+```python
+class ResourceStatus(TypedDict):
+    resource: str                   # network | provider:<tên> | quota:<tên> | token:<tên> | disk | gpu | credential:<tên>
+    ok: bool
+    detail: str
+    checked_at: float
+    next_check_at: float
+    retry_after: float | None
+
+class ResourceProbe(Protocol):
+    resource: str
+    def check(self) -> ResourceStatus: ...       # deterministic, không LLM, có timeout
+
+class ResourceMonitor(Protocol):
+    def status(self, resource: str) -> ResourceStatus | None: ...
+    def check_due(self) -> list[ResourceStatus]: ...            # chỉ resource đang có job bị giữ, theo cooldown
+    def ready_for(self, job) -> bool: ...                       # hold_reason -> resource tương ứng đang ok?
+```
+
+- Probe có sẵn dự kiến: network (DNS/TCP), provider health (`adapter.health()`), disk (`shutil.disk_usage` so với ngưỡng stage), gpu/runtime (`nvidia-smi`, ffmpeg encoder, `media_worker health`, engine `health()`), credential (adapter `health()`/token file/hạn dùng), quota/token (**chỉ** thời điểm reset đã biết; không biết thì dựa vào thời gian).
+- Cooldown: tăng dần có trần (network 30 s → 5 phút; disk 60 s; quota/token tới `resume_after`); không bao giờ dưới sàn. Kết quả ghi bảng `resource_status`.
+- Monitor **không** tự đưa job vào hàng đợi: việc đó thuộc Auto Resume (job có `auto_resume` hiệu lực = true). `auto_resumes_without_progress` ≥ `max_auto_resumes_without_progress` ⇒ `needs_user = true`, dừng tự resume.
+
+### 11.7 Config snapshot
+
+```python
+class JobConfigSnapshot(TypedDict):
+    semantic: dict      # adapters/providers, ngôn ngữ, reconstruct, story_branch, tiktok, output template, retry, auto_resume, start/target
+    hash: str
+    revision: int       # tăng khi người dùng đổi config của job một cách explicit
+    created_at: float
+```
+
+Loại khỏi snapshot: đường dẫn máy, giới hạn đồng thời, lease/heartbeat, **secrets**. `snapshot(job)` lúc tạo job; `set_config(job, patch) -> revision` là hành động explicit duy nhất làm đổi cấu hình job; stage có `stage_key` bị ảnh hưởng sẽ chạy lại.
+
+### 11.8 Retry policy
+
+```python
+class RetryPolicy(TypedDict):
+    base_s: float                    # 2
+    factor: float                    # 2
+    cap_s: float                     # 300
+    floor_s: float                   # 1
+    jitter: float                    # 0.2
+    max_attempts: dict[str, int]     # theo ErrorClass, mặc định TRANSIENT=3
+    retry_after_hold_threshold_s: float   # 600
+```
+
+`delay = clamp(base_s × factor^n, floor_s, cap_s) × (1 ± jitter)`, rồi `max(delay, retry_after_s)`.
+
+### 11.9 CLI đích
+
+`submit [--start-stage S] [--target-stage T] [--import kind=path]… [--from-job ID] [--auto-resume | --no-auto-resume]`, `pause <job>`, `resume <job> [--now]`, `config set <job> key=value`, `resources` (trạng thái monitor), `status` (hiển thị hold, resource, checkpoint).
