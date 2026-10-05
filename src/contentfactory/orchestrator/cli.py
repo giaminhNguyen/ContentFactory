@@ -20,6 +20,10 @@ def _params(args: argparse.Namespace) -> dict:
     p = json.loads(Path(args.params_file).read_text(encoding="utf-8")) if args.params_file else {}
     if args.input:
         p["input"] = {"kind": "youtube_url" if args.input.startswith("http") else "text", "value": args.input}
+    if getattr(args, "title", None):
+        p["project"] = {**(p.get("project") or {}), "title": args.title}
+    if getattr(args, "channel", None):
+        p["channel"] = args.channel
     for kv in args.set or []:
         k, v = kv.split("=", 1)
         p[k] = json.loads(v) if v[:1] in '{["tfn0123456789-' else v
@@ -61,6 +65,22 @@ def _print_status(orc: Orchestrator, job_id: str) -> None:
             print("      " + " ".join(f"{k}={v['state']}" + (f"({v['error']})" if v.get("error") else "") for k, v in sub.items()))
 
 
+def _print_links(orc: Orchestrator, job_id: str) -> None:
+    """Gói output và liên kết YouTube (nếu đã đăng) — lấy từ artifact trong workspace, không đọc output/."""
+    from ..jobs.workspace import job_dir
+    jd = job_dir(orc.cfg.path("workspace"), job_id)
+    for a in orc.store.artifacts(job_id):
+        if a["kind"] in ("output_package", "publish_result"):
+            try:
+                d = json.loads((jd / a["path"]).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if a["kind"] == "output_package":
+                print(f"  gói output: {d.get('project_dir')} (phiên bản {d.get('version')}{', dùng lại' if d.get('reused') else ''})")
+            else:
+                print(f"  YouTube: {d.get('remote_url')}  (Full Audio {d.get('sequence')})")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="contentfactory")
     ap.add_argument("--root", help="thư mục gốc (mặc định: repo, hoặc $CONTENTFACTORY_ROOT)")
@@ -68,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("submit", help="tạo job mới, in job id")
     s.add_argument("--input", help="URL hoặc text nguồn")
+    s.add_argument("--title", help="project.title: tiêu đề chính cho thumbnail, YouTube, thư mục output (không đặt thì dùng tiêu đề video nguồn kèm cảnh báo)")
+    s.add_argument("--channel", help="id kênh (channels/<id>/channel.json)")
     s.add_argument("--params-file")
     s.add_argument("--set", action="append", help="key=value (JSON nếu hợp lệ), lặp được")
     for sp in (s, pl := sub.add_parser("plan", help="xem kế hoạch (stage chạy/bỏ qua), không tạo job")):
@@ -95,6 +117,10 @@ def main(argv: list[str] | None = None) -> int:
     cf.add_argument("--target")
     cf.add_argument("--patch", help="JSON gộp sâu vào config ngữ nghĩa của job")
     sub.add_parser("resources", help="trạng thái Resource Monitor")
+    sq = sub.add_parser("sequences", help="danh sách số Full Audio đã reserve theo kênh")
+    sq.add_argument("--channel")
+    sr = sub.add_parser("sequence-release", help="nhả số Full Audio của một job CHƯA đăng (số đã cấp không bị cấp lại)")
+    sr.add_argument("job_id")
     pl = sub.add_parser("pools", help="trạng thái source pool (Source Sync dùng chung); --sync để đồng bộ ngay")
     pl.add_argument("--sync", action="store_true")
     rp = sub.add_parser("retry-part", help="render lại đúng một part TikTok của job (ở render_tiktok)")
@@ -130,6 +156,11 @@ def main(argv: list[str] | None = None) -> int:
                 s = r.pool_status(spec)
                 print(f"{name:20} {'READY' if s['ready'] else 'NOT READY'}{' (đang đồng bộ)' if s['syncing'] else ''} raw={s['raw_files']} "
                       f"todo={s['todo']} [{s['reason']}] {s['dir']}")
+    elif a.cmd == "sequences":
+        for r in orc.sequence.list(a.channel):
+            print(f"{r['channel_id']:20} #{r['sequence']:<5} {r['status']:10} project={r['project_id']}")
+    elif a.cmd == "sequence-release":
+        print(f"job {a.job_id}: " + ("đã nhả số" if orc.sequence.release(a.job_id) else "không có số đang giữ"))
     elif a.cmd == "retry-part":
         print(f"job {a.job_id}: part {a.part} -> {orc.rerender_part(a.job_id, a.part)}")
     elif a.cmd == "resources":
@@ -142,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "status":
         for j in ([orc.store.get_job(a.job_id)] if a.job_id else orc.store.list_jobs()):
             _print_status(orc, j["id"])
+            _print_links(orc, j["id"])
     return 0
 
 

@@ -40,7 +40,8 @@ class StateMachineTest(unittest.TestCase):
         for s in P.STAGES:
             self.assertIn(s.name, HANDLERS)
             for a in s.adapters:
-                self.assertIn(a, DEFAULTS["adapters"])
+                if a != "sequence":                   # Sequence Manager do orchestrator tiêm (trạng thái project), không phải adapter cấu hình
+                    self.assertIn(a, DEFAULTS["adapters"])
 
 
 if __name__ == "__main__":

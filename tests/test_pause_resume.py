@@ -290,13 +290,13 @@ class MigrationTest(RootCase):
         c.close()
         self.assertEqual(sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0], 0)
         st = JobStore(db)
-        self.assertEqual(st.schema_version(), 1)
+        self.assertEqual(st.schema_version(), 2)
         j = st.get_job("000001")
         self.assertEqual(j["state"], P.STORY_READY)                       # dữ liệu cũ nguyên vẹn
         self.assertIsNone(j["hold_reason"])
         self.assertIsNone(j["target_stage"])                              # job cũ: chạy full như trước
         self.assertTrue(Path(f"{db}.bak-v0").exists())
-        self.assertEqual(JobStore(db).schema_version(), 1)                # mở lại: idempotent
+        self.assertEqual(JobStore(db).schema_version(), 2)                # mở lại: idempotent
         self.assertEqual(st.nonterminal_count(), 1)
 
     def test_legacy_job_without_snapshot_still_runs(self):

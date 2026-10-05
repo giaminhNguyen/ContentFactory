@@ -272,13 +272,15 @@ class PublishRequest(TypedDict):
     platform: str
     video: Path
     thumbnail: Path | None
-    title: str
-    description: str
+    title: str                 # = PublishMetadata.youtube_title do Metadata Builder dựng (uploader không tự nghĩ title)
+    description: str           # = PublishMetadata.description
     tags: list[str]
     privacy: str
     made_for_kids: bool        # BẮT BUỘC, không default (yt_uploader cũng vậy)
     account_id: str | None
     idempotency_key: str
+    category: str | None
+    playlists: list[str]
 
 
 class PublishResult(TypedDict, total=False):
@@ -292,27 +294,50 @@ class PublishResult(TypedDict, total=False):
 class PublishAdapter(Protocol):
     platform: str
 
-    def publish(self, req: PublishRequest, ctx: StageContext) -> PublishResult: ...
+    def publish(self, req: PublishRequest, ctx: StageContext) -> PublishResult: ...   # submit-hoặc-tiếp-tục + chờ tới trạng thái cuối
+    def find(self, idempotency_key: str) -> PublishResult | None: ...                 # tra cứu theo key (đối soát sau crash)
     def health(self) -> dict: ...
 
 
 # ---- Output (gói cho người dùng) --------------------------------------------------------------
 class OutputRequest(TypedDict):
     job_id: str
-    title: str
+    project: dict                  # {id, title, title_source, channel_id, channel_name, language, sequence}
+    youtube_title: str
     description: str
-    language: str
     output_root: Path
-    story: Path
-    youtube_video: Path
-    youtube_thumbnail: Path
-    tiktok_parts: list[Path]
+    story: dict                    # mỗi file: {path: Path (trong workspace), source: "<đường dẫn workspace tương đối>", sha256}
+    youtube_video: dict
+    youtube_thumbnail: dict
+    tiktok_parts: list[dict]       # có thêm {index, duration_sec?}, đã sắp theo index
+    warnings: list[str]
 
 
 class OutputPackage(TypedDict):
     project_dir: str
+    version: int
+    reused: bool                   # True: gói của job này đã có đúng nội dung này, KHÔNG đụng tới
+    supersedes: str | None
     files: list[str]
 
 
 class OutputPublisher(Protocol):
     def publish(self, req: OutputRequest, ctx: StageContext) -> OutputPackage: ...
+
+
+# ---- project / channel (D-43…D-47) -----------------------------------------------------------
+def project_of(ctx: StageContext, meta: dict) -> dict:
+    """Thông tin project cho stage render (thumbnail), output, publish. `project.title` là field chính duy nhất: lấy từ
+    params.project.title (title_source user|story); chưa đặt thì dùng tiêu đề của video NGUỒN (source_default = placeholder, có cảnh báo ở Metadata Builder)."""
+    p = ctx.params.get("project") or {}
+    title = str(p.get("title") or "").strip()
+    src = str(p.get("title_source") or "user") if title else "source_default"
+    if not title:
+        title = str(meta.get("title") or "").strip() or "untitled"
+    ch = ctx.config.get("channel_config") or {}
+    cid = ch.get("id") or ctx.params.get("channel") or "default"
+    if src == "source_default" and (ctx.config.get("publishing") or {}).get("title_policy") == "require":
+        raise StageError(ErrorClass.POLICY, "PROJECT_TITLE_REQUIRED", "cần đặt params.project.title (cấu hình publishing.title_policy=require)",
+                         resource="input")
+    return {"id": ctx.job_id, "title": title, "title_source": src, "channel_id": cid, "channel_name": ch.get("name") or cid,
+            "language": ctx.params.get("language", "vi")}

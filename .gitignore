@@ -2,9 +2,10 @@
 modules/*/
 
 # Dữ liệu chạy
-workspace/
-output/
-runtime/
+# neo ở gốc repo: `output/` không neo từng khớp cả package mã nguồn src/contentfactory/output/ (nên mã đó chưa từng được commit)
+/workspace/
+/output/
+/runtime/
 
 # Python
 __pycache__/

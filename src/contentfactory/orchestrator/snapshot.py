@@ -14,7 +14,7 @@ import time
 from .config import Config, _merge
 
 # Cấu hình có ý nghĩa với KẾT QUẢ của job (adapter/provider, dựng câu, story, retry, mẫu output).
-SEMANTIC_KEYS = ("adapters", "adapter_config", "render", "source", "supervip", "youtube", "story_branch", "retry", "output")
+SEMANTIC_KEYS = ("adapters", "adapter_config", "render", "publishing", "source", "supervip", "youtube", "story_branch", "retry", "output")
 # Phần quyết định adapter nào được dựng cho job (dùng để biết có tái dùng bộ adapter mặc định của orchestrator không).
 ADAPTER_KEYS = ("adapters", "adapter_config", "render", "source", "supervip", "youtube", "story_branch", "output")
 _SECRET = re.compile(r"(secret|password|passwd|token|api[_-]?key|credential)", re.I)

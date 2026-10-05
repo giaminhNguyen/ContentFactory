@@ -1,7 +1,7 @@
 """Dựng adapter từ config. Chỉ orchestrator được import module cụ thể; module không import nhau.
 
 Tên adapter trong config["adapters"][<loại>]:
-  "fake" | "builtin" | "provider_chain" (source) | "story_branch" (story) | "rule" (planner) | "ffmpeg" (audio) |
+  "fake" | "builtin" | "provider_chain" (source) | "story_branch" (story) | "rule" (planner) | "ffmpeg" (audio) | "contentflow" (render) | "yt_uploader" (publish) |
   "package.module:ClassName" (adapter ngoài; cấu hình riêng qua config["adapter_config"][<loại>]).
 Đổi sang adapter thật chỉ cần sửa config; ví dụ:
   {"adapters": {"source": "provider_chain", "story": "story_branch"}}
@@ -16,6 +16,7 @@ from ..adapters import fake
 from ..audio.processor import FfmpegAudio
 from ..adapters.story_branch import StoryBranchAdapter
 from ..output.publisher import BuiltinOutputPublisher
+from ..publish.yt_uploader import YtUploaderPublish
 from ..render.contentflow import ContentFlowRender
 from ..source.chain import ProviderChain
 from ..tts.planner import RuleSegmentPlanner
@@ -62,6 +63,8 @@ def _factories(cfg: Config) -> dict:
         ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("render", "contentflow"): lambda: _contentflow(cfg),
+        ("publish", "yt_uploader"): lambda: YtUploaderPublish({**cfg.data.get("tools", {}).get("yt_uploader", {}),
+                                                              "ffmpeg": cfg.data.get("tools", {}).get("ffmpeg")}),
         ("output", "builtin"): lambda: BuiltinOutputPublisher(cfg["output"]),
     }
 

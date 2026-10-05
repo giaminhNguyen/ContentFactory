@@ -252,6 +252,8 @@ workspace/<job>/source/
 
 ## 4B. Project metadata, Channel Config và Publishing metadata
 
+> **Trạng thái:** **đã triển khai ở Phase 6** (`docs/DECISIONS.md` D-78…D-80, `docs/MODULE_CONTRACTS.md` §12): `project.title`, Metadata Builder, Channel Config dạng `channels/<id>/channel.json` (JSON thay cho YAML, D-79), Sequence Manager. Blockquote "chưa triển khai" bên dưới là bản gốc.
+
 > **Trạng thái:** thiết kế đã chốt, **chưa triển khai** phần metadata. Thumbnail đã tích hợp ở Phase 5 (renderer thật, nhưng tiêu đề vẫn là placeholder `meta["title"]`); `project.title`, Metadata Builder, Sequence Manager và publish package làm ở **Phase 6 (Publishing)**. Xem `docs/DECISIONS.md` D-43…D-49, `docs/MODULE_CONTRACTS.md` §12.
 
 ### Canonical project title
@@ -1056,6 +1058,8 @@ Monitor chạy khi stage báo lỗi tài nguyên, định kỳ **chỉ cho resou
 
 ## 16. Workspace và Output phải tách hoàn toàn
 
+> **Trạng thái:** **đã triển khai ở Phase 6** (D-77): chỉ copy có kiểm sha256, không ghi đè, phiên bản mới `-vN` bên cạnh, `project.json` trỏ artifact nguồn.
+
 ### Workspace
 
 Hệ thống sở hữu.
@@ -1101,6 +1105,8 @@ output/project-name/
 ---
 
 ## 17. Output Publisher
+
+> **Trạng thái:** **đã triển khai ở Phase 6** (D-77, D-76): upload YouTube qua daemon `yt_uploader` đọc artifact trong workspace; retry upload không render lại.
 
 Khi job hoàn tất, Output Publisher copy/export artifact final từ workspace sang output package.
 

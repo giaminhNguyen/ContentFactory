@@ -230,7 +230,10 @@ class FakePublish:
         record_call(ctx, "publish")
         vid = "fake-" + hashlib.sha1(req["idempotency_key"].encode()).hexdigest()[:10]   # cùng key => cùng video
         return {"state": "completed", "remote_id": vid, "remote_url": f"https://youtube.invalid/watch?v={vid}",
-                "warnings": []}
+                "warnings": [], "job_id": "fake-job"}
+
+    def find(self, idempotency_key: str):
+        return None
 
     def health(self) -> dict:
         return HEALTH

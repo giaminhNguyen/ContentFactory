@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS transitions(
   from_state TEXT, to_state TEXT NOT NULL, stage TEXT, attempt INTEGER, note TEXT);
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # v1 (Phase 2.9): điều khiển job (start/target stage), hold + auto resume, checkpoint, config snapshot, resource monitor
 V1_JOB_COLUMNS = (
     ("start_stage", "TEXT"), ("target_stage", "TEXT"), ("target_idx", "INTEGER"),
@@ -61,6 +61,16 @@ V1_SQL = (
     """CREATE TABLE IF NOT EXISTS resource_status(
          resource TEXT PRIMARY KEY, ok INTEGER NOT NULL, detail TEXT, checked_at REAL, next_check_at REAL,
          retry_after REAL, failures INTEGER NOT NULL DEFAULT 0)""",
+)
+
+# v2 (Phase 6): Sequence Manager. Số đã cấp KHÔNG bao giờ cấp lại (PK channel_id+sequence, kể cả đã release); mỗi project chỉ có một số
+# "đang sống" (index một phần: trạng thái khác released).
+V2_SQL = (
+    """CREATE TABLE IF NOT EXISTS channel_sequences(
+         channel_id TEXT NOT NULL, sequence INTEGER NOT NULL, project_id TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'reserved', reserved_at REAL NOT NULL, published_at REAL, released_at REAL,
+         PRIMARY KEY(channel_id, sequence))""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS channel_sequences_project ON channel_sequences(project_id) WHERE status != 'released'",
 )
 
 _RUNNING_STATES = tuple(s.running_state for s in P.STAGES)
@@ -145,13 +155,18 @@ class JobStore:
                         dst.close()
             c.execute("BEGIN IMMEDIATE")                                         # tuần tự hóa nhiều tiến trình khởi động cùng lúc
             try:
-                if c.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                ver = c.execute("PRAGMA user_version").fetchone()[0]
+                if ver < 1:
                     have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
                     for name, decl in V1_JOB_COLUMNS:
                         if name not in have:
                             c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
                     for sql in V1_SQL:
                         c.execute(sql)
+                if ver < 2:
+                    for sql in V2_SQL:
+                        c.execute(sql)
+                if ver < SCHEMA_VERSION:
                     c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
             except BaseException:

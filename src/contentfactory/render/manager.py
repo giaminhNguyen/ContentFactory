@@ -18,7 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from ..contracts import ArtifactRef, ErrorClass, StageContext, StageError, StageResult
+from ..contracts import ArtifactRef, ErrorClass, StageContext, StageError, StageResult, project_of
 from ..fsutil import atomic_write_json
 from . import profile as PF
 
@@ -119,14 +119,15 @@ class RenderManager:
             states["video"] = {"state": "done", "attempts": n, **({"retry_errors": errs} if errs else {})}
         note()
         th = prof.get("thumbnail") or {}
-        tkey = _h("thumb", meta["title"], ctx.params.get("channel", ""), th, ver)
+        proj = project_of(ctx, meta)                                  # thumbnail = channel.name + project.title (D-44); không dùng id kênh / tiêu đề nguồn
+        tkey = _h("thumb", proj["title"], proj["channel_name"], th, ver)
         if self._valid(thumb, tkey):
             states["thumbnail"] = {"state": "reused", "attempts": 0}
         else:
             self._invalidate(thumb)
             states["thumbnail"]["state"] = "rendering"
             note()
-            treq = {"title": meta["title"], "channel_name": ctx.params.get("channel", ""), "output": thumb, "image": th.get("image"),
+            treq = {"title": proj["title"], "channel_name": proj["channel_name"], "output": thumb, "image": th.get("image"),
                     "highlight": th.get("highlight", "auto"), "highlight_text": th.get("highlight_text", ""),
                     "config_overrides": th.get("config_overrides") or {}, "key": tkey}
             _, n, errs = self._attempt(ctx, "thumbnail", prof["retry"], lambda: self.render.render_thumbnail(treq, ctx))
@@ -182,7 +183,8 @@ class RenderManager:
                 note()
                 continue                                         # part khác vẫn render; retry của job chỉ làm lại part lỗi
             self._stamp(out, key, info or {})
-            states[str(i)] = {"state": "done", "attempts": n, **({"retry_errors": errs} if errs else {})}
+            states[str(i)] = {"state": "done", "attempts": n, **({"retry_errors": errs} if errs else {}),
+                              **({"duration_sec": round(info["duration"], 2)} if info and info.get("duration") else {})}
             note()
         report = {"schema": 1, "profile": base, "pool": {k: (pool or {}).get(k) for k in ("name", "fingerprint", "reused")}, "version": ver,
                   "parts": states}

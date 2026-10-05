@@ -35,6 +35,8 @@ from .config import Config, _merge
 from .handlers import HANDLERS
 from .log import EventLog
 from .monitor import DiskProbe, NetworkProbe, ResourceMonitor
+from ..jobs.sequences import SequenceManager
+from . import channels as CH
 from .pools import PoolSyncService
 from .registry import build_adapters
 from .snapshot import (adapters_hash, apply_patch, build_snapshot, config_hash, effective_config)
@@ -68,6 +70,7 @@ class Orchestrator:
         self.monitor.adapters_health = self.monitor.adapters_health or self._adapters_health
         self._last_tick = 0.0
         self.pool_sync = PoolSyncService(self)
+        self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
 
     # -- dựng mặc định --------------------------------------------------------------------------
     def _default_monitor(self) -> ResourceMonitor:
@@ -135,6 +138,10 @@ class Orchestrator:
             raise _spec_error("; ".join(plan.errors), errors=plan.errors)
         resolved = bool(self.cfg.data.get("auto_resume_default", True)) if auto_resume is None else bool(auto_resume)
         snap = build_snapshot(self.cfg, auto_resume=resolved, start_stage=plan.start_stage, target_stage=plan.target_stage)
+        channel = CH.load_channel(self.cfg, str(merged.get("channel") or "default"))     # Channel Config: đọc MỘT lần, chốt vào snapshot (D-41, D-46)
+        snap["semantic"]["channel_config"] = channel
+        if not merged.get("watermark") and channel.get("watermark") and Path(channel["watermark"]).is_file():
+            merged["watermark"] = channel["watermark"]                                  # watermark là channel asset (HANDOFF §10)
         job_id = self.store.create_job(merged, priority, state=P.STAGES[plan.start_idx].queue_state,
                                        start_stage=plan.start_stage, target_stage=plan.target_stage,
                                        auto_resume=resolved, snapshot=snap, config_hash=config_hash(snap["semantic"]))
@@ -406,11 +413,13 @@ class Orchestrator:
                                config={"output_dir": str(self.cfg.path("output")),
                                        "tts_cache_dir": str(self.cfg.path("runtime") / "cache" / "tts"),
                                        "source": sem.get("source", self.cfg.data.get("source", {})),
-                                       "render": sem.get("render", self.cfg.data.get("render", {}))},
+                                       "render": sem.get("render", self.cfg.data.get("render", {})),
+                                       "channel_config": sem.get("channel_config"),
+                                       "publishing": sem.get("publishing", self.cfg.data.get("publishing", {}))},
                                cancel=self.cancel, log=log, progress=self._progress_fn(job_id, stage.name))
             log("stage_started", stage_key=(key or "")[:12])
             t0 = time.time()
-            adapters = self._adapters_for(claim.snapshot)
+            adapters = {**self._adapters_for(claim.snapshot), "sequence": self.sequence}
             result = HANDLERS[stage.name](ctx, **{n: adapters[n] for n in stage.adapters})
             arts = self._seal(stage, result, jd, contract)
             if self.store.succeed(claim, self.owner, arts, result.data):

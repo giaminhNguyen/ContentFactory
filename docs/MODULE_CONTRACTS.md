@@ -259,73 +259,68 @@ class RenderAdapter(Protocol):
 - **Cache key:** audio sha256 + profile + dấu vân tay pool + phiên bản ContentFlow (+ part). Nền ngẫu nhiên không seed (D-08) ⇒ cùng key có thể ra video khác nếu render lại; coi video là artifact đã cache.
 - **CLI:** `contentfactory pools [--sync]`, `retry-part <job> <n>`; `status` hiển thị trạng thái từng part.
 
-## 6. PublishAdapter
+## 6. PublishAdapter (đã triển khai ở Phase 6)
 
-**Trách nhiệm:** đưa video lên một nền tảng. Hiện chỉ **YouTube** (A14, A15).
+**Trách nhiệm:** đưa video lên một nền tảng. Hiện chỉ **YouTube** (A14, A15). Quyết định: `DECISIONS.md` D-76. Mã: `publish/yt_uploader.py`, `publish/stage.py`.
 
 ```python
 class PublishRequest(TypedDict):
-    platform: Literal["youtube"]          # "tiktok" chưa có implementation
-    video: ArtifactRef; thumbnail: ArtifactRef | None
-    title: str                            # = PublishMetadata.youtube_title do Metadata Builder dựng (§12); uploader không tự nghĩ title
-    description: str                      # = PublishMetadata.description (template trong Channel Config)
-    tags: list[str]
-    category: str | None; privacy: Literal["private","unlisted","public"]
-    schedule: str | None                  # RFC3339
-    made_for_kids: bool                   # BẮT BUỘC (yt_uploader không default)
-    playlists: list[str]
-    account_id: str | None                # = channel trong channel.yaml
-    idempotency_key: str                  # = stage_key
-
-class PublishResult(TypedDict):
-    state: Literal["completed","failed","paused","cancelled","pending"]
-    remote_id: str | None; remote_url: str | None
-    error: StageError | None; post_step_warnings: list[str]
+    platform: str; video: Path; thumbnail: Path | None            # đường dẫn artifact trong WORKSPACE (không phải output/)
+    title: str                  # = publish_metadata.youtube_title (Metadata Builder); uploader không tự nghĩ title
+    description: str            # = publish_metadata.description
+    tags: list[str]; privacy: str; category: str | None; playlists: list[str]
+    made_for_kids: bool         # BẮT BUỘC
+    account_id: str | None
+    idempotency_key: str        # = stage_key
 
 class PublishAdapter(Protocol):
     platform: str
-    def publish(self, req: PublishRequest, ctx: StageContext) -> PublishResult: ...   # submit + poll tới trạng thái cuối
-    def find(self, idempotency_key: str) -> PublishResult | None: ...                 # tra cứu sau crash
-    def health(self) -> HealthReport: ...
+    def publish(self, req, ctx) -> PublishResult: ...     # tìm-hoặc-tạo job theo key, chờ tới trạng thái cuối; lỗi => StageError có kiểu
+    def find(self, idempotency_key: str) -> PublishResult | None: ...
+    def health(self) -> dict: ...                          # {ok, features, token}
 ```
-
-- **Ánh xạ sang yt_uploader:** daemon `yt-uploader serve --headless` chạy nền; adapter là HTTP client tới `127.0.0.1:8973`, Bearer = nội dung `<datadir>/api_token`. `POST /api/v1/jobs` kèm `idempotency_key`, rồi poll `GET /api/v1/jobs/{id}` (hoặc `?idempotency_key=`). Health: `GET /api/v1/health` (`features` phải có `idempotency_key`, `resume_probe`).
-- **Điều kiện:** `video`/`thumbnail` phải nằm trên đĩa của máy chạy daemon; thumbnail ≤ 2 MiB (adapter phải tự kiểm/nén JPG trước khi gửi, R5).
-- **Ánh xạ lỗi:** `auth_revoked`→AUTH, `quotaExceeded`→RESOURCE (`resource=quota` ⇒ hold `PAUSED_QUOTA` tới thời điểm reset, không retry trong ngày, §11.4), `rate_limited`/5xx→TRANSIENT, `AMBIGUOUS_UPLOAD`→AMBIGUOUS (người xác nhận rồi `retry?force=true`). Job `failed` **không tự retry** ⇒ retry là việc của orchestrator (có giới hạn).
-- **Bất biến:** một `idempotency_key` ⇒ tối đa một video trên YouTube. Job `completed` không retry được.
+`PublishResult = {state: completed|failed|pending, remote_id, remote_url, warnings, job_id}`.
+- **`YtUploaderPublish`:** HTTP client của `yt-uploader serve --headless` (`tools.yt_uploader = {url, data_dir|token, poll_s, max_wait_s, ...}`; Bearer = `api_token`). Luồng: `GET /jobs?idempotency_key=` → (không có: `POST /jobs`) | (completed: trả kết quả cũ) | (lỗi tạm thời lần trước: `POST /jobs/{id}/retry`, daemon probe + resume) → poll `GET /jobs/{id}`. Health yêu cầu features `idempotency_key`, `resume_probe`. Thumbnail > 2 MiB nén ra file tạm bằng ffmpeg.
+- **Lỗi:** `quota_exceeded`→RESOURCE `quota` + `resume_after` (reset 00:00 Pacific); `auth_*`/token sai/token thiếu→AUTH `credential`; `network_error`→TRANSIENT `network`; `rate_limited`→TRANSIENT `provider`; `invalid_metadata`/`youtube_rejected`→POLICY; `invalid_file`→POLICY `input`; `database_error`/daemon không chạy→RESOURCE `runtime`; `AMBIGUOUS_UPLOAD`→AMBIGUOUS (người xác nhận rồi `retry?force=true`).
+- **Bất biến:** một `idempotency_key` ⇒ tối đa một video trên YouTube; job `completed` không retry được; lỗi vĩnh viễn không bị retry mù.
+- **Stage `publish`:** `requires video_youtube, thumbnail, publish_metadata`; adapters `publish`, `sequence`; mặc định đăng: params > Channel Config `publishing` > `config.publishing.defaults`; `made_for_kids` bắt buộc (`MISSING_MADE_FOR_KIDS` = FAILED); thành công ⇒ `sequence.mark_published`, artifact `publish_result {remote_id, remote_url, warnings, job_id, title, sequence}`.
 - `TikTokPublishAdapter`: **không tồn tại**; TikTok chỉ được xuất file bởi OutputPublisher (D-06).
 
-## 7. OutputPublisher
+## 7. OutputPublisher (đã triển khai ở Phase 6)
 
-**Trách nhiệm:** khi job xong, **sao chép** artifact cuối từ workspace sang gói output của người dùng (HANDOFF §16–17). Không liên quan tới việc đăng nền tảng (đó là PublishAdapter).
+**Trách nhiệm:** khi job xong, **sao chép** artifact cuối từ workspace sang gói output của người dùng (HANDOFF §16–17). `workspace/` = hệ thống sở hữu, `output/` = người dùng sở hữu. Không liên quan tới việc đăng nền tảng (đó là PublishAdapter). Quyết định: `DECISIONS.md` D-77, D-78. Mã: `output/publisher.py`, `output/stage.py`, `output/metadata.py`.
 
 ```python
+class OutputRequest(TypedDict):
+    job_id: str; project: dict; youtube_title: str; description: str; output_root: Path
+    story: dict; youtube_video: dict; youtube_thumbnail: dict          # {path (workspace), source (đường dẫn workspace tương đối), sha256}
+    tiktok_parts: list[dict]                                           # + {index, duration_sec?}
+    warnings: list[str]
+
 class OutputPackage(TypedDict):
-    project_dir: str                     # output/<project>/
-    files: list[str]
-    manifest_public: str                 # project.json
+    project_dir: str; version: int; reused: bool; supersedes: str | None; files: list[str]
 
 class OutputPublisher(Protocol):
-    def publish(self, job: JobRecord, manifest: Manifest, cfg: OutputConfig) -> OutputPackage: ...
+    def publish(self, req: OutputRequest, ctx) -> OutputPackage: ...
 ```
 
 Layout (khớp HANDOFF §16):
 
 ```text
-output/<project>/
+output/<yyyymmdd>_<slug>/
   README.txt   project.json   story.txt
   youtube/{video.mp4, thumbnail.jpg, title.txt, description.txt}
-  tiktok/{part_01.mp4, part_02.mp4, ...}
+  tiktok/{part_01.mp4, part_02.mp4, ...}        # đệm số 0; >=100 part: part_001
 ```
 
 - **Quy tắc:**
-  1. Chỉ **copy**, không move/symlink; sau publish pipeline **không đọc lại `output/`** (HANDOFF §17). Rebuild dùng workspace/cache.
-  2. Dựng trong thư mục tạm cùng volume (`output/.tmp-<id>/`) rồi `rename` ⇒ người dùng không bao giờ thấy gói nửa vời. Tên đụng nhau ⇒ hậu tố `-2`, không ghi đè.
-  3. `project.json` công khai chỉ gồm thứ người dùng cần (file, tiêu đề, độ dài); **manifest nội bộ** (version/commit/profile hash) ở lại `workspace/job_x/manifest.json`.
-  4. `story.txt` copy từ artifact đã qua validator bất biến (§2).
-  5. Không chứa cache, chunk audio, sync, temp.
-  6. Verify sha256 sau copy; lỗi → `RESOURCE`/`TRANSIENT`, giữ nguyên workspace.
-- **Tên `<project>`** = `<yyyymmdd>_<slug ASCII không dấu>` (D-07), cấu hình ở `config/config.json` → `output.name_template`.
+  1. Chỉ **copy**, có kiểm sha256 bản copy so với artifact đã niêm phong; pipeline **không bao giờ đọc lại `output/`** (di chuyển/đổi tên/xóa gói không làm hỏng pipeline, kể cả upload và retry).
+  2. Dựng trong `output/.tmp-<job>/` rồi `rename` ⇒ không bao giờ thấy gói nửa vời; lỗi ⇒ dọn tạm, không để lại gì.
+  3. **Không sửa âm thầm:** nội dung y hệt gói đã có ⇒ không đụng tới (`reused`); nội dung khác ⇒ gói mới `<tên>-v2`/`-v3` (`version`, `supersedes`), gói cũ giữ nguyên. Tên đụng thư mục của job khác ⇒ hậu tố `-2`.
+  4. `project.json` ghi cho từng file: đường dẫn, sha256, kích thước, artifact nguồn (đường dẫn workspace + sha256); manifest nội bộ (version/commit/profile hash) ở lại `workspace/job_x/manifest.json`.
+  5. `story.txt` từ artifact đã qua validator bất biến (§2); không chứa cache, chunk, sync, temp.
+- **Stage `output`:** `requires story_text, metadata, video_youtube, thumbnail, video_tiktok` (+ `tiktok_render_report` tùy chọn để ghi độ dài part); adapters `output`, `sequence`; `produces output_package, publish_metadata`. Metadata Builder + reserve sequence chạy ở đầu stage này (D-78, D-80).
+- **Tên `<project>`** = `<yyyymmdd>_<slug ASCII không dấu của project.title>` (D-07), cấu hình `output.name_template`.
 
 ---
 
@@ -362,8 +357,8 @@ Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `
 | audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master (+ audio_timeline tùy chọn) → narration_master, audio_youtube, audio_tiktok, audio_report |
 | render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | Render Manager + RenderAdapter (lane gpu) | audio_youtube, metadata → video_youtube, thumbnail, youtube_render_report |
 | render_tiktok | TIKTOK_RENDER_READY → TIKTOK_RENDERING → OUTPUT_READY | Render Manager + RenderAdapter (lane gpu) | audio_tiktok → video_tiktok (từng part), tiktok_render_report |
-| output | OUTPUT_READY → OUTPUT_PUBLISHING* → UPLOAD_READY | OutputPublisher | story_text, metadata, video_*, thumbnail → output_package |
-| publish | UPLOAD_READY → UPLOADING* → PUBLISHED | PublishAdapter (**YouTube**) | video_youtube, thumbnail, metadata, story_text → publish_result |
+| output | OUTPUT_READY → OUTPUT_PUBLISHING* → UPLOAD_READY | Metadata Builder + OutputPublisher + SequenceManager | story_text, metadata, video_youtube, thumbnail, video_tiktok → output_package, publish_metadata |
+| publish | UPLOAD_READY → UPLOADING* → PUBLISHED | PublishAdapter (**YouTube**, yt_uploader) + SequenceManager | video_youtube, thumbnail, publish_metadata → publish_result |
 
 `*` = state thêm so với danh sách tối thiểu của Phase 1 (cần để mỗi stage có một running state). Terminal: `PUBLISHED`, `FAILED`.
 
@@ -458,7 +453,7 @@ class Stage:                         # mở rộng bảng ở §9
 |---|---|
 | `story_text` | `story.validate.validate_story_text` (không heading/marker/rỗng/lặp) |
 | `audio_master`, `narration_master`, `audio_youtube`, `audio_tiktok` | validator WAV của `orchestrator/validation.py` (đọc header cả WAVE_FORMAT_EXTENSIBLE, frames > 0); QA đầy đủ bằng `AudioProcessor.qa_full` trong stage |
-| `audio_timeline`, `audio_report`, `youtube_render_report`, `tiktok_render_report` | JSON hợp lệ |
+| `audio_timeline`, `audio_report`, `youtube_render_report`, `tiktok_render_report`, `publish_metadata`, `output_package`, `publish_result` | JSON hợp lệ |
 | `tts_manifest` | JSON hợp lệ (schema §3.4) |
 | `video_youtube`, `video_tiktok`, `thumbnail` | tồn tại, đọc được, kích thước hợp lệ |
 | `transcript`, `transcript_structured`, `subtitle_raw`, `metadata` | khớp sha256 + provenance (`raw_sha256`, `parser_version`, `config_hash`) |
@@ -552,7 +547,7 @@ class RetryPolicy(TypedDict):
 
 `submit [--mode M] [--start S] [--target T] [--artifact kind=path]… [--metadata-title T] [--from-job ID] [--auto-resume on|off]`, `plan` (cùng tham số, không tạo job), `resume <job> [--now]`, `config <job> [--auto-resume on|off] [--target STAGE] [--patch JSON]`, `resources`, `status` (hiển thị start/target, hold, tiến độ). Chưa có: `pause`.
 
-## 12. Project, Channel Config và Publishing metadata (thiết kế đã chốt, chưa triển khai)
+## 12. Project, Channel Config và Publishing metadata (đã triển khai ở Phase 6; vài chỗ lệch thiết kế ghi ở D-78, D-79)
 
 > Nguồn: `HANDOFF.md` §4B; quyết định `DECISIONS.md` D-43…D-49. Thumbnail triển khai ở Phase 5; Metadata Builder, Sequence Manager, publish package ở Phase 6. Phase 3 (TTS) và Phase 4 (Audio) **không** phụ thuộc mục này ngoài identifier (Audio còn dùng watermark của channel, vốn là channel asset chứ không phải publishing metadata).
 
@@ -624,14 +619,15 @@ class SequenceManager(Protocol):
 
 **Khai báo phụ thuộc:** `stage_key` của một stage chỉ băm các tham số/field mà stage **khai báo** là phụ thuộc, nên đổi `project.title` chỉ làm render_youtube/output/publish chạy lại, **không** làm TTS/Audio chạy lại (D-48).
 
-### 12.5 Khác biệt giữa code hiện tại và thiết kế đích
+### 12.5 Hiện trạng sau Phase 6 (so với thiết kế đích)
 
-| Nơi | Hiện tại | Đích |
-|---|---|---|
-| `render/stage.py` (thumbnail) | `meta["title"]` (tiêu đề video **nguồn**) và `params.channel` (một chuỗi id) | `project.title` và `channel.name` từ Channel Config (Phase 5) |
-| `publish/stage.py` | `meta["title"]` làm title; 300 ký tự đầu của `story.txt` làm mô tả | `PublishMetadata.youtube_title` và `.description` (Phase 6) |
-| `output/stage.py`, `OutputPublisher` | `meta["title"]` (slug thư mục, README, `project.json`, `title.txt`); mô tả = 300 ký tự đầu của story | `project.title` cho slug/README/`project.json`; `title.txt`/`description.txt` = nội dung do Metadata Builder dựng (Phase 6) |
-| `story/stage.py` | `meta["title"]` làm tên sách và tiêu đề tác phẩm nguồn | giữ nguyên (đó là tiêu đề của nguồn) |
-| Tính `stage_key` | băm **toàn bộ** `params` | chỉ tham số khai báo (cần khi triển khai skip theo `stage_key`, §11) |
-| Channel Config | chưa có; chỉ có `params.channel` (chuỗi) | `channels/<id>/channel.yaml` (định dạng YAML theo HANDOFF §10; chọn parser khi triển khai, D-17) |
-| Sequence | chưa có | Sequence Manager (Phase 6) |
+| Nơi | Hiện trạng |
+|---|---|
+| `contracts.project_of` | `project.title` = `params.project.title` (`title_source` user/story) hoặc, nếu chưa đặt, tiêu đề video nguồn (`source_default`, có cảnh báo; `publishing.title_policy=require` thì chặn) |
+| `render/manager.py` (thumbnail) | `project.title` + `channel.name` (D-44) |
+| `output/metadata.py` | Metadata Builder strict; nằm ở package `output/` (luật cô lập module), chạy đầu stage `output`, artifact `publish_metadata` |
+| `output/*`, `publish/stage.py` | `title.txt`/`description.txt` và payload upload cùng đọc `publish_metadata`; không còn "300 ký tự đầu của story" |
+| Channel Config | `channels/<id>/channel.json` (JSON; YAML chỉ khi có PyYAML), snapshot theo job, `orchestrator/channels.py` |
+| Sequence | `jobs/sequences.py` + bảng `channel_sequences` (DB v2); CLI `sequences`, `sequence-release` |
+| `story/stage.py` | giữ nguyên (tiêu đề của tác phẩm nguồn) |
+| `stage_key` | chỉ tham số/config khai báo (từ Phase 2.9); `project`/`channel_config` chỉ nằm ở render_youtube/output/publish |

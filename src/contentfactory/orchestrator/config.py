@@ -14,6 +14,8 @@ DEFAULTS: dict = {
     "adapter_config": {},
     # công cụ ngoài (cấu hình của MÁY, không vào snapshot): None = tìm trên PATH
     "tools": {"ffmpeg": None, "ffprobe": None,
+              # yt_uploader (Phase 6): daemon `yt-uploader serve --headless`; token đọc từ <data_dir>/api_token (mặc định %APPDATA%\\yt-uploader)
+              "yt_uploader": {"url": "http://127.0.0.1:8973", "data_dir": None, "token": None, "poll_s": 2.0, "max_wait_s": 21600},
               # ContentFlow (Phase 5): root = repo ContentFlow, python = Python có Pillow (+ ffmpeg trên PATH), base_dir = nơi chứa config.json/assets của
               # ContentFlow do orchestrator quản lý (frame, template, font thumbnail) — không sửa module
               "contentflow": {"root": "modules/ContentFlow", "python": None, "base_dir": "config/contentflow", "sync_wait_s": 3600,
@@ -21,7 +23,10 @@ DEFAULTS: dict = {
     # Render (Phase 5): profile YouTube/TikTok và source pool (cấu hình NGỮ NGHĨA: vào snapshot). Ví dụ pool:
     #   "pools": {"gameplay": {"raw_dir": "D:/videos/gameplay", "sync": {"quality": "balanced"}}}  (size/fps mặc định theo profile)
     "render": {"profiles": {}, "pools": {}, "pools_dir": "runtime/pools", "pool_sync_background": True, "pool_sync_interval_s": 300},
-    "limits": {"default": 2, "gpu": 1},                     # đồng thời theo tài nguyên (D-15)
+    "limits": {"default": 2, "gpu": 1},
+    # Publishing (Phase 6; D-76…): channels/<id>/channel.json = Channel Config; title_policy: warn (mặc định: cảnh báo khi dùng tiêu đề nguồn) | require
+    "channels_dir": "channels",
+    "publishing": {"title_policy": "warn", "defaults": {"privacy": "private", "category": None, "tags": [], "playlists": []}},                     # đồng thời theo tài nguyên (D-15)
     # retry (D-40): backoff có jitter, sàn/trần, ưu tiên Retry-After; quá ngưỡng thì GIỮ job thay vì ngủ trong hàng đợi
     "retry": {"max_attempts": 3, "backoff_s": [2, 10, 60], "max_interruptions": 5, "jitter": 0.2, "cap_s": 300,
               "floor_s": 1.0, "retry_after_hold_threshold_s": 600, "max_auto_resumes_without_progress": 5,
