@@ -265,7 +265,8 @@ class RenderRequest(TypedDict):
 
 class ThumbnailRequest(TypedDict):
     image: ArtifactRef | None        # ảnh nhân vật
-    channel_name: str; title: str
+    channel_name: str                # = channel.name từ Channel Config (§12), KHÔNG phải id
+    title: str                       # = project.title (§12): không AI tạo title khác; không cắt/đổi title
     highlight: Literal["auto","manual","none"]; highlight_text: str | None
     output_path: str                 # .jpg/.png
 
@@ -303,7 +304,9 @@ class RenderAdapter(Protocol):
 class PublishRequest(TypedDict):
     platform: Literal["youtube"]          # "tiktok" chưa có implementation
     video: ArtifactRef; thumbnail: ArtifactRef | None
-    title: str; description: str; tags: list[str]
+    title: str                            # = PublishMetadata.youtube_title do Metadata Builder dựng (§12); uploader không tự nghĩ title
+    description: str                      # = PublishMetadata.description (template trong Channel Config)
+    tags: list[str]
     category: str | None; privacy: Literal["private","unlisted","public"]
     schedule: str | None                  # RFC3339
     made_for_kids: bool                   # BẮT BUỘC (yt_uploader không default)
@@ -414,8 +417,8 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 | `AudioProcessor` | theo `ArtifactRef` | theo `Path`; `qa()` trả `AudioQAReport` | như trên |
 | `StoryAdapter.generate` | `(SourceBundle, profile, ctx)` | `(SourceBundle{title,language,transcript:Path}, profile, out_dir, ctx)` | adapter biết chỗ ghi |
 | `OutputPublisher.publish` | `(job, manifest, cfg)` | `(OutputRequest, ctx)` với đường dẫn artifact | Module không đọc DB/manifest, chỉ nhận artifact |
-| `RenderAdapter` | có `sync_source`, `status` | chỉ `render_video`, `render_thumbnail`, `health` | Source Sync và reconcile thuộc Phase 4 |
-| `PublishAdapter` | có `find()` | chỉ `publish`, `health` | tra cứu sau crash thuộc Phase 5; Phase 1 dựa vào `idempotency_key = stage_key` |
+| `RenderAdapter` | có `sync_source`, `status` | chỉ `render_video`, `render_thumbnail`, `health` | Source Sync và reconcile thuộc Phase 5 |
+| `PublishAdapter` | có `find()` | chỉ `publish`, `health` | tra cứu sau crash thuộc Phase 6; Phase 1 dựa vào `idempotency_key = stage_key` |
 | `TTSAdapter` | có `capabilities()` đầy đủ | `capabilities()` trả dict tự do | schema chính thức thuộc Phase 3 |
 | `StageContext` | có `secrets`, `deadline_s`, `on_progress` | có `params`, `inputs`, `config`, `cancel`, `log`, `stage_key`, `attempt` | thêm khi có nhu cầu thật |
 | Tên stage | `*_PLANNING/*_RENDERING`, `MASTER_AUDIO_READY` | theo danh sách Phase 1 (§9) | yêu cầu Phase 1; tương ứng `TTS_RUNNING`, `AUDIO_READY` |
@@ -581,3 +584,87 @@ class RetryPolicy(TypedDict):
 ### 11.9 CLI đích
 
 `submit [--start-stage S] [--target-stage T] [--import kind=path]… [--from-job ID] [--auto-resume | --no-auto-resume]`, `pause <job>`, `resume <job> [--now]`, `config set <job> key=value`, `resources` (trạng thái monitor), `status` (hiển thị hold, resource, checkpoint).
+
+## 12. Project, Channel Config và Publishing metadata (thiết kế đã chốt, chưa triển khai)
+
+> Nguồn: `HANDOFF.md` §4B; quyết định `DECISIONS.md` D-43…D-49. Thumbnail triển khai ở Phase 5; Metadata Builder, Sequence Manager, publish package ở Phase 6. Phase 3 (TTS) và Phase 4 (Audio) **không** phụ thuộc mục này ngoài identifier (Audio còn dùng watermark của channel, vốn là channel asset chứ không phải publishing metadata).
+
+### 12.1 Schema
+
+```python
+class ProjectMeta(TypedDict):
+    id: str                          # = id job (project 1-1 với job)
+    title: str                       # CANONICAL: đúng một nguồn cho mọi tiêu đề
+    title_source: str                # user | story | source_default
+    channel_id: str                  # khóa tới Channel Config
+    language: str
+    sequence: int | None             # None tới khi Sequence Manager reserve; sau đó cố định
+
+class ChannelConfig(TypedDict, total=False):
+    id: str                          # channel id (YouTube)
+    name: str                        # -> thumbnail, {channel_name}
+    description_template: str        # biến: {channel_name} {project_title} {sequence}
+    thumbnail: dict                  # defaults liên quan thumbnail
+    publishing: dict                 # defaults đăng; Phase 6 bổ sung thêm field
+    sequence: dict                   # tùy chọn {last_used: int} để nối tiếp số đã có
+    watermark: str                   # channel asset (HANDOFF §10)
+
+class PublishMetadata(TypedDict):
+    youtube_title: str               # "[Full Audio {sequence}] | {project_title}"
+    description: str                 # render từ description_template
+    sequence: int
+    project_title: str
+    channel_name: str
+```
+
+`project.title` là field **duy nhất**; mọi giá trị khác là kết quả derive (template/slug), không lưu độc lập.
+
+### 12.2 Metadata Builder (Phase 6)
+
+```python
+class MetadataBuilder(Protocol):
+    def build(self, project: ProjectMeta, channel: ChannelConfig, sequence: int) -> PublishMetadata: ...
+```
+
+- Thuần deterministic, không AI. Template **strict**: biến lạ → lỗi; `{{`/`}}` là dấu ngoặc nhọn.
+- Giới hạn của YouTube (title ≤ 100 ký tự, description ≤ 5000 byte, theo `yt_uploader`): vượt → `StageError(POLICY, TITLE_TOO_LONG | DESCRIPTION_TOO_LONG)`. **Không** cắt âm thầm và không đổi `project.title`.
+- Vị trí trong pipeline: đầu stage `output` (hoặc stage riêng nếu Phase 6 thấy cần); kết quả là artifact `publish_metadata`, dùng cho `youtube/title.txt`, `youtube/description.txt` của gói output và cho payload của stage `publish`. Uploader nhận title/description đã dựng.
+
+### 12.3 Sequence Manager (Phase 6)
+
+```python
+class SequenceManager(Protocol):
+    def reserve(self, channel_id: str, project_id: str) -> int: ...   # idempotent: đã reserve thì trả đúng số cũ
+    def get(self, project_id: str) -> int | None: ...
+    def mark_published(self, project_id: str) -> None: ...
+    def release(self, project_id: str) -> None: ...                    # hành động explicit; số đã release không được dùng lại
+```
+
+- Lưu trong DB của ContentFactory (dự kiến): `channel_sequences(channel_id, sequence, project_id UNIQUE, status reserved|published|released, reserved_at, published_at, PRIMARY KEY(channel_id, sequence))`.
+- `reserve` chạy trong một transaction: nếu project đã có dòng → trả về; nếu chưa → `max(last_used trong Channel Config, max(sequence) của channel) + 1`.
+- Sequence là **trạng thái của project**, không phải cấu hình: không nằm trong config snapshot, không đổi khi retry upload hoặc rerender. Số đã reserve không bị cấp lại (cho phép có khoảng trống).
+
+### 12.4 Ai dùng field nào
+
+| Module / stage | Dùng | Không dùng |
+|---|---|---|
+| source, story, tts | `project.id`, `language` (Story dùng tiêu đề của **tác phẩm nguồn**, không phải `project.title`) | `project.title`, channel, sequence |
+| audio | `project.id`, `language`, **watermark của channel** (channel asset, HANDOFF §10) | `project.title`, `channel.name`, sequence, description (publishing metadata) |
+| render_youtube (thumbnail) | `project.title`, `channel.name`, `thumbnail.defaults` | sequence |
+| render_tiktok | profile, audio part | title, sequence |
+| output | `project.title` (slug thư mục, README, `project.json`), `PublishMetadata` (title.txt, description.txt) | — |
+| publish | `PublishMetadata`, `publishing.defaults`, `sequence` | tự sinh title/description |
+
+**Khai báo phụ thuộc:** `stage_key` của một stage chỉ băm các tham số/field mà stage **khai báo** là phụ thuộc, nên đổi `project.title` chỉ làm render_youtube/output/publish chạy lại, **không** làm TTS/Audio chạy lại (D-48).
+
+### 12.5 Khác biệt giữa code hiện tại và thiết kế đích
+
+| Nơi | Hiện tại | Đích |
+|---|---|---|
+| `render/stage.py` (thumbnail) | `meta["title"]` (tiêu đề video **nguồn**) và `params.channel` (một chuỗi id) | `project.title` và `channel.name` từ Channel Config (Phase 5) |
+| `publish/stage.py` | `meta["title"]` làm title; 300 ký tự đầu của `story.txt` làm mô tả | `PublishMetadata.youtube_title` và `.description` (Phase 6) |
+| `output/stage.py`, `OutputPublisher` | `meta["title"]` (slug thư mục, README, `project.json`, `title.txt`); mô tả = 300 ký tự đầu của story | `project.title` cho slug/README/`project.json`; `title.txt`/`description.txt` = nội dung do Metadata Builder dựng (Phase 6) |
+| `story/stage.py` | `meta["title"]` làm tên sách và tiêu đề tác phẩm nguồn | giữ nguyên (đó là tiêu đề của nguồn) |
+| Tính `stage_key` | băm **toàn bộ** `params` | chỉ tham số khai báo (cần khi triển khai skip theo `stage_key`, §11) |
+| Channel Config | chưa có; chỉ có `params.channel` (chuỗi) | `channels/<id>/channel.yaml` (định dạng YAML theo HANDOFF §10; chọn parser khi triển khai, D-17) |
+| Sequence | chưa có | Sequence Manager (Phase 6) |

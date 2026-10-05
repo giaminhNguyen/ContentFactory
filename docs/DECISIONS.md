@@ -71,7 +71,7 @@
 
 ### D-17 ✅ Phase 1 chỉ dùng stdlib: Python ≥ 3.10, `sqlite3`, `unittest`, config JSON
 - **Bằng chứng:** máy có Python 3.10 (và 3.13), không có `pytest`, không có `tomllib` (3.11+). `setup` máy mới không nên phụ thuộc gói ngoài khi chưa cần.
-- **Quyết định:** config ở `config/config.json` (đã sửa các chỗ nhắc `.yaml` trong D-07, D-15). Các ví dụ YAML của HANDOFF (`channel.yaml`, TTS profile) sẽ được đọc khi tới Phase 3/5; chọn PyYAML hay JSON lúc đó. Test chạy bằng `python -m unittest discover -s tests -t .` (pytest cũng chạy được nếu có).
+- **Quyết định:** config ở `config/config.json` (đã sửa các chỗ nhắc `.yaml` trong D-07, D-15). Các ví dụ YAML của HANDOFF (TTS profile ở Phase 3; Channel Config `channel.yaml` ở Phase 5–6) sẽ được đọc khi tới các phase đó; chọn PyYAML hay JSON lúc đó. Test chạy bằng `python -m unittest discover -s tests -t .` (pytest cũng chạy được nếu có).
 
 ### D-18 ✅ Phát hiện tiến trình chết bằng lease + heartbeat; resume tự động
 - **Quyết định:** claim job ghi `lease_owner`/`lease_until` (mặc định 30 s, heartbeat 10 s). Orchestrator mới (hoặc cùng orchestrator) thấy lease hết hạn thì đánh dấu stage_run `interrupted` và xếp job về `queue_state` **của đúng stage đó**. Không kiểm PID (không tin cậy trên Windows khi thiếu thư viện, và không dùng được khi máy khởi động lại).
@@ -124,10 +124,11 @@
 - `bypassPermissions` (cách bench của oh-story chạy) là tùy chọn có chủ đích, chỉ trong workspace cách ly của job. Nếu mặc định thận trọng làm agent kẹt vì thiếu quyền, đây là chỗ cần nới (chưa biết trước vì chưa chạy LLM thật).
 
 ### D-27 ✅ Artifact mới ở stage Source/Story (đã chỉnh bởi D-31, D-33)
+> Cập nhật D-43/D-45: mô tả đăng không còn là "300 ký tự đầu của `story.txt`" mà là template trong Channel Config; tiêu đề đăng là `project.title` qua template, không phải tiêu đề nguồn.
 - Source sinh `subtitle_raw`, `transcript_structured`, `transcript`, `metadata`; Story sinh `story_text`, `story_report`. Thay đổi `SourceResult`/`StoryResult`/`SourceBundle` (thêm `source_language`) ghi ở `MODULE_CONTRACTS.md` §10. `metadata.json` **không** chứa `description` của video gốc (tránh chép mô tả của người khác thành mô tả video của ta); stage output/publish dùng 300 ký tự đầu của `story.txt`.
 
 ### D-28 ✅ Đánh số phase theo chỉ dẫn của người dùng
-- Phase 2 = Source + Story thật (phần "Phase 3" trong lộ trình ban đầu). Các phase sau được đánh số lại liên tục (3 = TTS, 4 = Audio + Render, 5 = Publish + Output, 6 = Bất đồng bộ + vận hành, 7 = TTS Auto-Profile) và chỉ là đề xuất. Các spike ContentFlow/yt_uploader thật chưa làm, xếp trong "Việc chờ" của `IMPLEMENTATION_PHASES.md`. Không bắt đầu Phase 3.
+- Phase 2 = Source + Story thật (phần "Phase 3" trong lộ trình ban đầu). Các phase sau từng được đánh số lại liên tục; **đánh số hiện hành ở D-49** (3 TTS, 4 Audio, 5 Render, 6 Publishing, 7 vận hành, 8 TTS Auto-Profile). Các spike ContentFlow/yt_uploader thật chưa làm, xếp trong "Việc chờ" của `IMPLEMENTATION_PHASES.md`. Không bắt đầu Phase 3.
 
 ### D-29 ✅ Subtitle_supperVip được tích hợp qua SourceAdapter; ContentFactory vẫn là orchestrator cấp cao
 - **Quyết định:** `Subtitle_supperVip` là **implementation chính của `SourceAdapter`** (provider `supervip`), không phải orchestrator. ContentFactory giữ pipeline job, state từng stage, tham chiếu artifact và retry/resume trong DB của nó. Subtitle_supperVip chỉ làm phần *thu thập phụ đề* (resolve nguồn, chọn track, lấy phụ đề, metadata nếu có key).
@@ -142,6 +143,7 @@
 - **Code Phase 2 cũ:** `YouTubeSourceProcessor` (nguyên khối) **đã gỡ** sau khi tích hợp mới được chứng minh (116 test + chạy thật hai provider cho transcript sạch giống hệt nhau, similarity 1.0). Downloader yt-dlp được **giữ** thành `YtDlpProvider` (fallback); parser/dựng câu thành `TranscriptProcessor`; cache thành `ProviderChain`.
 
 ### D-31 ✅ Ownership của state; mô tả/tiêu đề của nguồn không dùng làm của ta
+> Cập nhật D-43/D-45: nguyên tắc "không dùng mô tả/tiêu đề của nguồn" giữ nguyên; điều bị thay thế là cách thay thế tạm thời (300 ký tự đầu của story làm mô tả, tiêu đề nguồn làm tiêu đề) bằng `project.title` + template ở Phase 5–6.
 - **State:** DB của ContentFactory là nguồn sự thật duy nhất của pipeline. Provider không đọc/ghi DB của ContentFactory; DB của Subtitle_supperVip không được tạo, đọc hay ghi (test `test_module_state_is_never_touched`). Lỗi của provider chỉ trở thành lỗi của **stage `source`** (TRANSIENT retry theo backoff; POLICY/RESOURCE/AUTH → `FAILED` ở stage đó), không bao giờ làm đổi state job khác. (Cập nhật D-37: lỗi RESOURCE/AUTH của provider làm job bị **hold** `PAUSED_*` thay vì `FAILED`; chỉ POLICY/AMBIGUOUS mới `FAILED_PERMANENT`.)
 - **Mô tả:** `SourceResult.description` (nếu có) chỉ là dữ liệu tham khảo; output/publish luôn lấy 300 ký tự đầu của `story.txt` làm mô tả (D-27). Tiêu đề hiện vẫn lấy từ nguồn (giới hạn đã biết).
 
@@ -206,15 +208,50 @@
 - Mọi hành động thay đổi cách chạy của một job đều **explicit** (`resume`, `config set`, `retry`); mọi tự động hóa (Auto Resume) đều có điều kiện, có giới hạn và để lại dấu vết (`transitions`, log, manifest).
 - Triển khai job control là một lớp đứng trên orchestrator hiện có (thêm cột/bảng, claim có lọc `hold_reason`/`target_stage`, monitor), **không** đổi hợp đồng module. Thứ tự đề xuất và chỗ nằm trong lộ trình: `IMPLEMENTATION_PHASES.md` ("Việc chờ"); nên làm trước TTS vì TTS cần `target_stage`, `PAUSED_DISK`/`PAUSED_RESOURCE` và checkpoint theo chunk.
 
+### D-43 ✅ Canonical `project.title`: một field duy nhất cho mọi tiêu đề
+- **Quyết định:** mỗi project có đúng một field tiêu đề chính `project.title` (project 1-1 với job). Thumbnail, YouTube title, tên thư mục output, README, `project.json` đều **derive thuần túy** từ nó (template/slug); không lưu bản title độc lập có thể lệch. Downstream dùng `project.title` làm nguồn chính.
+- **Provenance:** `title_source` ∈ `user` | `story` | `source_default`. `source_default` (dùng tiêu đề video nguồn khi người dùng chưa nhập) chính là hành vi hiện tại của code và là **placeholder**: Publishing (Phase 6) phải cảnh báo thay vì đăng lặng lẽ tiêu đề của người khác. `story` dành cho một bước sinh tiêu đề sau này nếu có; kết quả vẫn ghi vào đúng một field.
+- **Tác động tới cache:** đổi `project.title` chỉ làm artifact phụ thuộc nó chạy lại (thumbnail, output package, publish payload), không làm TTS/Audio chạy lại (D-48).
+- **Không đổi:** Story vẫn dùng tiêu đề của **tác phẩm nguồn** (tên sách của story-branch); đó không phải `project.title`.
+
+### D-44 ✅ Thumbnail = `channel.name` + `project.title`; không AI tạo title khác
+- Tên kênh lấy từ Channel Config (không phải id); tiêu đề thumbnail **chính là** `project.title`. Không dùng AI để tạo thumbnail title riêng.
+- Title dài: renderer xử lý bằng layout/wrapping/font sizing, **không** âm thầm đổi hay cắt canonical title; nếu không vừa ở cỡ chữ tối thiểu thì lỗi rõ ràng (POLICY).
+- **Hiện trạng và việc cần làm ở Phase 5:** code hiện truyền `meta["title"]` (tiêu đề nguồn) và `params.channel` (id dạng chuỗi) vào `render_thumbnail`; ContentFlow có bố cục tiêu đề cố định nên khả năng wrapping/font sizing cần kiểm chứng ở Phase 5 (rủi ro R25).
+
+### D-45 ✅ YouTube title và description dựng bằng template; uploader không tự nghĩ title
+- **Title:** `[Full Audio {sequence}] | {project_title}` (ví dụ `[Full Audio 27] | Tôi Trùng Sinh Quyết Tâm Làm Hại Nữ Chính`), `project_title` = `project.title`.
+- **Description:** template chung trong Channel Config, biến `{channel_name}`, `{project_title}`, `{sequence}`.
+- **Render:** code deterministic, không AI; template strict (biến lạ → lỗi; `{{`/`}}` để escape). Vượt giới hạn YouTube (title 100 ký tự, mô tả 5000 byte theo `yt_uploader`) → lỗi POLICY (`TITLE_TOO_LONG`/`DESCRIPTION_TOO_LONG`), **không** cắt âm thầm và không đổi `project.title`.
+- `yt_uploader` chỉ nhận title/description đã dựng. Thay thế quy tắc tạm "mô tả = 300 ký tự đầu của story" (D-27, D-31) khi Phase 6 triển khai.
+
+### D-46 ✅ Channel Config là nơi chứa metadata cấp kênh
+- Tối thiểu: channel id, channel name, description template, thumbnail-related channel defaults, publishing defaults (cùng watermark của HANDOFF §10). Field publishing khác bổ sung ở Phase 6.
+- Đường dẫn dự kiến `channels/<id>/channel.yaml` (khớp HANDOFF §10); định dạng YAML, chọn parser khi triển khai (D-17). Được đọc và **snapshot theo job** lúc bắt đầu (D-41); không chứa secrets. Hiện chưa có: code chỉ có `params.channel` (một chuỗi).
+
+### D-47 ✅ Sequence / Full Audio STT: reserve một lần, lưu cố định với project
+- Mỗi channel có sequence riêng. Project được **reserve** sequence một lần và số đó lưu cố định cùng project; retry upload hoặc rerender không bao giờ đổi nó (không tính lại mỗi lần upload).
+- **Reserve lười và idempotent:** ở lần cần đầu tiên (Metadata Builder), không phải lúc tạo job (tránh đốt số cho job hỏng/hủy); gọi lại trả đúng số đã cấp.
+- **Lưu trữ dự kiến:** bảng `channel_sequences` trong DB của ContentFactory (khóa `(channel_id, sequence)`, `project_id` unique, trạng thái reserved/published/released), cấp số trong một transaction: `max(last_used trong Channel Config, max đã cấp) + 1`. Số đã reserve **không bị cấp lại** (chấp nhận khoảng trống); `release` là hành động explicit. `last_used` trong Channel Config cho phép nối tiếp số Full Audio đã đăng thủ công trước đó (rủi ro R27).
+- Sequence là **trạng thái project**, không phải cấu hình nên không nằm trong snapshot. Chi tiết Sequence Manager ở Phase 6.
+
+### D-48 ✅ Ranh giới trách nhiệm theo phase; TTS/Audio không phụ thuộc publishing metadata
+- Phase 3 (TTS) và Phase 4 (Audio) chỉ dùng identifier thật sự cần (`project.id`/id job, `language`); **không** dùng `project.title`, `channel.name`, sequence hay description (Audio vẫn dùng watermark của channel vì đó là channel asset, HANDOFF §10, không phải publishing metadata). Phase 5 (Render): `channel.name` + `project.title` cho thumbnail. Phase 6 (Publishing): Metadata Builder, title/description template, Sequence Manager, publish package, tích hợp `yt_uploader`.
+- **Hệ quả bắt buộc cho cache:** `stage_key` phải băm các tham số/field mà stage *khai báo* là phụ thuộc, không băm toàn bộ `params` như code hiện tại (R26); nếu không, đổi `project.title` sẽ vô hiệu hóa cả TTS khi skip theo `stage_key` được triển khai (D-36). Bảng "ai dùng field nào" ở `MODULE_CONTRACTS.md` §12.4.
+- Metadata Builder chạy ở đầu stage `output` (hoặc stage riêng nếu Phase 6 thấy cần) để `title.txt`/`description.txt` của gói output và payload upload cùng một nguồn; kết quả là artifact `publish_metadata`.
+
+### D-49 ✅ Đánh số phase hiện hành
+- Phase 3 = TTS; Phase 4 = Audio (AudioProcessor: audio YouTube có watermark, tăng tốc + cắt part TikTok); Phase 5 = Render (ContentFlow adapter, profile 16:9/9:16, Source Sync, thumbnail); Phase 6 = Publishing (Metadata Builder, Sequence Manager, publish package, `yt_uploader`); Phase 7 = Bất đồng bộ + vận hành; Phase 8 = TTS Auto-Profile. Thay cho cách đánh số ở D-28.
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:
 
 | Điều kiện | Cần ở | Mặc định nếu chưa có |
 |---|---|---|
-| Google Cloud OAuth client + một kênh thử (R4) | spike upload thật, Phase 5 | Spike upload bỏ qua; `PublishAdapter` chạy bằng `FakePublish`; `doctor` báo "YouTube chưa cấu hình" |
-| `assets/template.png` + font tiếng Việt cho thumbnail (R5) | Phase 4 | Thumbnail bị bỏ qua có cảnh báo, video vẫn render; không tự tạo template |
-| Frame 16:9 1920×1080 + layout (R6) | Phase 4 | Orchestrator sinh một frame viền đen tối thiểu để chạy được; thiết kế đẹp là việc sau |
+| Google Cloud OAuth client + một kênh thử (R4) | spike upload thật, Phase 6 | Spike upload bỏ qua; `PublishAdapter` chạy bằng `FakePublish`; `doctor` báo "YouTube chưa cấu hình" |
+| `assets/template.png` + font tiếng Việt cho thumbnail (R5) | Phase 5 | Thumbnail bị bỏ qua có cảnh báo, video vẫn render; không tự tạo template |
+| Frame 16:9 1920×1080 + layout (R6) | Phase 5 | Orchestrator sinh một frame viền đen tối thiểu để chạy được; thiết kế đẹp là việc sau |
 | Engine TTS đầu tiên | Phase 3 | Bắt đầu với engine local đã có trong môi trường (VieNeu-TTS, sẽ audit ở Phase 3) |
 
 ## 3. Đề xuất chỉnh HANDOFF (đã áp dụng một phần khi tích hợp Subtitle_supperVip; phần còn lại chưa áp dụng, chờ duyệt)
@@ -236,8 +273,8 @@ Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt 
 ## 4. Giới hạn đã biết sau Phase 1
 
 - Dừng có chủ đích dựa vào handler **hợp tác** (kiểm `ctx.cancel`); handler không hợp tác sẽ chặn shutdown cho tới khi xong hoặc bị kill (rồi quay về cơ chế lease).
-- Chưa có: `cancel` job, `rerun --from <stage>` (thiết kế ở D-36; cần cho "đổi watermark chỉ build lại nhánh YouTube", Phase 4/7), cache-hit liên job theo `stage_key` (đã tính và lưu, chưa dùng), CLI ưu tiên job.
-- Chưa có `doctor.ps1`, `setup.ps1`, `update.ps1`, `start.ps1` (HANDOFF §19) — chuyển sang phase sau (doctor/setup bản đầu) và Phase 6. Phase 2 chỉ thêm `health()` cho adapter Source/Story và `scripts/run_real_job.py --dry-run`.
+- Chưa có: `cancel` job, `rerun --from <stage>` (thiết kế ở D-36; cần cho "đổi watermark chỉ build lại nhánh YouTube", Phase 4–5/7), cache-hit liên job theo `stage_key` (đã tính và lưu, chưa dùng), CLI ưu tiên job.
+- Chưa có `doctor.ps1`, `setup.ps1`, `update.ps1`, `start.ps1` (HANDOFF §19) — chuyển sang phase sau (doctor/setup bản đầu) và Phase 7. Phase 2 chỉ thêm `health()` cho adapter Source/Story và `scripts/run_real_job.py --dry-run`.
 - Thay gói output của chính job khi retry là `rmtree` rồi `rename` (cửa sổ ngắn không có gói); gói vẫn không bao giờ ở trạng thái nửa vời.
 - Chỉ kiểm thử trên Windows (kill bằng TerminateProcess). Nhiều orchestrator trên cùng DB được kiểm bằng 2 luồng trong một tiến trình và bằng kill/resume, chưa kiểm bằng 2 tiến trình chạy đồng thời.
 - Fake adapter không đổi tốc độ audio thật (chỉ chia part theo `target×speed`), video/thumbnail chỉ là byte giả.
@@ -267,3 +304,10 @@ Thiết kế D-36…D-42 là **tài liệu**; code chưa đổi. Những điều
 - `RESOURCE`/`AUTH` đi thẳng vào `FAILED`; không có hold, không có Auto Resume, không có Resource Monitor.
 - Backoff cố định, không jitter, không `Retry-After`.
 - Config global được đọc lúc chạy; thay đổi config có thể ảnh hưởng job đang chạy.
+
+## 8. Hiện trạng metadata/publishing sau bước này
+
+Các quyết định D-43…D-49 là **tài liệu**; code chưa đổi. Điều **không** đúng trong code hiện tại:
+- Không có `project.title`/`title_source`: thumbnail, output và publish dùng `meta["title"]` (tiêu đề video nguồn).
+- Không có Channel Config, `channel.name`, Metadata Builder, Sequence Manager; mô tả đăng là 300 ký tự đầu của `story.txt`.
+- `stage_key` băm toàn bộ `params` (xem D-48).

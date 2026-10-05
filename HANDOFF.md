@@ -52,7 +52,7 @@ Repo:
 - `giaminhNguyen/ContentFlow`
 
 Nhiệm vụ:
-- thumbnail;
+- thumbnail (dùng `channel.name` + `project.title`, §4B);
 - render video;
 - lấy video nguồn random từ source folder được truyền vào;
 - source có thể được sync/normalize trước và tái sử dụng;
@@ -63,7 +63,7 @@ Repo:
 - `giaminhNguyen/yt_uploader`
 
 Nhiệm vụ:
-- upload video YouTube cùng metadata/thumbnail tương ứng.
+- upload video YouTube cùng metadata/thumbnail tương ứng; metadata (title, description) do Metadata Builder của ContentFactory dựng (§4B), uploader **không tự nghĩ title**.
 
 ### TTS
 Module mới cần xây.
@@ -84,6 +84,7 @@ Nhiệm vụ:
 | Render | `ContentFlow` | `media_worker` subprocess (JSON-lines) | chưa tích hợp |
 | Upload | `yt_uploader` | daemon HTTP headless | chưa tích hợp |
 | TTS | modular TTS framework | Phase 3 | chưa bắt đầu |
+| Publishing metadata | Metadata Builder + Sequence Manager + Channel Config (§4B) | trong ContentFactory | thiết kế; thumbnail ở Phase 5, phần còn lại ở Phase 6 |
 
 Nguyên tắc chung: ContentFactory là **orchestrator cấp cao duy nhất**. DB của ContentFactory giữ state pipeline, state từng stage, tham chiếu artifact, trạng thái retry/resume. Mọi DB/queue/worker nội bộ của module bên ngoài (nếu có) chỉ là chi tiết cài đặt của provider và không bao giờ quyết định một job đang ở stage nào.
 
@@ -244,8 +245,80 @@ workspace/<job>/source/
 ```
 
 8. **Cache / rerun:** phụ đề đã có và còn hợp lệ (sha256 + khóa theo nguồn và ngôn ngữ ưu tiên) thì không tải lại, kể cả khi là job mới cho cùng video; transcript không dựng lại nếu raw, định dạng, phiên bản processor và cấu hình không đổi; Story không chạy lại nếu transcript đầu vào không đổi và artifact Story còn hợp lệ. Đổi đầu vào thượng nguồn thì vô hiệu hóa phần phía sau.
-9. Mô tả/tiêu đề của video nguồn **không** được dùng làm mô tả video của sản phẩm; tiêu đề/mô tả riêng là việc của một bước sinh nội dung riêng (chưa làm).
+9. Mô tả/tiêu đề của video nguồn **không** được dùng làm mô tả video của sản phẩm. Tiêu đề của sản phẩm là `project.title` (§4B); mô tả lấy từ template trong Channel Config (§4B).
 10. Subtitle_supperVip cần Python env riêng có `youtube-transcript-api` (không cài vào tiến trình orchestrator); `doctor` phải kiểm tra.
+
+---
+
+## 4B. Project metadata, Channel Config và Publishing metadata
+
+> **Trạng thái:** thiết kế đã chốt, **chưa triển khai**. Thumbnail làm ở **Phase 5 (Render)**; Metadata Builder, Sequence Manager và publish package làm ở **Phase 6 (Publishing)**. Xem `docs/DECISIONS.md` D-43…D-49, `docs/MODULE_CONTRACTS.md` §12.
+
+### Canonical project title
+
+Mỗi project có **đúng một** field tiêu đề chính: `project.title` (ví dụ `Tôi Trùng Sinh Quyết Tâm Làm Hại Nữ Chính`). Project hiện tương ứng 1-1 với job (`project.id` = id job).
+
+- Mọi nơi khác cần tiêu đề (thumbnail, YouTube title, tên thư mục output, README, `project.json`) đều **derive thuần túy** từ `project.title` bằng template/slug. Không lưu thêm bản title độc lập có thể lệch khỏi giá trị gốc.
+- Downstream phải dùng `project.title` làm nguồn chính.
+- `project.title` kèm provenance `title_source` ∈ `user` (người dùng nhập, khuyến nghị) | `story` (dành cho bước sinh tiêu đề của Story sau này, nếu có; vẫn ghi vào đúng một field) | `source_default` (tạm dùng tiêu đề video nguồn khi người dùng chưa nhập; Publishing phải cảnh báo).
+- Đổi `project.title` chỉ làm các artifact phụ thuộc nó chạy lại (thumbnail, output package, publish payload); **không** làm TTS/Audio chạy lại.
+
+### Thumbnail
+
+- Dùng `channel.name` (lấy từ Channel Config) và `project.title`.
+- Tiêu đề thumbnail **chính là** `project.title`; **không** dùng AI để tạo một thumbnail title khác.
+- Title dài: renderer xử lý bằng layout / wrapping / font sizing, **không** âm thầm đổi hay cắt canonical title; nếu không vừa ở cỡ chữ tối thiểu thì báo lỗi rõ ràng.
+- Thực hiện ở Phase 5 (Render).
+
+### YouTube title
+
+Template cố định:
+
+```text
+[Full Audio {sequence}] | {project_title}
+```
+
+Ví dụ: `[Full Audio 27] | Tôi Trùng Sinh Quyết Tâm Làm Hại Nữ Chính`, với `project_title` = `project.title` và `sequence` = số thứ tự Full Audio của channel. **Uploader không tự nghĩ title**: nó nhận title đã dựng. Title dựng ra dài hơn giới hạn của YouTube (100 ký tự) thì báo lỗi, không cắt âm thầm.
+
+### Description
+
+Lấy từ **template chung trong Channel Config**, hỗ trợ biến `{channel_name}`, `{project_title}`, `{sequence}`. Render template là code thường, không dùng AI; biến lạ là lỗi; `{{`/`}}` để viết dấu ngoặc nhọn; vượt giới hạn mô tả (5000 byte) thì báo lỗi, không cắt âm thầm.
+
+### Channel Config
+
+Channel Config (`channels/<id>/channel.yaml`, cùng chỗ với watermark ở §10) chứa tối thiểu:
+
+```yaml
+channel:
+  id: "UCxxxxxxxxxxxxxxxxxxxxxx"     # channel id (YouTube)
+  name: "Tên kênh"                   # -> thumbnail và {channel_name}
+description_template: |
+  {project_title}
+  Full Audio {sequence} của kênh {channel_name}.
+thumbnail:
+  defaults: {}                       # mặc định liên quan thumbnail của kênh (template, font, ...)
+publishing:
+  defaults: {}                       # mặc định đăng (privacy, category, made_for_kids, tags, ...)
+sequence:
+  last_used: 26                      # tùy chọn: nối tiếp số Full Audio đã có của kênh
+```
+
+Các field publishing khác được bổ sung ở Phase 6. Channel Config được đọc và **snapshot theo job** lúc bắt đầu (§15C); secrets không nằm trong Channel Config.
+
+### Sequence / Full Audio STT
+
+- Mỗi channel có **sequence riêng**.
+- Mô hình **reserve**: một project được cấp (reserve) sequence **một lần** và sequence đó được lưu cố định với project. Retry upload hoặc rerender **không bao giờ** đổi sequence; không tính lại sequence mỗi lần upload.
+- Reserve lười, ở lần cần đầu tiên (Metadata Builder), chứ không phải lúc tạo job, và idempotent: gọi lại trả về đúng số đã cấp.
+- Chi tiết Sequence Manager thực hiện ở Phase 6.
+
+### Trách nhiệm theo phase
+
+| Phase | Trách nhiệm |
+|---|---|
+| 3 TTS, 4 Audio | **Không** phụ thuộc publishing metadata (`project.title`, `channel.name`, sequence, description); chỉ dùng identifier thật sự cần (`project.id`/job id, `language`). Audio dùng watermark của channel vì đó là channel asset (§10), không phải publishing metadata |
+| 5 Render | dùng `channel.name` + `project.title` để render thumbnail |
+| 6 Publishing | Metadata Builder; YouTube title template; description template; Sequence Manager (reserve/lưu); publish package; tích hợp `yt_uploader` |
 
 ---
 
@@ -668,7 +741,7 @@ Watermark là channel asset riêng, không thuộc story.
 ```text
 channels/
   channel_a/
-    channel.yaml
+    channel.yaml          # Channel Config (§4B)
     watermark.wav
 ```
 
@@ -1041,6 +1114,7 @@ Ví dụ:
 ```json
 {
   "job_id": "story-001",
+  "project": {"title": "Tôi Trùng Sinh Quyết Tâm Làm Hại Nữ Chính", "title_source": "user", "sequence": 27},
   "story_profile": "...",
   "tts_profile": "...",
   "channel": "channel_a",
@@ -1135,6 +1209,11 @@ Version từng repo/module phải pin theo commit/version để máy mới repro
 24. Resource Monitor là code deterministic, không dùng AI; Auto Resume bật mặc định, override theo job, chỉ cho điều kiện tự hồi phục và không bao giờ vô hạn.
 25. Retry/backoff có jitter, ưu tiên `Retry-After`, không polling dày.
 26. Mỗi job snapshot config ngữ nghĩa lúc bắt đầu; đổi config của job đang chạy chỉ qua hành động explicit (§15C).
+27. Mỗi project có đúng một `project.title`; mọi tiêu đề khác (thumbnail, YouTube, thư mục, README) chỉ là derive từ nó, không có bản độc lập (§4B).
+28. Thumbnail dùng `channel.name` + `project.title`, không có AI sinh thumbnail title riêng; title dài xử lý bằng layout/wrap/font sizing, không đổi hay cắt title.
+29. YouTube title và description dựng bằng template (title: `[Full Audio {sequence}] | {project_title}`; description: template trong Channel Config); uploader không tự nghĩ title.
+30. Sequence/Full Audio STT là theo channel, reserve một lần cho project và lưu cố định; retry upload/rerender không đổi sequence.
+31. TTS và Audio không phụ thuộc publishing metadata ngoài identifier thật sự cần.
 
 ---
 
@@ -1158,7 +1237,8 @@ Các phần cần triển khai chi tiết ở bước sau:
 - triển khai job control layer: `start_stage`/`target_stage`, import artifact, hold/auto-resume, Resource Monitor, config snapshot (đã thiết kế ở §15A–§15C);
 - cách xác định token/usage còn lại của Claude mà không tốn lượt LLM (hiện chỉ biết thời điểm reset khi provider báo);
 - fallback ASR khi video không có phụ đề nào;
-- bước sinh tiêu đề/mô tả riêng (không dùng của nguồn);
+- cách `project.title` được sinh tự động nếu người dùng không nhập (nếu làm, kết quả vẫn ghi vào đúng một field `project.title`);
+- Sequence Manager chi tiết, schema Channel Config đầy đủ, Metadata Builder (Phase 6);
 - UI/CLI cuối cùng.
 
 ---

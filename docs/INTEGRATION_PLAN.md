@@ -119,9 +119,9 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 | R1 | **Story module không như HANDOFF mô tả**: story-branch không sinh truyện; oh-story không headless, không nhận transcript. Đã giảm bằng adapter + Assembler (Phase 2) nhưng **chưa chạy với LLM thật** | **Cao** | A1–A3 | `scripts/run_real_job.py --chapters 3 --max-budget-usd 2` để kiểm chứng; dự phòng S2 |
 | R2 | **Ngôn ngữ**: oh-story viết tiếng Trung, bộ kiểm "AI-flavor"/đếm chữ CJK có thể chặn commit chương tiếng Việt; đích là tiếng Việt (D-04). **Chưa biết** cho tới khi chạy thật | **Cao** | A4 | Kiểm chứng ở lần chạy thật đầu tiên; nếu chặn: S2 hoặc nới bằng cấu hình; validator ngôn ngữ ở phase sau |
 | R3 | Điều khiển oh-story qua `claude -p`: mong manh (cổng xác nhận, quyền công cụ), tốn chi phí (~35K ký tự tài liệu mỗi lượt; 15–25 lượt cho ~14 chương), transcript là dữ liệu không tin cậy | Trung–Cao | A3 | `max_turns`, `max_follow_ups`, `max_budget_usd_per_turn`; `STORY_STEP_INCOMPLETE` thay vì lặp vô hạn; quyền thận trọng (D-26); resume theo file |
-| R4 | **yt_uploader chưa từng chạy với Google thật**; OAuth client thủ công; quota ~6 upload/ngày (ngoài repo, chưa xác nhận); project chưa audit có thể ép private; job `failed` không tự retry | Trung–Cao | A14 | Test thật sớm (spike upload, Phase 5) với kênh thử; policy retry ở orchestrator; ghi quota vào `doctor` |
+| R4 | **yt_uploader chưa từng chạy với Google thật**; OAuth client thủ công; quota ~6 upload/ngày (ngoài repo, chưa xác nhận); project chưa audit có thể ép private; job `failed` không tự retry | Trung–Cao | A14 | Test thật sớm (spike upload, Phase 6) với kênh thử; policy retry ở orchestrator; ghi quota vào `doctor` |
 | R5 | **Thumbnail không chạy được** ở checkout hiện tại (thiếu `template.png`/font; font fallback Windows); output 1648×928 có thể >2 MiB giới hạn uploader | Trung | A13 | Cung cấp asset; kiểm kích thước và nén; kiểm font tiếng Việt |
-| R6 | **Chưa có profile 16:9**; ContentFlow chỉ được dùng với frame 9:16 | Trung | A8 | Tạo frame 16:9 + test thật ở Phase 4 |
+| R6 | **Chưa có profile 16:9**; ContentFlow chỉ được dùng với frame 9:16 | Trung | A8 | Tạo frame 16:9 + test thật ở Phase 5 |
 | R7 | Timeout cứng 3600 s mỗi lệnh ffmpeg; render 40–60 phút trên CPU có thể vượt | Trung | §3.4 audit | Ưu tiên NVENC, doctor kiểm; chia nhỏ nếu cần; ghi lại nếu gặp |
 | R8 | Source Sync ghi không atomic, skip theo "tồn tại" ⇒ file cụt bị coi là hợp lệ; không phát hiện nguồn đổi bằng hash | Trung | A10 | Shim: kiểm tra bằng ffprobe sau sync, xóa file lỗi; so sánh `source_profile.json`; fingerprint pool ở orchestrator |
 | R9 | Nền video ngẫu nhiên không seed ⇒ không reproducible | Thấp | A9, A20 | Ghi `nondeterministic` vào manifest; coi video là artifact |
@@ -140,6 +140,9 @@ Xếp theo mức nghiêm trọng đối với mục tiêu "1 video YouTube + N v
 | R22 | Bridge gọi cả hàm private (`_video_details`) và hàm nội bộ của module ⇒ đổi nội bộ có thể vỡ bridge | Thấp–Trung | test bridge với code thật của module; bridge chỉ import `app.services.*` |
 | R23 | Job control (start/target stage, hold/auto-resume, Resource Monitor, config snapshot) mới ở mức thiết kế: hiện `RESOURCE`/`AUTH` đi thẳng vào `FAILED` và config global có thể đổi job đang chạy | Trung | Triển khai trước TTS (`IMPLEMENTATION_PHASES.md`); đóng khoảng cách snapshot (D-41) |
 | R24 | Resource Monitor đo sai (quota/token thường không đo trực tiếp được) ⇒ resume vội hoặc chờ vô ích | Thấp–Trung | chỉ dùng thời điểm reset do provider báo, không đoán; Auto Resume có trần `max_auto_resumes_without_progress` và cờ `needs_user` |
+| R25 | Thumbnail với `project.title` dài: ContentFlow có bố cục tiêu đề cố định, khả năng wrapping/font sizing chưa được kiểm chứng; thiết kế cấm cắt/đổi title | Trung | Kiểm chứng ở Phase 5; không vừa ở cỡ chữ tối thiểu thì lỗi rõ ràng (D-44) |
+| R26 | `stage_key` hiện băm toàn bộ `params`: khi skip theo `stage_key` được triển khai, đổi `project.title` sẽ vô hiệu hóa cả TTS/Audio | Trung | khai báo phụ thuộc theo stage (D-48, MODULE_CONTRACTS §12.4) trước khi bật skip |
+| R27 | Sequence: kênh đã có video đánh số thủ công trước đó có thể xung đột với số được cấp; YouTube title vượt 100 ký tự với title dài | Thấp–Trung | `sequence.last_used` trong Channel Config để nối tiếp; `TITLE_TOO_LONG` báo lỗi thay vì cắt (D-45, D-47) |
 
 ## 6. Kiểm tra nhất quán với HANDOFF
 
