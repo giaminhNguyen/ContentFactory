@@ -39,6 +39,7 @@ from ..jobs.sequences import SequenceManager
 from . import auto as AU
 from . import cleanup as CL
 from . import channels as CH
+from . import templates as TPL
 from .pools import PoolSyncService
 from .registry import build_adapters
 from .snapshot import (adapters_hash, apply_patch, build_snapshot, config_hash, effective_config)
@@ -137,8 +138,6 @@ class Orchestrator:
         preset, decisions = AU.preset_params(self.cfg, channel, params, self.adapters)
         merged = _merge(_merge(copy.deepcopy(self.cfg["job_defaults"]), copy.deepcopy(preset)), copy.deepcopy(params))
         decisions += AU.select_pools(self.cfg, merged, channel, self.adapters)
-        if decisions:
-            merged["auto"] = decisions                                                   # minh bạch: cái gì được tự chọn và vì sao (không ảnh hưởng stage_key)
         if mode is not None:
             if mode not in P.MODES:
                 raise _spec_error(f"mode không hợp lệ: {mode!r}; hợp lệ: {sorted(P.MODES)}")
@@ -148,6 +147,13 @@ class Orchestrator:
         plan = plan_job(start_stage, target_stage, {i["kind"] for i in items}, bool((merged.get("input") or {}).get("value")))
         if plan.errors:
             raise _spec_error("; ".join(plan.errors), errors=plan.errors)
+        if plan.target_idx >= P.INDEX["render_youtube"]:                                 # Template: chốt version cụ thể + snapshot lúc tạo job (D-92)
+            tpls, tdec = TPL.select_templates(self.cfg, merged, channel, self.adapters)
+            if tpls:
+                merged["templates"] = tpls
+            decisions += tdec
+        if decisions:
+            merged["auto"] = decisions                                                   # minh bạch: cái gì được tự chọn và vì sao (không ảnh hưởng stage_key)
         resolved = bool(self.cfg.data.get("auto_resume_default", True)) if auto_resume is None else bool(auto_resume)
         snap = build_snapshot(self.cfg, auto_resume=resolved, start_stage=plan.start_stage, target_stage=plan.target_stage)
         snap["semantic"]["channel_config"] = channel
@@ -297,8 +303,35 @@ class Orchestrator:
                         bool((job["params"].get("input") or {}).get("value")))
         if plan.errors:
             raise _spec_error("; ".join(plan.errors), errors=plan.errors)
+        if P.INDEX[target_stage] >= P.INDEX["render_youtube"] and not job["params"].get("templates"):
+            self._select_templates_for(job)                                             # job tạo khi đích chưa tới render: chốt template lúc mở rộng (sai thì báo, chưa đổi đích)
         self.store.set_target(job_id, target_stage)
         self._manifest(job_id)
+
+    def _select_templates_for(self, job: dict) -> None:
+        channel = (job.get("config_snapshot") or {}).get("semantic", {}).get("channel_config") or CH.load_channel(self.cfg, str(job["params"].get("channel") or "default"))
+        tpls, tdec = TPL.select_templates(self.cfg, job["params"], channel, self.adapters)
+        if tpls:
+            params = {**job["params"], "templates": tpls, "auto": list(job["params"].get("auto") or []) + tdec}
+            self.store.set_params(job["id"], params, "templates chốt khi mở rộng đích: " + ", ".join(f"{k}={v['id']}@v{v['version']}" for k, v in tpls.items()))
+            for d in tdec:
+                self.log.emit("auto_decision", job_id=job["id"], **d)
+
+    def retemplate(self, job_id: str, kind: str, template_id: str, policy="latest_published") -> dict:
+        """Hành động EXPLICIT: chọn lại template cho MỘT kind (thumbnail | youtube | tiktok) của job và chốt snapshot mới. Output cũ của kind đó bị
+        coi là hết hạn (stage_key đổi) nên stage render tương ứng chạy lại; Source/Story/TTS/Audio không bị đụng."""
+        job = self.store.get_job(job_id)
+        if job is None:
+            raise ValueError(f"không có job {job_id}")
+        api = TPL._api(self.adapters)
+        if api is None:
+            raise _spec_error("adapter render hiện tại không có hệ thống template")
+        templates = TPL.retemplate(api, job["params"], kind, template_id, policy)
+        snap = templates[kind]
+        self.store.set_params(job_id, {**job["params"], "templates": templates}, f"retemplate {kind} -> {snap['id']}@v{snap['version']}")
+        self.log.emit("job_retemplated", job_id=job_id, kind=kind, template=snap["id"], version=snap["version"])
+        self._manifest(job_id)
+        return snap
 
     def set_job_config(self, job_id: str, patch: dict) -> int:
         """Đổi config NGỮ NGHĨA của đúng job này (explicit, ghi revision). Trả revision mới."""

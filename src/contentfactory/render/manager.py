@@ -33,7 +33,12 @@ class RenderManager:
 
     # ------------------------------------------------------------------------------------------ chuẩn bị
     def _profile(self, ctx: StageContext, pid: str) -> dict:
-        return PF.resolve(pid, ctx.config.get("render"), ctx.params.get("render"))
+        return PF.apply_template(PF.resolve(pid, ctx.config.get("render"), ctx.params.get("render")), self._snap(ctx, pid))
+
+    @staticmethod
+    def _snap(ctx: StageContext, kind: str) -> dict | None:
+        """Snapshot template đã chốt lúc tạo job (kind: youtube | tiktok | thumbnail); None = job dùng bố cục kiểu cũ."""
+        return (ctx.params.get("templates") or {}).get(kind)
 
     def _pool(self, ctx: StageContext, prof: dict) -> dict | None:
         if not getattr(self.render, "requires_pool", False):
@@ -113,14 +118,17 @@ class RenderManager:
             states["video"]["state"] = "rendering"
             note()
             req = {"audio": ctx.path(aref), "audio_sha256": aref["sha256"], "profile": prof, "output": video, "pool": pool, "key": vkey,
-                   "on_progress": lambda p: note(current=round(p, 3))}
+                   "template": self._snap(ctx, "youtube"), "on_progress": lambda p: note(current=round(p, 3))}
             info, n, errs = self._attempt(ctx, "video", prof["retry"], lambda: self.render.render_video(req, ctx))
             self._stamp(video, vkey, info or {})
             states["video"] = {"state": "done", "attempts": n, **({"retry_errors": errs} if errs else {})}
         note()
         th = prof.get("thumbnail") or {}
         proj = project_of(ctx, meta)                                  # thumbnail = channel.name + project.title (D-44); không dùng id kênh / tiêu đề nguồn
-        tkey = _h("thumb", proj["title"], proj["channel_name"], th, ver)
+        tsnap = self._snap(ctx, "thumbnail")
+        if tsnap:
+            th = {**th, "config_overrides": {}}                       # template quyết định bố cục thumbnail; override kiểu cũ không còn tác dụng
+        tkey = _h("thumb", proj["title"], proj["channel_name"], th, ver, PF.template_ref(tsnap))
         if self._valid(thumb, tkey):
             states["thumbnail"] = {"state": "reused", "attempts": 0}
         else:
@@ -129,13 +137,14 @@ class RenderManager:
             note()
             treq = {"title": proj["title"], "channel_name": proj["channel_name"], "output": thumb, "image": th.get("image"),
                     "highlight": th.get("highlight", "auto"), "highlight_text": th.get("highlight_text", ""),
-                    "config_overrides": th.get("config_overrides") or {}, "key": tkey}
+                    "config_overrides": th.get("config_overrides") or {}, "template": tsnap, "key": tkey}
             _, n, errs = self._attempt(ctx, "thumbnail", prof["retry"], lambda: self.render.render_thumbnail(treq, ctx))
             self._stamp(thumb, tkey, {})
             states["thumbnail"] = {"state": "done", "attempts": n, **({"retry_errors": errs} if errs else {})}
         note()
         report = {"schema": 1, "profile": base, "pool": {k: (pool or {}).get(k) for k in ("name", "fingerprint", "reused")}, "version": ver,
-                  "audio_sha256": aref["sha256"], "outputs": states}
+                  "audio_sha256": aref["sha256"], "outputs": states,
+                  "templates": {"video": PF.template_ref(self._snap(ctx, "youtube")), "thumbnail": PF.template_ref(tsnap)}}
         rf = atomic_write_json(ctx.stage_dir / "render_report.json", report)
         return StageResult([ctx.draft(video, "video_youtube"), ctx.draft(thumb, "thumbnail"), ctx.draft(rf, "youtube_render_report")],
                            {"video": states["video"]["state"], "thumbnail": states["thumbnail"]["state"], "profile": "youtube"})
@@ -169,7 +178,7 @@ class RenderManager:
             states[str(i)]["state"] = "rendering"
             note(current_part=i)
             req = {"audio": ctx.path(ref), "audio_sha256": ref["sha256"], "profile": prof, "output": out, "pool": pool, "key": key, "part": i,
-                   "on_progress": lambda p, i=i: note(current_part=i, current=round(p, 3))}
+                   "template": self._snap(ctx, "tiktok"), "on_progress": lambda p, i=i: note(current_part=i, current=round(p, 3))}
             try:
                 info, n, errs = self._attempt(ctx, f"part {i}", prof["retry"], lambda: self.render.render_video(req, ctx))
             except StageError as e:
@@ -187,7 +196,7 @@ class RenderManager:
                               **({"duration_sec": round(info["duration"], 2)} if info and info.get("duration") else {})}
             note()
         report = {"schema": 1, "profile": base, "pool": {k: (pool or {}).get(k) for k in ("name", "fingerprint", "reused")}, "version": ver,
-                  "parts": states}
+                  "parts": states, "template": PF.template_ref(self._snap(ctx, "tiktok"))}
         rf = atomic_write_json(ctx.stage_dir / "render_report.json", report)
         if failed:
             first = next(iter(failed.values()))

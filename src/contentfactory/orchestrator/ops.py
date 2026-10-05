@@ -107,6 +107,17 @@ def go(orc, value: str, channel: str | None = None, title: str | None = None, ki
     return summary(orc, jid, echo)
 
 
+def rerender(orc, job_id: str) -> str:
+    """Dựng lại video/thumbnail của một job bằng template HIỆN TẠI của kênh (job mới, dùng lại audio + metadata của job cũ: không chạy lại Source/Story/TTS/Audio).
+    Đích là render_tiktok (không đăng lại). Job cũ giữ nguyên snapshot template của nó."""
+    old = orc.store.get_job(job_id)
+    if old is None:
+        raise StageError(ErrorClass.POLICY, "JOB_NOT_FOUND", f"không có job {job_id}", resource="input")
+    params = {k: v for k, v in old["params"].items() if k not in ("templates", "auto", "ui", "input")}
+    return orc.submit(params, start_stage="render_youtube", target_stage="render_tiktok",
+                      from_job={"job_id": job_id, "kinds": ["audio_youtube", "audio_tiktok", "metadata"]})
+
+
 def summary(orc, jid: str, echo=print) -> dict:
     j = orc.store.get_job(jid)
     res = {"job_id": jid, "state": j["state"], "hold": j.get("hold_reason"), "output_dir": None, "youtube_url": None, "ok": P.is_complete(j["state"], j.get("target_idx"))}

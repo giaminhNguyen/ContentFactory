@@ -25,6 +25,7 @@ from . import auto as AU
 from . import channels as CH
 from . import diagnose as DG
 from . import ops
+from . import templates as TPL
 
 AUDIO_EXT = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
 SUBTITLE_EXT = {".srt", ".vtt", ".json"}
@@ -218,6 +219,13 @@ class Service:
                 res["problems"].append({"code": "INVALID_JOBSPEC", "message": e})
         except StageError as e:
             res["problems"].append({"code": e.code, "message": e.message})
+        if res["plan"] and P.INDEX[res["plan"]["target"] or "publish"] >= P.INDEX["render_youtube"]:        # template của kênh dùng được không (báo sớm, trước khi bấm RUN)
+            try:
+                tpls, tdec = TPL.select_templates(self.cfg, merged, ch, self.orc.adapters)
+                res["auto"] = res["auto"] + tdec
+                res["templates"] = {k: {"id": v["id"], "version": v["version"], "name": v["name"]} for k, v in tpls.items()}
+            except StageError as e:
+                res["problems"].append({"code": e.code, "message": e.message, "hint": "Mở Kênh → Template và chọn template đã publish."})
         reaches_publish = self._target_reaches(run) >= P.INDEX["publish"]
         declared = (ch.get("publishing") or {}).get("made_for_kids")
         res["needs_kids"] = bool(reaches_publish and not isinstance(declared, bool) and payload.get("kids") is None)
@@ -383,7 +391,11 @@ class Service:
     @staticmethod
     def _public_params(p: dict) -> dict:
         keep = ("input", "channel", "language", "project", "tiktok", "made_for_kids")
-        return {k: p[k] for k in keep if k in p}
+        out = {k: p[k] for k in keep if k in p}
+        if p.get("templates"):                                       # chỉ phần nhận dạng của snapshot (không đẩy cả tài liệu template ra giao diện)
+            out["templates"] = {k: {"id": v.get("id"), "version": v.get("version"), "name": v.get("name"), "checksum": str(v.get("checksum") or "")[:12]}
+                                for k, v in p["templates"].items() if isinstance(v, dict)}
+        return out
 
     def _pipeline(self, j: dict, runs: list[dict]) -> list[dict]:
         n = len(P.STAGES)
@@ -544,6 +556,9 @@ class Service:
             raise _err("INVALID_CHANNEL_CONFIG", "Cấu hình kênh phải là object.")
         raw = {k: v for k, v in raw.items() if k not in ("id", "loaded_from")}
         MD.normalize_channel(raw, channel_id)                  # đúng validator của core: sai thì báo ngay, không ghi
+        _, terrs = TPL.normalize_section(raw.get("templates"))
+        if terrs:
+            raise _err("INVALID_CHANNEL_CONFIG", "; ".join(terrs))
         d.mkdir(parents=True, exist_ok=True)
         atomic_write_json(d / "channel.json", raw)
         return {"saved": True, "id": channel_id}

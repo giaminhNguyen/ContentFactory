@@ -24,6 +24,7 @@ from .config import load_config
 from .runner import Orchestrator
 from .service import Service
 from .service_admin import AdminService
+from .service_templates import Raw, TemplateService
 
 STATIC = Path(__file__).resolve().parent / "webui_static"
 MAX_JSON = 1 << 20
@@ -40,6 +41,7 @@ class App:
     def __init__(self, orc: Orchestrator, *, run_loop: bool = True, opener=ops.open_path, token: str | None = None) -> None:
         self.orc, self.cfg = orc, orc.cfg
         self.service, self.admin = Service(orc), AdminService(orc)
+        self.templates = TemplateService(orc)
         self.token = token or secrets.token_urlsafe(24)
         self.opener = opener
         self.run_loop = run_loop
@@ -103,6 +105,7 @@ def _int(q: dict, key: str, default: int, lo: int = 0, hi: int = 1000) -> int:
 
 
 ROUTES: list[tuple[str, re.Pattern, str]] = []
+RAW_BODY = {"channel_asset", "asset_import"}                                 # PUT nhận byte thô (watermark, ảnh asset), không phải JSON
 
 
 def route(method: str, pattern: str):
@@ -187,6 +190,88 @@ class Api:
     @route("PUT", r"/api/channels/(?P<id>[\w\-]+)/asset")
     def channel_asset(app, m, q, b):
         return app.service.save_channel_asset(m["id"], q.get("name", [""])[0], b)
+
+    # ------------------------------------------------------------------------------------------ Template / asset (Template Studio)
+    @route("GET", "/api/templates")
+    def templates(app, m, q, b):
+        return app.templates.overview(q.get("type", [None])[0], q.get("archived", ["0"])[0] == "1")
+
+    @route("GET", "/api/templates/options")
+    def template_options(app, m, q, b):
+        return app.templates.options()
+
+    @route("POST", "/api/templates")
+    def template_create(app, m, q, b):
+        return app.templates.create(str(b.get("type") or ""), str(b.get("id") or ""), str(b.get("name") or ""), str(b.get("description") or ""), b.get("width"), b.get("height"))
+
+    @route("GET", r"/api/templates/files/(?P<kind>[a-z_]+)/(?P<rel>[\w\-.]+(?:/[\w\-.]+)?)")
+    def template_file(app, m, q, b):
+        return app.templates.file(m["kind"], m["rel"])
+
+    @route("GET", r"/api/templates/(?P<id>[a-z0-9_]+)")
+    def template_get(app, m, q, b):
+        v = q.get("version", [None])[0]
+        return app.templates.get(m["id"], int(v) if v and v.isdigit() else v)
+
+    @route("PUT", r"/api/templates/(?P<id>[a-z0-9_]+)/(?P<ver>\d+)")
+    def template_save(app, m, q, b):
+        return app.templates.save(m["id"], int(m["ver"]), b.get("template") or {})
+
+    @route("DELETE", r"/api/templates/(?P<id>[a-z0-9_]+)/(?P<ver>\d+)")
+    def template_delete_draft(app, m, q, b):
+        return app.templates.delete_draft(m["id"], int(m["ver"]))
+
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/(?P<ver>\d+)/publish")
+    def template_publish(app, m, q, b):
+        return app.templates.publish(m["id"], int(m["ver"]))
+
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/archive")
+    def template_archive(app, m, q, b):
+        return app.templates.archive(m["id"], b.get("version"))
+
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/duplicate")
+    def template_duplicate(app, m, q, b):
+        return app.templates.duplicate(m["id"], str(b.get("new_id") or ""), b.get("name"), b.get("version"))
+
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/new-draft")
+    def template_new_draft(app, m, q, b):
+        return app.templates.new_draft(m["id"], b.get("from_version"))
+
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/validate")
+    def template_validate(app, m, q, b):
+        return app.templates.validate(m["id"], b.get("template"), b.get("version"))
+
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/preview")
+    def template_preview(app, m, q, b):
+        return app.templates.preview(m["id"], b.get("template"), b.get("version"), b.get("sample"))
+
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/test-render")
+    def template_test_render(app, m, q, b):
+        return app.templates.test_render(m["id"], b.get("template"), b.get("version"), b.get("sample"))
+
+    @route("GET", "/api/assets")
+    def assets(app, m, q, b):
+        return app.templates.assets(q.get("type", [None])[0])
+
+    @route("GET", r"/api/assets/(?P<id>[a-z0-9_\-]+)/file")
+    def asset_file(app, m, q, b):
+        return app.templates.asset_file(m["id"])
+
+    @route("PUT", r"/api/assets/(?P<id>[a-z0-9_\-]+)")
+    def asset_import(app, m, q, b):
+        return app.templates.import_asset(m["id"], q.get("type", [""])[0], q.get("name", [""])[0], b)
+
+    @route("DELETE", r"/api/assets/(?P<id>[a-z0-9_\-]+)")
+    def asset_delete(app, m, q, b):
+        return app.templates.delete_asset(m["id"], q.get("force", ["0"])[0] == "1")
+
+    @route("GET", r"/api/channels/(?P<id>[\w\-]+)/templates")
+    def channel_templates(app, m, q, b):
+        return app.templates.channel_resolution(m["id"])
+
+    @route("PUT", r"/api/channels/(?P<id>[\w\-]+)/templates")
+    def channel_template_set(app, m, q, b):
+        return app.templates.set_channel_template(m["id"], str(b.get("key") or ""), b.get("template_id"), b.get("version_policy") or "latest_published", b.get("fallback"))
 
     @route("GET", "/api/tts")
     def tts(app, m, q, b):
@@ -328,7 +413,10 @@ def make_handler(app: App):
                     if body is None:
                         return
                     try:
-                        return self._json(200, getattr(Api, name)(app, m, query, body))
+                        res = getattr(Api, name)(app, m, query, body)
+                        if isinstance(res, Raw):                         # ảnh/video xem trước template: nhị phân, không cache lâu
+                            return self._send(200, res.body, res.ctype, {"Cache-Control": "private, max-age=60"})
+                        return self._json(200, res)
                     except StageError as e:
                         code = 404 if e.code.endswith("NOT_FOUND") else 400
                         return self._json(code, {"error": {"code": e.code, "message": e.message, "hint": (e.detail or {}).get("hint", ""), "class": e.error_class.value
@@ -343,7 +431,7 @@ def make_handler(app: App):
             if self.command in ("GET", "HEAD", "DELETE"):
                 return {}
             n = int(self.headers.get("Content-Length") or 0)
-            limit = MAX_ASSET if name == "channel_asset" else MAX_JSON
+            limit = MAX_ASSET if name in RAW_BODY else MAX_JSON
             if n > limit:
                 left = min(n, 8 << 20)                                       # đọc bỏ phần thân (có trần) để trình duyệt nhận được 413 thay vì bị ngắt kết nối giữa chừng
                 while left > 0:
@@ -355,7 +443,7 @@ def make_handler(app: App):
                 self._error(413, "TOO_LARGE", "Dữ liệu gửi lên quá lớn.")
                 return None
             raw = self.rfile.read(n) if n else b""
-            if name == "channel_asset":
+            if name in RAW_BODY:
                 return raw
             if not raw:
                 return {}
@@ -384,7 +472,7 @@ def make_handler(app: App):
             if rel == "index.html":
                 data = data.replace(b"<!--CF_TOKEN-->", f'<meta name="cf-token" content="{app.token}">'.encode())
                 headers["Cache-Control"] = "no-store"
-                headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+                headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
                                                       "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
             else:
                 etag = f'"{f.stat().st_mtime_ns:x}-{len(data):x}"'

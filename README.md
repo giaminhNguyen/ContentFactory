@@ -206,6 +206,11 @@ Mỗi kênh nhớ cấu hình của chính nó — chỉnh **một lần** ở t
   "sequence": { "last_used": 26 },                  // tập kế tiếp: 27
   "watermark": "watermark.wav",
   "publishing": { "privacy": "private", "made_for_kids": false, "tags": ["truyen"] },
+  "templates": {                                     // chọn TÊN template — không có toạ độ, kích thước, font…
+    "thumbnail":     { "id": "thumb_gold",     "version_policy": "latest_published" },
+    "youtube_video": { "id": "youtube_framed", "version_policy": "latest_published" },
+    "tiktok_video":  { "id": "tiktok_default" }
+  },
   "preset": {
     "tts_profile": null,                             // null = tự chọn theo ngôn ngữ/engine
     "pools": { "youtube": "gameplay", "tiktok": "gameplay_vertical" },
@@ -215,6 +220,10 @@ Mỗi kênh nhớ cấu hình của chính nó — chỉnh **một lần** ở t
 ```
 
 Thứ tự ưu tiên: **bạn nhập > preset kênh > mặc định**. Mọi lựa chọn tự động đều được ghi lại và hiển thị.
+
+### 🖼️ Template (khung hình & thumbnail)
+
+Bố cục thumbnail, video YouTube và video TikTok là **template có phiên bản** (do ContentFlow quản lý): khung, vùng video, vị trí chữ. Kênh chỉ chọn tên (`cf templates list`; `cf templates use <kênh> youtube_video youtube_framed`). Tạo/sửa bằng trang **Template** (Template Studio: kéo thả, xem trước, render thử, publish). Job chốt đúng version lúc tạo — sửa template sau đó **không** làm đổi job đang có. Xem [Template](docs/TEMPLATE_SYSTEM.md).
 
 ---
 
@@ -273,7 +282,7 @@ Kiểm chứng **thật** trên máy phát triển (chi tiết: [`docs/PRODUCTIO
 |---|---|
 | **Người dùng** | [Hướng dẫn sử dụng](docs/USER_GUIDE.md) · [Giao diện](docs/UI_GUIDE.md) · [Xử lý sự cố](docs/TROUBLESHOOTING.md) |
 | **Vận hành** | [Production checklist](docs/PRODUCTION_CHECKLIST.md) · [Hiệu năng](docs/PERFORMANCE.md) |
-| **Phát triển** | [Kiến trúc](docs/ARCHITECTURE.md) · [Thiết kế đầy đủ](HANDOFF.md) · [Quyết định D-01…](docs/DECISIONS.md) · [Hợp đồng module](docs/MODULE_CONTRACTS.md) · [Design system](docs/DESIGN_SYSTEM.md) · [Audit UI/UX](docs/UI_UX_AUDIT.md) · [Lệnh nâng cao](docs/DEVELOPER.md) |
+| **Phát triển** | [Kiến trúc](docs/ARCHITECTURE.md) · [Thiết kế đầy đủ](HANDOFF.md) · [Quyết định D-01…](docs/DECISIONS.md) · [Hợp đồng module](docs/MODULE_CONTRACTS.md) · [Template](docs/TEMPLATE_SYSTEM.md) · [Schema template](docs/TEMPLATE_SCHEMA.md) · [Asset](docs/ASSET_MANAGEMENT.md) · [Design system](docs/DESIGN_SYSTEM.md) · [Audit UI/UX](docs/UI_UX_AUDIT.md) · [Lệnh nâng cao](docs/DEVELOPER.md) |
 
 ---
 

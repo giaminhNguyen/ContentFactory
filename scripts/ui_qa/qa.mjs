@@ -56,7 +56,7 @@ async function noOverflow(page, label) {
   check(`không tràn ngang ${label}`, o.sw <= o.iw + 1, `scrollWidth=${o.sw} > ${o.iw}`);
 }
 
-const ROUTES = [["/", "run"], ["/jobs", "jobs"], ["/channels", "channels"], ["/tts", "tts"], ["/pools", "pools"], ["/settings", "settings"], ["/settings/storage", "settings-storage"]];
+const ROUTES = [["/", "run"], ["/jobs", "jobs"], ["/channels", "channels"], ["/tts", "tts"], ["/pools", "pools"], ["/templates", "templates"], ["/settings", "settings"], ["/settings/storage", "settings-storage"]];
 
 // ===================================================================== 1. mọi trang: sạch lỗi, a11y, tràn ngang, ảnh chụp ở nhiều cỡ + 2 theme
 if (wanted("pages")) {
@@ -405,6 +405,207 @@ if (wanted("real")) {
   check("trang Video nguồn: pool mẫu ở trạng thái Sẵn sàng", true);
   await shot(page, "real_pools");
   await page.context().close();
+}
+
+// ===================================================================== 11. Template: danh sách -> Studio -> publish -> chọn cho kênh (cần ContentFlow THẬT: real_templates.py)
+if (wanted("templates")) {
+  console.log("\n# Template (ContentFlow thật)");
+  const tok = async (page) => page.locator("meta[name=cf-token]").getAttribute("content");
+  const apiGet = async (page, p) => (await page.request.get(base + p, { headers: { "X-CF-Token": await tok(page) } })).json();
+  const apiSend = async (page, m, p, data) => page.request.fetch(base + p, { method: m, headers: { "X-CF-Token": await tok(page), "Content-Type": "application/json" }, data: JSON.stringify(data) });
+  const props = (page) => page.locator(".st-props");
+  const val = async (page, label) => Number(await props(page).getByLabel(label, { exact: true }).first().inputValue());
+  const toastText = async (page, re) => page.waitForSelector(`.toast:has-text("${re}")`, { timeout: 15000 }).then(() => true).catch(() => false);
+
+  const page = await newPage({ width: 1440, height: 900 });
+  await go(page, "/templates");
+  check("danh sách: có 6 template có sẵn", (await page.locator(".tpl-card").count()) === 6);
+  check("danh sách: template có sẵn hiện huy hiệu khoá", (await page.locator(".tpl-card:has-text('Có sẵn')").count()) === 6);
+  check("danh sách: kenh_b được ghi là đang dùng youtube_framed", (await page.locator(".tpl-card:has-text('youtube_framed')").innerText()).includes("kenh_b"));
+  await noOverflow(page, "templates 1440");
+  await shot(page, "tpl_list_light");
+
+  // ---- tạo template mới (video 16:9)
+  await page.getByRole("button", { name: "Template mới" }).first().click();
+  await page.getByLabel("Tên hiển thị").fill("Story Frame");
+  check("mã tự sinh từ tên", (await page.getByLabel("Mã template").inputValue()) === "story_frame");
+  await page.getByRole("button", { name: "Tạo và mở Studio" }).click();
+  await page.waitForURL(/#\/templates\/story_frame/);
+  await page.waitForSelector(".st-stage .st-el");
+  check("Studio: bản nháp v1 sửa được, nút Lưu tắt khi chưa đổi", (await page.getByRole("button", { name: "Lưu nháp" }).isDisabled()));
+
+  // ---- sửa bằng số + hoàn tác / làm lại
+  await page.locator(".st-layer-main", { hasText: "Video nguồn" }).click();
+  await props(page).getByLabel("X", { exact: true }).first().fill("100");
+  await page.waitForTimeout(900);                                         // quá cửa sổ gom => bước hoàn tác riêng
+  await props(page).getByLabel("Rộng", { exact: true }).first().fill("1600");
+  check("sửa số: Lưu nháp bật + chip 'Chưa lưu'", (await page.getByRole("button", { name: "Lưu nháp" }).isEnabled()) && (await page.locator(".st-dirty").isVisible()));
+  await page.keyboard.press("Control+z");
+  check("Ctrl+Z hoàn tác lần sửa gần nhất", (await val(page, "Rộng")) === 1920 && (await val(page, "X")) === 100, `X=${await val(page, "X")} W=${await val(page, "Rộng")}`);
+  await page.keyboard.press("Control+Shift+z");
+  check("Ctrl+Shift+Z làm lại", (await val(page, "Rộng")) === 1600);
+  await page.getByRole("button", { name: "Hoàn tác" }).click();
+  await page.getByRole("button", { name: "Hoàn tác" }).click();
+  check("nút Hoàn tác đưa về nguyên bản (hết 'Chưa lưu')", !(await page.locator(".st-dirty").isVisible()) && (await val(page, "X")) === 0);
+  await page.getByRole("button", { name: "Làm lại" }).click();
+  await page.getByRole("button", { name: "Làm lại" }).click();
+
+  // ---- kéo thả + thu phóng không đổi toạ độ thật
+  await page.waitForTimeout(800);
+  const x0 = await val(page, "X");
+  const node = page.locator('.st-el[data-id="source_video"]');
+  const bb = await node.boundingBox();
+  await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bb.x + bb.width / 2 + 40, bb.y + bb.height / 2 + 20, { steps: 5 });
+  await page.mouse.up();
+  const x1 = await val(page, "X");
+  check("kéo thả đổi X (số nguyên)", x1 !== x0 && Number.isInteger(x1), `${x0} -> ${x1}`);
+  await page.locator("#st-zoom").selectOption("0.5");
+  check("thu phóng không đổi toạ độ thật", (await val(page, "X")) === x1);
+  check("thu phóng đổi kích thước hiển thị", Math.abs((await page.locator(".st-stage").boundingBox()).width - 960) < 3);
+  await page.locator("#st-zoom").selectOption("fit");
+  await page.locator('.st-el[data-id="source_video"]').focus();
+  await page.keyboard.press("Shift+ArrowRight");
+  check("phím mũi tên + Shift dịch 10px", (await val(page, "X")) === x1 + 10, `${await val(page, "X")} vs ${x1 + 10}`);
+
+  // ---- thêm lớp hình ảnh: tải asset lên rồi chọn
+  await page.getByRole("button", { name: "Thêm lớp" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Thêm" }).click();
+  await page.waitForSelector(".asset-lib");
+  await page.locator("dialog input[type=file]").setInputFiles(fx.asset_png);
+  check("id asset tự sinh từ tên file", (await page.locator("dialog").getByLabel("Mã asset").inputValue()) === "frame_mau");
+  await page.getByRole("button", { name: "Tải lên" }).click();
+  await page.waitForSelector('.asset-card:has-text("frame_mau")');
+  await page.waitForTimeout(500);
+  await shot(page, "tpl_assets_light");
+  await page.locator('.asset-card:has-text("frame_mau")').getByRole("button", { name: "Chọn" }).click();
+  await page.waitForSelector(".st-layer:has-text('image')");
+  check("thêm lớp hình ảnh từ asset vừa tải", (await page.locator(".st-layer").count()) === 2);
+  const zs = await page.locator(".st-z").allInnerTexts();
+  check("z của các lớp duy nhất", new Set(zs).size === zs.length, zs.join(","));
+
+  // ---- lưu + nạp lại
+  await page.getByRole("button", { name: "Lưu nháp" }).click();
+  check("lưu nháp thành công", await toastText(page, "Đã lưu bản nháp"));
+  check("sau lưu: chip 'Chưa lưu' ẩn", !(await page.locator(".st-dirty").isVisible()));
+  await page.reload();
+  await page.waitForSelector(".st-stage .st-el");
+  check("nạp lại: giữ đủ 2 lớp đã lưu", (await page.locator(".st-layer").count()) === 2);
+
+  // ---- kiểm tra: tạo lỗi z trùng
+  await page.locator(".st-layer-main", { hasText: "Hình ảnh" }).click();
+  const zOther = await page.locator(".st-layer:has-text('source_video') .st-z").innerText();
+  await props(page).getByLabel("Thứ tự lớp (z)").fill(zOther.replace("z ", ""));
+  await page.getByRole("button", { name: "Kiểm tra" }).click();
+  await page.waitForSelector(".st-issue[data-level=error]");
+  check("Kiểm tra: báo z trùng", (await page.locator(".st-issue").first().innerText()).includes("z="));
+  await shot(page, "tpl_validate_error_light");
+  await page.locator(".st-issue button").first().click();
+  await page.keyboard.press("Control+z");
+  await page.getByRole("button", { name: "Kiểm tra" }).click();
+  await page.waitForSelector("text=Hợp lệ");
+  check("sau hoàn tác: bố cục hợp lệ", true);
+
+  // ---- xem trước + render thử (ContentFlow thật)
+  await page.getByRole("button", { name: "Xem trước" }).click();
+  await page.waitForSelector(".st-stage.has-preview", { timeout: 60000 });
+  check("Xem trước: ảnh do ContentFlow dựng hiện trên canvas", true);
+  await shot(page, "tpl_preview_light");
+  await page.getByRole("button", { name: "Render thử" }).click();
+  await page.waitForSelector("video.st-test-media", { timeout: 180000 });
+  const tline = await page.locator("#st-test-h ~ p").first().innerText();
+  check("Render thử: video mẫu đúng cỡ canvas", tline.includes("1920×1080") && tline.includes("đúng canvas"), tline);
+  await shot(page, "tpl_testrender_light");
+
+  // ---- publish + chọn cho kênh
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Publish" }).click();
+  await page.waitForSelector("text=Chọn template này cho một kênh?");
+  await page.locator("dialog select").first().selectOption("kenh_a");
+  await page.getByRole("button", { name: "Chọn cho kênh" }).click();
+  await page.waitForSelector(".alert:has-text('chỉ xem')");
+  await page.locator(".st-layer-main", { hasText: "Video nguồn" }).click();
+  check("publish: version đã publish chuyển sang chỉ xem", await props(page).getByLabel("X", { exact: true }).first().isDisabled());
+  await shot(page, "tpl_published_light");
+  const api1 = await apiGet(page, "/api/templates/story_frame");
+  check("API: v1 published, có checksum", api1.template.status === "published" && !!api1.checksum);
+  const xPub = api1.template.elements.find((e) => e.id === "source_video").x;
+
+  // ---- sửa bản đã publish = tạo bản nháp mới; v1 không đổi
+  await page.getByRole("button", { name: "Tạo bản nháp mới để sửa" }).click();
+  await page.waitForFunction(() => location.hash.includes("v=2"));
+  await page.waitForSelector(".st-stage .st-el");
+  await page.locator(".st-layer-main", { hasText: "Video nguồn" }).click();
+  await props(page).getByLabel("X", { exact: true }).first().fill("20");
+  await page.getByRole("button", { name: "Lưu nháp" }).click();
+  await toastText(page, "Đã lưu bản nháp");
+  const v1 = await apiGet(page, "/api/templates/story_frame?version=1");
+  check("v1 đã publish KHÔNG bị đổi khi sửa v2", v1.template.elements.find((e) => e.id === "source_video").x === xPub);
+  await props(page).getByLabel("X", { exact: true }).first().fill("30");
+  await page.locator(".nav a[data-section=channels]").click();
+  await page.waitForSelector("dialog:has-text('Bỏ thay đổi chưa lưu')");
+  check("rời Studio khi chưa lưu: hỏi xác nhận", true);
+  await page.getByRole("button", { name: "Rời đi, bỏ thay đổi" }).click();
+
+  // ---- kênh thấy template mới + chọn bằng giao diện
+  await go(page, "/channels/kenh_a");
+  await page.waitForSelector("#tpl-youtube_video");
+  check("kenh_a: ô YouTube Template đã chọn story_frame (do bước publish)", (await page.locator("#tpl-youtube_video").inputValue()) === "story_frame");
+  check("kênh: ô chọn có template mới publish", (await page.locator("#tpl-youtube_video option").allInnerTexts()).some((t) => t.includes("Story Frame")));
+  await page.locator("#tpl-thumbnail").selectOption("thumb_gold");
+  await page.waitForFunction(() => document.querySelector("#tpl-thumbnail")?.value === "thumb_gold");
+  await page.waitForTimeout(1200);
+  check("kênh: chọn thumb_gold lưu ngay, form không báo 'chưa lưu'", await page.getByRole("button", { name: "Lưu thay đổi" }).isDisabled());
+  const chan = await apiGet(page, "/api/channels/kenh_a");
+  check("kênh: channel.json có templates, không có toạ độ", chan.raw.templates.thumbnail.id === "thumb_gold" && !/"(x|y|width|height)"/.test(JSON.stringify(chan.raw.templates)));
+  await page.getByRole("button", { name: "Nâng cao: version, dự phòng, chi tiết" }).click();
+  await page.waitForSelector(".tpl-adv-row");
+  await shot(page, "tpl_channel_light");
+  check("Nâng cao hiện version/checksum", (await page.locator(".tpl-adv-row").first().innerText()).includes("Checksum"));
+  await page.locator("#pol-youtube_video").selectOption("pin");
+  await page.waitForTimeout(1500);
+  const pinned = await apiGet(page, "/api/channels/kenh_a/templates");
+  check("ghim version lưu được", pinned.youtube_video.configured.version_policy === 1, JSON.stringify(pinned.youtube_video.configured));
+  await page.locator("#tpl-thumbnail").selectOption("");
+  await page.waitForTimeout(1200);
+
+  // ---- Run: xem trước thấy template; template hỏng => báo rõ
+  await go(page, "/");
+  await page.fill("#run-input", fx.youtube);
+  await page.waitForSelector(".plan .step");
+  await page.locator("select").first().selectOption("kenh_a");
+  await page.waitForFunction(() => document.body.innerText.includes("Template:"), null, { timeout: 15000 });
+  check("Run: kế hoạch nêu template đã chọn", (await page.locator(".autolist").innerText()).includes("Story Frame"));
+  await apiSend(page, "PUT", "/api/channels/kenh_b", { raw: { name: "Kênh B", publishing: { made_for_kids: false }, templates: { youtube_video: "ghost_tpl" } } });
+  await page.locator("select").first().selectOption("kenh_b");
+  await page.waitForSelector(".alert:has-text('ghost_tpl')", { timeout: 15000 });
+  check("Run: template không dùng được => báo rõ + nút sửa", await page.locator("a:has-text('Sửa template của kênh')").isVisible());
+  check("Run: RUN tắt khi template hỏng", await page.locator("button:has-text('RUN')").isDisabled());
+  await shot(page, "tpl_run_invalid_light");
+  await go(page, "/templates");
+  await page.waitForSelector(".tpl-card:has-text('story_frame')");
+  check("danh sách: story_frame hiện kenh_a đang dùng", (await page.locator(".tpl-card:has-text('story_frame')").innerText()).includes("kenh_a"));
+  check("không lỗi console/mạng (luồng Template)", page.problems.filter((p) => !/http 4|ghost_tpl|status of 4/.test(p)).length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+
+  // ---- giao diện ở nhiều cỡ + 2 theme + a11y
+  for (const scheme of ["light", "dark"]) {
+    for (const [w, h] of [[1440, 900], [390, 844]]) {
+      const p = await newPage({ width: w, height: h, scheme });
+      for (const [hash, name] of [["/templates", "list"], ["/templates/story_frame?v=2", "studio_draft"], ["/templates/thumb_default", "studio_thumb"], ["/channels/kenh_a", "channel"]]) {
+        await go(p, hash);
+        if (name.startsWith("studio")) await p.waitForSelector(".st-stage .st-el");
+        if (name === "studio_thumb") await p.locator(".st-layer-main", { hasText: "Tiêu đề" }).click();
+        await p.waitForTimeout(600);
+        await noOverflow(p, `tpl-${name} ${w} ${scheme}`);
+        await shot(p, `tpl_${name}_${w}_${scheme}`);
+        await axe(p, `tpl-${name} ${w} ${scheme}`);
+      }
+      check(`không lỗi console/mạng (template ${w} ${scheme})`, p.problems.length === 0, p.problems.slice(0, 3).join(" | "));
+      await p.context().close();
+    }
+  }
 }
 
 await browser.close();

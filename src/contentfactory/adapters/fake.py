@@ -11,6 +11,7 @@ Audio là WAV thật (stdlib `wave`) để QA/ghép/cắt part có ý nghĩa; vi
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import shutil
 import time
@@ -191,8 +192,175 @@ class FakeAudio:
         return HEALTH
 
 
+def _canon(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+_OK = {"ok": True, "errors": [], "warnings": []}
+
+
+def _terr(code: str, msg: str, **detail) -> StageError:
+    return StageError(ErrorClass.POLICY, code, msg, detail, resource="input")
+
+
+class FakeTemplateApi:
+    """Bản trong bộ nhớ của hệ thống template ContentFlow (cùng hình dạng trả lời với `python -m templating`): đủ để test chọn template,
+    version, publish/archive và snapshot mà không cần ContentFlow. Builtin giống bản thật: thumb_default, youtube_default, tiktok_default..."""
+
+    BUILTIN = {"thumb_default": ("thumbnail", 1648, 928), "thumb_gold": ("thumbnail", 1648, 928), "youtube_default": ("video", 1920, 1080),
+               "tiktok_default": ("video", 1080, 1920), "youtube_framed": ("video", 1920, 1080), "tiktok_framed": ("video", 1080, 1920)}
+
+    def __init__(self) -> None:
+        self.t: dict[str, dict] = {}
+        for tid, (ty, w, h) in self.BUILTIN.items():
+            doc = {"schema": 1, "id": tid, "name": tid.replace("_", " ").title(), "type": ty, "version": 1, "status": "published", "description": "",
+                   "canvas": {"width": w, "height": h, **({"fps": 30} if ty == "video" else {})}, "elements": [{"id": "e", "type": "x", "z": 1}]}
+            self.t[tid] = {"scope": "builtin", "type": ty, "versions": {1: doc}}
+
+    def _tpl(self, tid: str) -> dict:
+        if tid not in self.t:
+            raise _terr("TEMPLATE_NOT_FOUND", f"template '{tid}' does not exist", template_id=tid)
+        return self.t[tid]
+
+    def _doc(self, tid: str, v) -> dict:
+        vs = self._tpl(tid)["versions"]
+        if v in ("latest", None):
+            return vs[max(vs)]
+        if v == "latest_published":
+            pub = [n for n, d in vs.items() if d["status"] == "published"]
+            if not pub:
+                raise _terr("NO_PUBLISHED_VERSION", f"template '{tid}' has no published version", template_id=tid)
+            return vs[max(pub)]
+        if int(v) not in vs:
+            raise _terr("TEMPLATE_VERSION_NOT_FOUND", f"template '{tid}' has no version {v}", template_id=tid)
+        return vs[int(v)]
+
+    def list_templates(self, type=None, status=None, scope=None, include_archived=False) -> dict:
+        rows = []
+        for tid, t in sorted(self.t.items()):
+            if type and t["type"] != type:
+                continue
+            vs = t["versions"]
+            pub = [n for n, d in vs.items() if d["status"] == "published"]
+            if not pub and not include_archived and not any(d["status"] == "draft" for d in vs.values()):
+                continue
+            top = vs[max(pub or vs)]
+            rows.append({"id": tid, "name": top["name"], "type": t["type"], "scope": t["scope"], "description": top["description"],
+                         "latest_published": max(pub) if pub else None, "latest": max(vs),
+                         "draft": next((n for n, d in vs.items() if d["status"] == "draft"), None),
+                         "status": "published" if pub else top["status"], "canvas": top["canvas"],
+                         "versions": [{"version": n, "status": d["status"]} for n, d in sorted(vs.items())]})
+        return {"templates": rows}
+
+    def versions(self, id: str) -> dict:
+        return {"id": id, "versions": [{"id": id, "version": n, "status": d["status"], "checksum": _canon(d)}
+                                       for n, d in sorted(self._tpl(id)["versions"].items())]}
+
+    def get_template(self, id: str, version="latest", validate=True) -> dict:
+        d = self._doc(id, version)
+        return {"template": d, "scope": self._tpl(id)["scope"], "checksum": _canon(d), "versions": self.versions(id)["versions"], "validation": _OK}
+
+    def validate(self, id=None, version=None, template=None) -> dict:
+        return _OK
+
+    def create_draft(self, type: str, id: str, name: str, description: str = "", width=None, height=None, scope: str = "user") -> dict:
+        if id in self.t:
+            raise _terr("TEMPLATE_ID_EXISTS", f"template id '{id}' already exists")
+        w, h = width or (1648 if type == "thumbnail" else 1920), height or (928 if type == "thumbnail" else 1080)
+        doc = {"schema": 1, "id": id, "name": name, "type": type, "version": 1, "status": "draft", "description": description,
+               "canvas": {"width": w, "height": h}, "elements": [{"id": "e", "type": "x", "z": 1}]}
+        self.t[id] = {"scope": "user", "type": type, "versions": {1: doc}}
+        return {"template": doc, "validation": _OK}
+
+    def new_draft(self, id: str, from_version=None) -> dict:
+        t = self._tpl(id)
+        if any(d["status"] == "draft" for d in t["versions"].values()):
+            raise _terr("DRAFT_EXISTS", f"template '{id}' already has an open draft")
+        doc = json.loads(json.dumps(self._doc(id, from_version if from_version is not None else "latest")))
+        doc.update(version=max(t["versions"]) + 1, status="draft")
+        t["versions"][doc["version"]] = doc
+        return {"template": doc, "validation": _OK}
+
+    def save_draft(self, id: str, version: int, template: dict) -> dict:
+        d = self._doc(id, int(version))
+        if d["status"] != "draft":
+            raise _terr("TEMPLATE_IMMUTABLE", f"template '{id}' v{version} is {d['status']} and immutable")
+        new = {**template, "id": id, "version": int(version), "status": "draft", "type": d["type"]}
+        self._tpl(id)["versions"][int(version)] = new
+        return {"template": new, "checksum": _canon(new), "validation": _OK}
+
+    def publish(self, id: str, version: int) -> dict:
+        d = self._doc(id, int(version))
+        changed = d["status"] != "published"
+        d["status"] = "published"
+        return {"id": id, "version": int(version), "status": "published", "changed": changed, "checksum": _canon(d)}
+
+    def archive(self, id: str, version=None) -> dict:
+        done = []
+        for n, d in self._tpl(id)["versions"].items():
+            if (version is None or n == int(version)) and d["status"] == "published":
+                d["status"] = "archived"
+                done.append(n)
+        return {"id": id, "archived": done}
+
+    def delete_draft(self, id: str, version: int) -> dict:
+        t = self._tpl(id)
+        if t["versions"].get(int(version), {}).get("status") != "draft":
+            raise _terr("TEMPLATE_IMMUTABLE", "only drafts can be deleted")
+        del t["versions"][int(version)]
+        if not t["versions"]:
+            del self.t[id]
+        return {"deleted": f"{id}@v{version}"}
+
+    def duplicate(self, id: str, new_id: str, name=None, version=None) -> dict:
+        base = self._doc(id, version if version is not None else "latest")
+        doc = json.loads(json.dumps(base))
+        doc.update(id=new_id, name=name or f"{base['name']} Copy", version=1, status="draft")
+        self.t[new_id] = {"scope": "user", "type": base["type"], "versions": {1: doc}}
+        return {"template": doc, "validation": _OK}
+
+    def resolve(self, id: str, policy="latest_published", expect_type=None, allow_draft=False) -> dict:
+        d = self._doc(id, policy)
+        if d["status"] == "draft" and not allow_draft:
+            raise _terr("TEMPLATE_IS_DRAFT", f"template '{id}' v{d['version']} is a draft")
+        if expect_type and d["type"] != expect_type:
+            raise _terr("TEMPLATE_WRONG_TYPE", f"template '{id}' is a {d['type']} template, not {expect_type}")
+        c, cs = d["canvas"], _canon(d)
+        return {"schema": 1, "id": id, "version": d["version"], "type": d["type"], "name": d["name"], "scope": self._tpl(id)["scope"],
+                "status": d["status"], "policy": policy, "checksum": cs, "fingerprint": cs, "template": json.loads(json.dumps(d)), "assets": {},
+                "summary": {"canvas": [c["width"], c["height"]], "fps": c.get("fps")}}
+
+    def resolve_many(self, requests: list[dict]) -> dict:
+        out = {}
+        for r in requests:
+            try:
+                out[r["key"]] = self.resolve(r["id"], r.get("policy", "latest_published"), r.get("expect_type"))
+            except StageError as e:
+                e.detail.setdefault("key", r["key"])
+                raise
+        return out
+
+    def list_assets(self, type=None, scope=None) -> dict:
+        return {"assets": [], "types": ["background", "font", "frame", "logo", "mask", "overlay"]}
+
+    def info(self) -> dict:
+        return {"roots": {}, "counts": {"assets": 0, "templates": len(self.t)}, "problems": []}
+
+    def preview(self, *a, **k) -> dict:
+        raise _terr("PREVIEW_UNAVAILABLE", "fake render adapter has no preview")
+
+    test_render = preview
+
+
 class FakeRender:
     requires_pool = False                                   # fake không cần source pool
+    supports_templates = True
+
+    @property
+    def templates(self) -> FakeTemplateApi:
+        if getattr(self, "_templates", None) is None:                # lazy: lớp con (vd GatedRender trong test) có thể không gọi __init__
+            self._templates = FakeTemplateApi()
+        return self._templates
 
     def prepare_pool(self, pool, ctx=None) -> dict:
         return {"dir": None, "fingerprint": "fake", "reused": True}
@@ -210,12 +378,16 @@ class FakeRender:
             hook(ctx, f"render_{pid}_part_{req['part']}")
         record_call(ctx, f"render_{pid}:{req['output'].name}")
         sha = sha256_file(req["audio"])[:12]
-        atomic_write_bytes(req["output"], f"FAKE-MP4|profile={pid}|audio_sha={sha}\n".encode())
+        t = req.get("template")
+        tpl = f"|template={t['id']}@v{t['version']}" if t else ""
+        atomic_write_bytes(req["output"], f"FAKE-MP4|profile={pid}|audio_sha={sha}{tpl}\n".encode())
         return {"warnings": []}
 
     def render_thumbnail(self, req, ctx: StageContext) -> Path:
+        t = req.get("template")
+        tpl = f"|template={t['id']}@v{t['version']}" if t else ""
         record_call(ctx, "thumbnail")
-        atomic_write_bytes(req["output"], f"FAKE-JPG|{req['title']}|{req['channel_name']}\n".encode())
+        atomic_write_bytes(req["output"], f"FAKE-JPG|{req['title']}|{req['channel_name']}{tpl}\n".encode())
         return req["output"]
 
     def health(self) -> dict:

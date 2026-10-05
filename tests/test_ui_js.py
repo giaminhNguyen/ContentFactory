@@ -20,7 +20,7 @@ def node(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
 @unittest.skipUnless(NODE, "cần Node.js")
 class FrontendTest(unittest.TestCase):
     def test_pure_logic_tests_pass(self):
-        r = node("--test", "tests/ui_js/logic.test.mjs")
+        r = node("--test", "tests/ui_js/logic.test.mjs", "tests/ui_js/templates.test.mjs")
         self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-1000:])
 
     def test_every_module_parses(self):
@@ -34,7 +34,7 @@ class FrontendTest(unittest.TestCase):
 
     def test_views_exported_for_every_route(self):
         router = (STATIC / "js" / "router.js").read_text(encoding="utf-8")
-        for name in ("run", "jobs", "job", "channels", "tts", "pools", "settings"):
+        for name in ("run", "jobs", "job", "channels", "tts", "pools", "settings", "templates", "studio"):
             self.assertIn(f'"{name}"', router)
             src = (STATIC / "js" / "views" / f"{name}.js").read_text(encoding="utf-8")
             self.assertIn("export async function mount", src, name)

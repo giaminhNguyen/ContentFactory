@@ -256,7 +256,8 @@ class RenderAdapter(Protocol):
 - **Profile** (`render/profile.py`, D-71): `id, aspect_ratio, resolution, fps, source_pool, selection_mode (shuffle|random|sequential), source_processing (auto|normal|fast), encoder, deadline_s, frame_path?, viewport?, config_overrides, retry{max_attempts, backoff_s}, thumbnail{enabled, highlight, highlight_text, image, config_overrides}` (chỉ YouTube). `config.render = {profiles, pools{<tên>: {raw_dir, sync{size, fps, quality, remove_audio, encoder}}}, pools_dir, pool_sync_background, pool_sync_interval_s}`; `tools.contentflow = {root, python, base_dir, sync_wait_s, verify_output}`.
 - **Stage `render_youtube`** (`requires audio_youtube, metadata`; `produces video_youtube, thumbnail, youtube_render_report`) và **`render_tiktok`** (`requires audio_tiktok`; `produces video_tiktok (một per part, meta.index), tiktok_render_report`): `Render Manager` (D-73): khóa nội dung + sidecar, retry riêng từng output, part lỗi TRANSIENT không chặn part khác (`RENDER_PARTS_FAILED`), checkpoint `outputs`/`parts`. Cả hai dùng lane tài nguyên `gpu` (D-74).
 - **Lỗi** (D-70): `FFMPEG_MISSING/GPU_UNAVAILABLE`→RESOURCE `runtime`, `DISK_FULL`→RESOURCE `disk`, `MISSING_INPUT`→POLICY `resource=input` (giữ job `PAUSED_MISSING_INPUT`), `INVALID_CONFIG`→POLICY, `FFMPEG_FAILED/TIMEOUT/INTERNAL_ERROR`→TRANSIENT, `RENDER_WORKER_DIED`/`RENDER_OUTPUT_INVALID`→TRANSIENT, hủy→CANCELLED; pool: `POOL_NOT_CONFIGURED`/`MISSING_INPUT`→POLICY `resource=input`, `POOL_SYNC_FAILED`→POLICY, `POOL_SYNC_TIMEOUT`→TRANSIENT.
-- **Cache key:** audio sha256 + profile + dấu vân tay pool + phiên bản ContentFlow (+ part). Nền ngẫu nhiên không seed (D-08) ⇒ cùng key có thể ra video khác nếu render lại; coi video là artifact đã cache.
+- **Template (Phase 10, D-92…D-96):** request có thêm `template` (snapshot đã chốt của job: `{id, version, checksum, fingerprint, template, assets, summary}`); khi có, adapter KHÔNG gửi `frame`/`viewport`/`config` mà gửi `params.template` cho `media_worker` (ContentFlow compile bố cục từ template). `req.profile` đã được `profile.apply_template` đặt canvas→`resolution`, fps (nếu template đặt), xóa layout cũ. Không có `template` ⇒ đường tương thích cũ. Adapter có `supports_templates` + thuộc tính `templates` (§13).
+- **Cache key:** audio sha256 + profile (gồm `template {id, version, fingerprint}`) + dấu vân tay pool + phiên bản ContentFlow (+ part). Nền ngẫu nhiên không seed (D-08) ⇒ cùng key có thể ra video khác nếu render lại; coi video là artifact đã cache.
 - **CLI:** `contentfactory pools [--sync]`, `retry-part <job> <n>`; `status` hiển thị trạng thái từng part.
 
 ## 6. PublishAdapter (đã triển khai ở Phase 6)
@@ -631,3 +632,24 @@ class SequenceManager(Protocol):
 | Sequence | `jobs/sequences.py` + bảng `channel_sequences` (DB v2); CLI `sequences`, `sequence-release` |
 | `story/stage.py` | giữ nguyên (tiêu đề của tác phẩm nguồn) |
 | `stage_key` | chỉ tham số/config khai báo (từ Phase 2.9); `project`/`channel_config` chỉ nằm ở render_youtube/output/publish |
+
+
+## 13. Template/Asset (Phase 10; D-92…D-97)
+
+**Trách nhiệm:** ContentFlow sở hữu template + asset; ContentFactory chọn ID, chốt version, snapshot. Giao diện giữa hai bên:
+
+```python
+class TemplateApi:            # = render.templates (ContentFlowRender: TemplateClient -> `python -m templating <cmd>`; FakeRender: FakeTemplateApi)
+    list_templates(type=None, status=None, scope=None, include_archived=False) -> {"templates": [{id, name, type, scope, latest_published, latest, draft, versions[], canvas…}]}
+    get_template(id, version="latest"|"latest_published"|N) -> {template, scope, checksum, versions, summary, assets, validation}
+    resolve(id, policy="latest_published"|N, expect_type=None) -> snapshot       # {schema, id, version, type, name, scope, status, policy, checksum, fingerprint, template, assets{id:{sha256,type,scope,path}}, summary{canvas,fps,source_region}}
+    resolve_many([{key, id, policy, expect_type}]) -> {key: snapshot}              # 1 tiến trình cho cả 3 kind; lỗi kèm detail.key
+    create_draft / duplicate / new_draft / save_draft / publish / archive / delete_draft / validate / preview / test_render
+    list_assets / get_asset / validate_asset / asset_path / import_asset / delete_asset / info / migrate_legacy
+```
+
+- **Lỗi** → `StageError`: vấn đề template/asset người dùng sửa được ⇒ `POLICY` (mã của ContentFlow: `TEMPLATE_NOT_FOUND`, `NO_PUBLISHED_VERSION`, `TEMPLATE_WRONG_TYPE`, `ASSET_IN_USE`…, `resource="input"`); không chạy được ContentFlow ⇒ `RESOURCE CONTENTFLOW_MISSING`; module chưa có `templating` ⇒ `RESOURCE TEMPLATES_UNAVAILABLE` (tạo job rơi về layout cũ + quyết định). `media_worker`: template/asset thiếu hoặc đổi ⇒ `MISSING_INPUT` (POLICY, giữ job); template hỏng/sai loại ⇒ `INVALID_CONFIG`.
+- **Chọn lúc tạo job** (`orchestrator/templates.py`): ưu tiên `params.templates` (đã là snapshot: giữ; hoặc tham chiếu) > `channel.templates` > layout cũ (nếu có) > `config.templates.defaults`. Kết quả: `params.templates{thumbnail, youtube, tiktok}` + `params.auto` ("template.<kind> = id@vN vì …"). `fallback` chỉ khi kênh khai. Hành động explicit: `Orchestrator.retemplate(job, kind, id, policy)`.
+- **`stage_key`:** `render_youtube` ← `templates.youtube`, `templates.thumbnail`; `render_tiktok` ← `templates.tiktok`.
+- **CLI:** `cf templates list|show|use|validate|publish|archive|duplicate|preview|test-render|assets|migrate`, `cf retemplate <job> <kind> <id>` (chọn lại cho job CHƯA xong stage đó), `cf rerender <job>` (job mới dựng lại từ audio cũ bằng template hiện tại). **Doctor:** nhóm *Template* (ContentFlow có hệ thống template, template các kênh còn dùng được, còn layout cũ).
+- **API giao diện:** `service_templates.TemplateService` + routes `/api/templates…`, `/api/assets…`, `/api/channels/<id>/templates`.

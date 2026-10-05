@@ -12,6 +12,7 @@ const NAV = [
   ["channels", "/channels", "Kênh", "tv"],
   ["tts", "/tts", "Giọng đọc", "mic"],
   ["pools", "/pools", "Video nguồn", "film"],
+  ["templates", "/templates", "Template", "layout"],
   ["settings", "/settings", "Cài đặt & Doctor", "settings"],
 ];
 

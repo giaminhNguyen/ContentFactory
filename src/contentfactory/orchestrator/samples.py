@@ -1,7 +1,7 @@
 """Dữ liệu mẫu để thử ngay khi chưa có truyện/video (D-90): `cf samples` hoặc nút "Tạo dữ liệu mẫu" trong giao diện.
 
 Sinh trong `<root>/samples/`: truyện (.txt, không đánh số chương), phụ đề (.srt), audio (.wav, tiếng bíp có nhịp nghỉ để thử cắt part), hai thư mục video nền
-(ngang 16:9 cho YouTube, dọc 9:16 cho TikTok; clip tổng hợp bằng ffmpeg), và — nếu máy có font — template thumbnail. Chỉ ĐĂNG KÝ (không ghi đè) pool và template vào
+(ngang 16:9 cho YouTube, dọc 9:16 cho TikTok; clip tổng hợp bằng ffmpeg). Thumbnail/video dùng template builtin của ContentFlow (không cần file mẫu). Chỉ ĐĂNG KÝ (không ghi đè) pool vào
 `config/config.local.json` khi người dùng chưa cấu hình. Chạy lại an toàn (bỏ qua file đã có, trừ khi force). Chỉ dùng stdlib + ffmpeg có sẵn.
 """
 from __future__ import annotations
@@ -46,7 +46,6 @@ CUES = [
 ]
 
 VIDEO_SOURCES = ("testsrc2", "smptebars", "gradients")
-FONT_CANDIDATES = (r"C:\Windows\Fonts\arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/Library/Fonts/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf")
 
 
 def _ts(sec: float) -> str:
@@ -107,15 +106,6 @@ def make_video(ffmpeg: str, dst: Path, source: str, size: str, seconds: int = 8)
     return True
 
 
-def make_template(ffmpeg: str, dst: Path) -> bool:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run([ffmpeg, "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", "gradients=size=1648x928:duration=1:rate=1:c0=0x1d3557:c1=0x457b9d:speed=0",
-                        "-frames:v", "1", str(dst)], capture_output=True, text=True, timeout=60)
-    if r.returncode != 0 or not dst.exists():
-        r = subprocess.run([ffmpeg, "-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x1d3557:s=1648x928", "-frames:v", "1", str(dst)], capture_output=True, text=True, timeout=60)
-    return r.returncode == 0 and dst.exists()
-
-
 def _local(cfg: Config) -> tuple[Path, dict]:
     f = cfg.root / "config" / "config.local.json"
     try:
@@ -155,17 +145,6 @@ def make_samples(cfg: Config, dest: Path | None = None, register: bool = True, f
                     res["created"].append(name)
                 else:
                     res["warnings"].append(f"Không tạo được {name} (nguồn ffmpeg '{src}' không có trên máy này).")
-    thumb = {}
-    font = next((f for f in FONT_CANDIDATES if Path(f).is_file()), None)
-    tpl = cfg.root / "samples" / "thumbnail_template.png" if dest == (cfg.root / "samples").resolve() else dest / "thumbnail_template.png"
-    if ff and font:
-        if not tpl.exists() or force:
-            if make_template(ff, tpl):
-                res["created"].append(tpl.name)
-        if tpl.exists():
-            thumb = {"template": {"file": str(tpl)}, "title": {"font": font}, "channel": {"font": font}}
-    elif ff:
-        res["warnings"].append("Không thấy font hệ thống nên chưa tạo template thumbnail; đặt font + template thủ công (xem Doctor).")
     res["registered"] = []
     if register:
         f, local = _local(cfg)
@@ -177,11 +156,6 @@ def make_samples(cfg: Config, dest: Path | None = None, register: bool = True, f
             pools["gameplay_vertical"] = {"raw_dir": str(dest / "video_doc"), "orientation": "portrait"}
             cfg.data.setdefault("render", {}).setdefault("pools", {}).update(pools)
             res["registered"] += ["pool gameplay (ngang)", "pool gameplay_vertical (dọc)"]
-        prof = (cfg.data.get("render", {}).get("profiles") or {}).get("youtube", {}).get("thumbnail", {}).get("config_overrides", {})
-        if thumb and not prof.get("template"):
-            render.setdefault("profiles", {}).setdefault("youtube", {}).setdefault("thumbnail", {})["config_overrides"] = thumb
-            cfg.data.setdefault("render", {}).setdefault("profiles", {}).setdefault("youtube", {}).setdefault("thumbnail", {})["config_overrides"] = thumb
-            res["registered"].append("template thumbnail + font")
         if res["registered"]:
             atomic_write_json(f, local)
     res["next"] = ("Thử: dán đường dẫn truyện mẫu vào ô Đầu vào (chạy 'Chỉ đọc truyện'/'Đọc + dựng video'), hoặc audio mẫu để dựng video. "

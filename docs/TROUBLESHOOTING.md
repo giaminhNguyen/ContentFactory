@@ -12,7 +12,13 @@ Bắt đầu bằng: `cf doctor` (mỗi mục lỗi kèm cách sửa) rồi `cf 
 | `TTS_PROFILE_NOT_FOUND` | preset kênh trỏ tới profile không có trong `tts_profiles\` | sửa `preset.tts_profile` hoặc xoá để tự chọn |
 | `AUDIO_QA_FAILED` (EMPTY, EXCESSIVE_SILENCE, CLIPPING…) | audio lỗi/quá nhiều im lặng | xem `audio_report.json` trong job; chỉnh `audio.qa` của kênh (preset) nếu giọng đọc chủ ý có nhiều quãng nghỉ |
 | `CONTENTFLOW_MISSING` (đang giữ, `PAUSED_RESOURCE`) | không có thư mục ContentFlow hoặc Python của nó | `cf setup` (clone + cài), kiểm tra `tools.contentflow.root/python` |
-| `MISSING_INPUT` ở render YouTube | thiếu template thumbnail/font hoặc thư mục video nguồn trống | đặt `assets/template.png` vào `config\contentflow\` (doctor chỉ rõ), thêm video vào thư mục nguồn |
+| `MISSING_INPUT` ở render YouTube | thư mục video nguồn trống; (bố cục kiểu cũ) thiếu template thumbnail/font | thêm video vào thư mục nguồn; dùng template builtin (không cần file ngoài) hoặc `cf templates migrate` |
+| `INVALID_CHANNEL_TEMPLATE` (lúc tạo job) | template kênh chọn không dùng được: không tồn tại, chỉ có bản nháp, đã archive, sai loại (thumbnail ↔ video), version ghim không có | thông điệp nêu kênh/template/mã lỗi: chọn template khác (Kênh → Template, hoặc `cf templates use`), hoặc publish một version; muốn tự động dự phòng thì khai `fallback` |
+| `MISSING_INPUT` ở render với tên template/asset trong thông điệp (`ASSET_FILE_MISSING`, `ASSET_CHANGED`) | file asset của template mất/bị thay sau khi job chốt snapshot | khôi phục file asset; hoặc import asset ID mới, tạo version mới của template, rồi `cf retemplate <job> <kind> <id>` |
+| `TEMPLATES_UNAVAILABLE` / quyết định `templates = unavailable` | module ContentFlow cũ chưa có `templating` | `cf update` (cập nhật module ContentFlow); trong lúc đó job chạy bố cục kiểu cũ |
+| `TEMPLATE_IMMUTABLE` / `DRAFT_EXISTS` | sửa bản đã publish / đã có bản nháp mở | dùng *Tạo bản nháp mới* (hoặc sửa/publish bản nháp đang có) |
+| `ASSET_IN_USE` | xóa asset đang được template dùng | gỡ khỏi template trước (hoặc `force` nếu chắc chắn) |
+| Template validate lỗi (`TEXT_BELOW_IMAGE`, `UNSUPPORTED_ELEMENT`, `OUTSIDE_CANVAS`…) | xem bảng mã ở `docs/TEMPLATE_SCHEMA.md` | thông điệp nêu template, version, phần tử/trường; sửa trong Studio rồi *Kiểm tra* |
 | `UPLOADER_UNREACHABLE` | daemon `yt-uploader` chưa chạy | `cf start` (tự bật) hoặc `tools\yt-uploader.exe serve --headless` |
 | `UPLOADER_UNAUTHORIZED` | token API của daemon sai | kiểm tra `tools.yt_uploader.token` / `data_dir`; xoá để dùng `api_token` của daemon |
 | hết quota upload | YouTube giới hạn mỗi ngày | tự tiếp tục sau khi quota reset (cần `cf start`) |

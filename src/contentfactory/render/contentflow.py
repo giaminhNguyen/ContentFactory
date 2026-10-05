@@ -27,6 +27,7 @@ from ..contracts import ErrorClass, StageContext, StageError
 from ..fsutil import atomic_write_json, sha256_file
 from . import pools as PL
 from .frames import ensure_frame
+from .templates_client import TemplateClient
 
 RESOURCE_OF = {"FFMPEG_MISSING": "runtime", "GPU_UNAVAILABLE": "runtime", "DISK_FULL": "disk"}
 CLASS_OF = {"TRANSIENT": ErrorClass.TRANSIENT, "RESOURCE": ErrorClass.RESOURCE, "POLICY": ErrorClass.POLICY, "CANCELLED": ErrorClass.CANCELLED}
@@ -58,8 +59,18 @@ class ContentFlowRender:
         self.ffprobe = s.get("ffprobe") or "ffprobe"
         self.sync_wait_s = float(s.get("sync_wait_s", 3600))
         self.verify = bool(s.get("verify_output", True))
+        self.user_root = Path(s["user_root"]) if s.get("user_root") else None
+        self.supports_templates = True
         self._version: str | None = None
         self._health: dict | None = None
+        self._templates: TemplateClient | None = None
+
+    @property
+    def templates(self) -> TemplateClient:
+        """Hệ thống template/asset của ContentFlow (ContentFlow là chủ sở hữu; ContentFactory chỉ hỏi và chốt version cho job)."""
+        if self._templates is None:
+            self._templates = TemplateClient(self.root, self.python, self.user_root)
+        return self._templates
 
     # ------------------------------------------------------------------------------------------ sức khỏe / phiên bản
     def _worker(self, args: list[str], timeout: float = 30, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -216,15 +227,19 @@ class ContentFlowRender:
     def render_video(self, req: dict, ctx: StageContext) -> dict:
         prof, audio, out = req["profile"], Path(req["audio"]), Path(req["output"])
         key = req.get("key") or hashlib.sha256(f"{sha256_file(audio)}|{json.dumps(prof, sort_keys=True, default=str)}|{out.name}".encode()).hexdigest()
-        frame = Path(prof["frame_path"]) if prof.get("frame_path") else ensure_frame(self.frames_dir, prof["width"], prof["height"])
-        vp = prof.get("viewport") or {"x": 0, "y": 0, "width": prof["width"], "height": prof["height"]}
-        cfg = {"video_generator": {"viewport": vp, "video": {"fps": prof["fps"]}}}
-        _merge(cfg, prof.get("config_overrides") or {})
-        inputs = [{"type": "audio", "path": str(audio.resolve()), "sha256": req.get("audio_sha256") or sha256_file(audio)},
-                  {"type": "frame", "path": str(frame.resolve())}]
+        inputs = [{"type": "audio", "path": str(audio.resolve()), "sha256": req.get("audio_sha256") or sha256_file(audio)}]
         pool = req.get("pool")
         params = {"fps": prof["fps"], "selection_mode": prof["selection_mode"], "source_processing": prof["source_processing"],
-                  "encoder": prof["encoder"], "output_name": out.name, "config": cfg}
+                  "encoder": prof["encoder"], "output_name": out.name}
+        if req.get("template"):                      # bố cục NẰM TRONG template (ContentFlow); ContentFactory chỉ gửi tham chiếu + snapshot, không gửi tọa độ
+            params["template"] = req["template"]
+        else:                                        # tương thích: bố cục kiểu cũ trong profile (deprecated, xem docs/TEMPLATE_SYSTEM.md)
+            frame = Path(prof["frame_path"]) if prof.get("frame_path") else ensure_frame(self.frames_dir, prof["width"], prof["height"])
+            vp = prof.get("viewport") or {"x": 0, "y": 0, "width": prof["width"], "height": prof["height"]}
+            cfg = {"video_generator": {"viewport": vp, "video": {"fps": prof["fps"]}}}
+            _merge(cfg, prof.get("config_overrides") or {})
+            inputs.append({"type": "frame", "path": str(frame.resolve())})
+            params["config"] = cfg
         if pool and pool.get("dir"):
             inputs.append({"type": "video_dir", "path": str(Path(pool["dir"]).resolve())})
         res = self._run_worker("render", key, out.parent, params, inputs, float(prof.get("deadline_s", 7200)), ctx, req.get("on_progress"))
@@ -241,7 +256,11 @@ class ContentFlowRender:
         if req.get("image"):
             inputs.append({"type": "image", "path": str(Path(req["image"]).resolve())})
         params = {"channel": req["channel_name"], "title": req["title"], "highlight_mode": req.get("highlight", "auto"),
-                  "highlight_text": req.get("highlight_text", ""), "output_name": out.name, "config": th}
+                  "highlight_text": req.get("highlight_text", ""), "output_name": out.name}
+        if req.get("template"):
+            params["template"] = req["template"]
+        else:
+            params["config"] = th
         self._run_worker("thumbnail", key, out.parent, params, inputs, 600.0, ctx)
         if not out.is_file() or out.stat().st_size == 0:
             raise StageError(ErrorClass.TRANSIENT, "THUMBNAIL_NO_OUTPUT", f"worker báo xong nhưng không có {out}")

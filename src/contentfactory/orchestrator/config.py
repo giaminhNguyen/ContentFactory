@@ -18,8 +18,11 @@ DEFAULTS: dict = {
               "yt_uploader": {"url": "http://127.0.0.1:8973", "data_dir": None, "token": None, "poll_s": 2.0, "max_wait_s": 21600},
               # ContentFlow (Phase 5): root = repo ContentFlow, python = Python có Pillow (+ ffmpeg trên PATH), base_dir = nơi chứa config.json/assets của
               # ContentFlow do orchestrator quản lý (frame, template, font thumbnail) — không sửa module
-              "contentflow": {"root": "modules/ContentFlow", "python": None, "base_dir": "config/contentflow", "sync_wait_s": 3600,
-                              "verify_output": True}},
+              # user_root (Phase 10): nơi lưu template/asset CỦA NGƯỜI DÙNG + cache (ngoài module nên cập nhật/clone lại module không mất dữ liệu)
+              "contentflow": {"root": "modules/ContentFlow", "python": None, "base_dir": "config/contentflow", "user_root": "contentflow_user",
+                              "sync_wait_s": 3600, "verify_output": True}},
+    # Template (Phase 10): template mặc định khi kênh chưa chọn; ContentFlow là chủ sở hữu template (docs/TEMPLATE_SYSTEM.md)
+    "templates": {"defaults": {"thumbnail": "thumb_default", "youtube_video": "youtube_default", "tiktok_video": "tiktok_default"}},
     # Render (Phase 5): profile YouTube/TikTok và source pool (cấu hình NGỮ NGHĨA: vào snapshot). Ví dụ pool:
     #   "pools": {"gameplay": {"raw_dir": "D:/videos/gameplay", "sync": {"quality": "balanced"}}}  (size/fps mặc định theo profile)
     "render": {"profiles": {}, "pools": {}, "pools_dir": "runtime/pools", "pool_sync_background": True, "pool_sync_interval_s": 300},

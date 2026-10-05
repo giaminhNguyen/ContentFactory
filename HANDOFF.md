@@ -4,6 +4,7 @@
 > **Cập nhật (tích hợp Subtitle_supperVip):** Source/Subtitle nay là một `SourceAdapter` có nhiều provider, `Subtitle_supperVip` là provider chính, ContentFactory vẫn là orchestrator duy nhất giữ state. Xem **§2A Current Integrations** và **§4A Source / Subtitle**. Các điểm đã lệch khỏi bản thiết kế đầu tiên được chỉnh trực tiếp trong tài liệu này; lý do và bằng chứng nằm ở `docs/` (`CURRENT_SYSTEM_AUDIT.md`, `DECISIONS.md`).
 > **Cập nhật (Phase 7):** UX mặc định là Auto Mode: `cf go <URL> --channel K` (preset kênh nhớ TTS profile/pool/render/watermark/publishing; ưu tiên `params > preset > mặc định`; mọi lựa chọn tự động được ghi vào `params.auto`). Xem D-82…D-87, `README.md` (hướng dẫn người dùng).
 > **Cập nhật (Phase 9):** có giao diện web cục bộ `cf ui` (D-89): dán link → chọn kênh → RUN → Mở output; nhận dạng đầu vào, chế độ một phần, giải thích trạng thái giữ/lỗi, kênh/TTS/pool/cài đặt/Doctor; `cf samples` tạo dữ liệu mẫu để thử (D-90). Xem `docs/UI_GUIDE.md`.
+> **Cập nhật (Phase 10):** bố cục thumbnail/video là **template có phiên bản do ContentFlow sở hữu** (asset registry builtin/user, template registry draft/published/archived, validator, engine, preview/test render, Template Studio); Channel Config chỉ **chọn template ID**; job **chốt version + snapshot** lúc tạo (`params.templates`). Xem **§12A**, `docs/TEMPLATE_SYSTEM.md`, `docs/TEMPLATE_SCHEMA.md`, `docs/ASSET_MANAGEMENT.md`, D-92…D-97.
 > Mục tiêu: một pipeline duy nhất biến một nguồn truyện/video đầu vào thành **1 video YouTube hoàn chỉnh** và **nhiều video TikTok theo part**, trong khi hệ thống dễ thay module, dễ debug, dễ setup máy mới và không bắt người dùng phải hiểu chi tiết kỹ thuật.
 
 ---
@@ -83,7 +84,7 @@ Nhiệm vụ:
 | Source / Subtitle | `Subtitle_supperVip` (provider chính), `yt-dlp` (fallback) | `SourceAdapter` (ProviderChain) → bridge subprocess gọi lại code acquisition của Subtitle_supperVip | đã tích hợp |
 | Transcript | Transcript Processor của ContentFactory | trong ContentFactory (parser có timestamp → structured → clean) | đã tích hợp |
 | Story | `oh-story-claudecode` | `StoryBranchAdapter` (Claude Code CLI headless) + Story Assembler | đã tích hợp, chưa kiểm chứng với LLM thật |
-| Render | `ContentFlow` | `media_worker` subprocess (JSON-lines) | chưa tích hợp |
+| Render | `ContentFlow` | `media_worker` subprocess (JSON-lines) + `python -m templating` (template/asset) | đã tích hợp (Phase 5); bố cục theo template ContentFlow (Phase 10, §12A) |
 | Upload | `yt_uploader` | daemon HTTP headless | chưa tích hợp |
 | TTS | modular TTS framework | Phase 3 | chưa bắt đầu |
 | Publishing metadata | Metadata Builder + Sequence Manager + Channel Config (§4B) | trong ContentFactory | thiết kế; thumbnail ở Phase 5, phần còn lại ở Phase 6 |
@@ -845,6 +846,30 @@ tiktok:
   target_part_duration_sec: 600
   source_pool: gameplay_vertical
 ```
+
+---
+
+## 12A. Template (Phase 10 — đã triển khai)
+
+```text
+ContentFlow owns visual templates/assets.
+
+ContentFactory Channel Config selects:
+- thumbnail template
+- YouTube video template
+- TikTok video template
+
+Jobs resolve template version at creation and snapshot it.
+
+Template edits do not silently mutate running/existing jobs.
+```
+
+- **ContentFlow sở hữu:** schema, validator, registry, versioning, asset registry (builtin/user, ID → đường dẫn tương đối, không có đường dẫn máy trong dữ liệu di động), canvas/frame/vùng chữ/vùng video/crop/fit/overlay/z-order/font, preview và test render. Mã ở repo ContentFlow: `templating/` (+ `assets/builtin`, `templates/builtin`, `media_worker` nhận `params.template`).
+- **ContentFactory sở hữu:** `channels/<id>/channel.json → templates{thumbnail, youtube_video, tiktok_video}` (`{id, version_policy: latest_published|<số>, fallback?}`), resolve version khi tạo job, snapshot vào `params.templates{thumbnail,youtube,tiktok}`, gửi dữ liệu ngữ nghĩa (không tọa độ) qua `RenderAdapter`, UI chọn/quản lý template. **Không** sở hữu tọa độ layout.
+- **Vòng đời:** `draft` (sửa được, không bao giờ tự chọn) → `published` (bất biến) → `archived` (job cũ vẫn tái hiện được). Sửa published = draft version mới → Test Render → Publish.
+- **Invalidation:** đổi template nào chỉ hết hạn render tương ứng (thumbnail/YouTube/TikTok); không đụng Source/Story/TTS/Audio. Cache key gồm template id + version + fingerprint (checksum + sha256 asset).
+- **Tương thích:** layout cũ trong profile vẫn chạy khi chưa chọn template (cảnh báo deprecated); `cf templates migrate` chuyển sang template. Chi tiết: `docs/TEMPLATE_SYSTEM.md` §8.
+- **Template Studio** (trang *Template* trong `cf ui`): danh sách, canvas kéo/thả/đổi cỡ, bảng thuộc tính, lớp (z), thư viện asset, Duplicate, Lưu nháp, Kiểm tra, Xem trước, Render thử, Publish, Archive, undo/redo — trên **cùng schema** ContentFlow render.
 
 ---
 

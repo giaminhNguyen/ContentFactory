@@ -1,6 +1,7 @@
 # Pin phiên bản các module (HANDOFF §19). Cập nhật bằng tay khi nâng version, kèm ghi chú trong commit.
 # name  path  branch  sha  remote
-ContentFlow          modules/ContentFlow          main  f3126f0457df457162f7f48d0d17131eef2f18c9  git@home.com:giaminhNguyen/ContentFlow.git
+# ContentFlow: từ 5f9be9e có hệ thống template (templating/, Phase 10); cần bản này trở lên cho Template Studio
+ContentFlow          modules/ContentFlow          main  5f9be9e5e638cb330a8e60658b1f371bc03e5886  git@home.com:giaminhNguyen/ContentFlow.git
 oh-story-claudecode  modules/oh-story-claudecode  main  a8dc6749b830f53055958cf328558c53c7404c3c  git@home.com:giaminhNguyen/oh-story-claudecode.git
 yt_uploader          modules/yt_uploader          main  cfcc45de0aa83529888034ec7222343721bc1572  git@home.com:giaminhNguyen/yt_uploader.git
 # Subtitle_supperVip: nhánh 'Update'. Cây làm việc có 3 file đã stage chưa commit (README.md sửa; dev.ps1, start.ps1 thêm);

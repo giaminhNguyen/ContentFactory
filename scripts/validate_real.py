@@ -130,10 +130,8 @@ def main() -> int:
         "adapters": {"story": "story_branch" if a.story == "real" else "fake", "tts": "fake", "publish": "fake"},
         "render": {"pools_dir": str(root / "pools"), "pool_sync_background": False,
                    "pools": {"gameplay": {"raw_dir": str(media["land"]), "orientation": "landscape"},
-                             "gameplay_vertical": {"raw_dir": str(media["port"]), "orientation": "portrait"}},
-                   "profiles": {"youtube": {"thumbnail": {"config_overrides": {"template": {"file": str(media["template"])},
-                                                                                "title": {"font": str(FONT)}, "channel": {"font": str(FONT)}}}}}},
-        "tools": {"contentflow": {"base_dir": str(root / "cfbase")}},
+                             "gameplay_vertical": {"raw_dir": str(media["port"]), "orientation": "portrait"}}},   # thumbnail/video: template builtin của ContentFlow (Phase 10)
+        "tools": {"contentflow": {"base_dir": str(root / "cfbase"), "user_root": str(root / "cfuser")}},
         "cleanup": {"enabled": False}, "job_defaults": {"tiktok": {"speed": 2.0, "target_part_sec": a.target_part_sec}},
     }
     cfg = load_config(REPO, over)

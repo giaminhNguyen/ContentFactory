@@ -479,6 +479,37 @@
 - **Hoạt họa không được làm mất focus:** cấm `autoAlpha`/`visibility:hidden` cho phần tử có thể đang focus.
 - Các lỗi bố cục/UX khác: `docs/UI_UX_AUDIT.md` §2.
 
+### D-92 ✅ Template: ContentFlow sở hữu, ContentFactory chọn + chốt (Phase 10)
+- **Vấn đề:** bố cục (frame, vùng video, vùng chữ, tọa độ) nằm rải rác trong `render.profiles.*.{frame_path, viewport, config_overrides}` và `thumbnail.config_overrides` — người dùng phải biết tọa độ, ContentFactory vô tình sở hữu layout, không có phiên bản nên đổi cấu hình làm đổi âm thầm kết quả job cũ.
+- **Quyết định:** bố cục = **template có phiên bản** thuộc ContentFlow (`modules/ContentFlow/templating/`: schema, validator, registry, asset registry, engine, preview/test render). ContentFactory **chỉ** chọn template ID trong Channel Config (`templates.{thumbnail,youtube_video,tiktok_video}`), resolve version cụ thể khi tạo job, snapshot, và gửi `params.template` cho `media_worker` — không gửi tọa độ. Phần "ContentFlow" thật sự nằm ở **repo ContentFlow** (commit riêng, ghim ở `modules.lock`).
+- **Ranh giới giữ nguyên:** ContentFactory vẫn không import code ContentFlow (nói chuyện bằng `python -m templating` + `media_worker`); Source Sync không thuộc template; Audio/TTS không thuộc template (đổi template không bao giờ chạy lại TTS/audio).
+- **Engine:** compile template thành **cấu hình renderer sẵn có** (thumbnail: `canvas/template.background+foreground/photo/channel/title`; video: overlay PNG đã bake + viewport) thay vì viết renderer mới ⇒ giữ nguyên hành vi/hiệu năng đã kiểm chứng. Hệ quả: giới hạn renderer được **validator nói rõ** (chữ trong video, `fit≠cover`, `align≠center`, chữ phải nằm trên ảnh) thay vì bỏ qua lặng lẽ.
+
+### D-93 ✅ Registry, lưu trữ, đường dẫn di động
+- **Asset Registry** (`assets/{builtin,user}/registry.json`) ID → đường dẫn **tương đối**; **Template Registry** `templates/{builtin,user}/<type>/<id>/v<N>.json` (một file một version, status trong file). Chọn JSON (không YAML/DB): ContentFlow dùng JSON/stdlib, diff được, không thêm phụ thuộc, không phải lo parse YAML an toàn.
+- **Dữ liệu người dùng ngoài module:** `CONTENTFLOW_USER_ROOT` (ContentFactory đặt `tools.contentflow.user_root`, mặc định `contentflow_user/`) — module là bản clone thay được (D-01) nên không để dữ liệu người dùng trong đó; builtin chỉ đọc (muốn sửa ⇒ Duplicate).
+- **Ghi an toàn:** ghi tạm + `os.replace` + khóa tệp theo scope (khóa mồ côi quá 60 s bị lấy lại); Publish/Save lặp lại idempotent; cache đọc theo mtime; render tra theo `id@version` (không quét toàn bộ). Registry hỏng ⇒ `REGISTRY_CORRUPT`/`TEMPLATE_CORRUPT` nêu file, một file hỏng không che các template khác.
+- **Bảo mật asset:** làm sạch tên, không ghi đè, không `../` (resolve kiểm nằm trong gốc), kiểm định dạng bằng nội dung, không thực thi. Asset builtin sinh bằng `scripts/make_builtin.py` (tất định, Pillow).
+
+### D-94 ✅ Version, vòng đời, snapshot job
+- `draft → published → archived`; **published bất biến**; sửa = draft version mới; một draft mở mỗi template; publish validate trước; archive thay cho xóa; template tham chiếu bởi job cũ luôn resolve được theo version chính xác. `latest_published` = version published cao nhất; không có ⇒ lỗi, **không** chọn template khác (chỉ `fallback` khai báo rõ ràng).
+- **Snapshot trong `params.templates`** (không phải file riêng): params đã được lưu bền trong DB, đi cùng job qua restart, và vào `stage_key` đúng chỗ; chứa cả tài liệu + checksum + sha256 asset ⇒ job tái hiện được kể cả khi registry đã đổi. ContentFlow so checksum/sha256 khi render (`TEMPLATE_CORRUPT`, `ASSET_CHANGED`).
+- Retry/resume **không** resolve lại; chỉ `retemplate` (explicit) mới đổi snapshot. Chốt khi đích tới render; job tạo trước đó chốt lúc `set_target` mở rộng.
+
+### D-95 ✅ Tương thích layout cũ và migrate
+- Layout cũ (`frame_path/viewport/config_overrides`, `thumbnail.config_overrides`, hoặc đổi `resolution`) vẫn chạy **khi không chọn template rõ ràng** (kèm quyết định `legacy` + cảnh báo Doctor); chọn template ⇒ template thắng và layout cũ bị bỏ qua **có ghi**. Lý do: không phá người đang dùng + không "bỏ qua cấu hình cũ trong im lặng".
+- `cf templates migrate [--apply]` dựng template user (`legacy_*`) từ cấu hình cũ (file ảnh/font → asset), trỏ mặc định/kênh tới đó, sao lưu `.bak`, idempotent. Module ContentFlow chưa có `templating` ⇒ chạy kiểu cũ + quyết định `templates=unavailable`.
+- Template builtin **không đặt `fps`** (dùng fps của profile) và canvas = độ phân giải mặc định ⇒ job không đổi template cho kết quả như trước. `cf samples` không còn ghi `thumbnail.config_overrides` (builtin đã đủ). Thumbnail không còn cần `template.png`/font đặt tay (rủi ro R5 của Phase 5): template builtin tự mang nền/khung, font hệ thống qua tên file (`arialbd.ttf`).
+
+### D-96 ✅ Invalidation và cache key
+- `render_youtube.params_deps += templates.youtube, templates.thumbnail`; `render_tiktok.params_deps += templates.tiktok` (đường dẫn có dấu chấm đã có từ D-48). Đổi template nào chỉ hết hạn stage render tương ứng; Source/Story/TTS/Audio/Output/Publish không đổi key (có test).
+- Khóa nội dung từng output (`.key.json`) và idempotency key của worker gồm `template {id, version, fingerprint}`; fingerprint = checksum template + sha256 asset ⇒ version/asset mới không tái dùng output cũ. Từng part TikTok vẫn retry riêng.
+- Canvas template quyết định độ phân giải/aspect của profile; pool sync theo canvas (không theo vùng video) để các template cùng canvas dùng chung một pool.
+
+### D-97 ✅ Template Studio và API giao diện
+- Studio sửa **đúng schema** ContentFlow render (không schema thứ hai). Backend: `service_templates.py` (facade mỏng, dịch lỗi, khóa ghi theo template, phục vụ ảnh/video xem trước **theo tên** từ cache ContentFlow, upload asset byte thô giới hạn 60 MB); frontend ES modules thuần như Phase 9, logic thuần (z, clamp/resize, undo/redo, slug) tách để test bằng node. Zoom canvas tách khỏi tọa độ thật; undo/redo chỉ trên bản nháp.
+- **Preview** dùng đúng compile + renderer thật (thumbnail thật; video = overlay chồng ảnh thử, không ffmpeg); **Test Render** chạy renderer thật (video: clip + tone tổng hợp ngắn) và kiểm kích thước bằng ffprobe.
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:

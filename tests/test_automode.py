@@ -50,6 +50,11 @@ def write_config(root: Path, **extra) -> None:
     f.write_text(json.dumps(c), encoding="utf-8")
 
 
+def auto_decisions(p: dict) -> list:
+    """Quyết định Auto Mode (preset/TTS/pool), không kể việc chọn template (Phase 10)."""
+    return [d for d in p.get("auto", []) if not d["what"].startswith("template")]
+
+
 def bare(**over) -> dict:
     """params không có tiktok/title mặc định của BASE_PARAMS (để kiểm tra preset kênh điền vào)."""
     p = params(**over)
@@ -108,14 +113,14 @@ class ChannelPresetTest(RootCase):
         orc = self.orc()
         j = orc.store.get_job(orc.submit(bare(channel="kenh")))["params"]
         self.assertEqual((j["language"], j["tiktok"]["speed"], j["audio"]["master"]["loudness"]["target_lufs"], j["render"]["youtube"]["fps"]), ("en", 1.5, -18, 24))
-        self.assertEqual({d["what"] for d in j["auto"]}, {"language", "tiktok", "audio", "render"})
+        self.assertEqual({d["what"] for d in j["auto"] if not d["what"].startswith("template")}, {"language", "tiktok", "audio", "render"})
         j2 = orc.store.get_job(orc.submit(bare(channel="kenh", language="vi", tiktok={"speed": 3.0, "target_part_sec": 60})))["params"]
         self.assertEqual((j2["language"], j2["tiktok"]["speed"]), ("vi", 3.0))                        # người dùng nhập thì thắng preset
 
     def test_no_preset_means_no_change(self):
         orc = self.orc()
         j = orc.store.get_job(orc.submit(params()))["params"]
-        self.assertNotIn("auto", j)
+        self.assertEqual(auto_decisions(j), [])                                                      # (quyết định template là phần của Phase 10, kiểm ở test_templates)
 
     def test_named_tts_profile_in_preset_is_loaded_and_missing_one_rejects_the_job(self):
         tts_profile("giong_a", self.root)
@@ -213,11 +218,11 @@ class AutoPoolSubmitTest(FakeCFCase):
 
     def test_default_pool_names_need_no_override(self):
         orc = self.orc()                                                                                  # pool 'gameplay' + 'gameplay_vertical' đúng tên mặc định
-        self.assertNotIn("auto", orc.store.get_job(orc.submit(params()))["params"])
+        self.assertEqual(auto_decisions(orc.store.get_job(orc.submit(params()))["params"]), [])
 
     def test_fake_render_skips_pool_selection(self):
         write_config(self.root, adapters={"render": "fake"})
-        self.assertNotIn("auto", self.orc().store.get_job(self.orc().submit(params()))["params"])
+        self.assertEqual(auto_decisions(self.orc().store.get_job(self.orc().submit(params()))["params"]), [])
 
 
 class ConfigLocalTest(RootCase):

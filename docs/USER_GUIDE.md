@@ -53,6 +53,14 @@ Những việc còn phải tự làm (hệ thống không làm thay được):
 
 Mỗi kênh nhớ cấu hình của nó trong `channels\<id>\channel.json`: tên hiển thị, mẫu tiêu đề/mô tả, số tập đã đăng, watermark, giọng đọc ưa thích, video nền cho YouTube/TikTok, thiết lập đăng. Sửa một lần, dùng mãi. `.\cf.cmd channels` liệt kê kênh.
 
+### Template (giao diện thumbnail/video)
+
+Mỗi kênh chọn **3 template**: Thumbnail, YouTube, TikTok (Kênh → Template, hoặc `cf templates use <kênh> youtube_video youtube_framed`). Bạn **không** nhập tọa độ: khung, vùng video, vị trí chữ nằm trong template.
+
+Muốn kiểu mới: trang **Template** → *Mới* (hoặc *Duplicate* một mẫu có sẵn) → kéo/chỉnh trong Studio → *Lưu nháp* → *Kiểm tra* → *Render thử* → *Publish* → chọn nó trong Kênh. Sửa template đã publish tạo **bản nháp mới** (v2 → v3): job đã tạo vẫn dùng đúng bản cũ, job mới dùng bản mới nhất đã publish. Template/asset của bạn nằm ở `contentflow_user\` (không mất khi cập nhật). Chi tiết: `docs/TEMPLATE_SYSTEM.md`.
+
+Đang dùng cấu hình bố cục cũ (frame/viewport trong config)? `cf doctor` sẽ nhắc; `cf templates migrate --apply` chuyển sang template (có sao lưu).
+
 ## 4. Chạy một phần pipeline
 
 Dùng khi chỉ cần một phần (lệnh nâng cao, `cf --advanced -h`):

@@ -12,6 +12,7 @@ from pathlib import Path
 from ..contracts import ErrorClass, StageError
 from ..output import metadata as MD
 from .config import Config
+from . import templates as TPL
 
 
 def channel_dir(cfg: Config, channel_id: str) -> Path:
@@ -44,6 +45,9 @@ def load_channel(cfg: Config, channel_id: str) -> dict:
             raise StageError(ErrorClass.POLICY, "INVALID_CHANNEL_CONFIG", f"{f}: gốc phải là object", resource="input")
         break
     ch = MD.normalize_channel(raw, channel_id)
+    ch["templates"], terrs = TPL.normalize_section((raw or {}).get("templates"))        # chọn template (Phase 10); tọa độ/layout không nằm ở Channel Config
+    if terrs:
+        raise StageError(ErrorClass.POLICY, "INVALID_CHANNEL_CONFIG", f"channel '{channel_id}': " + "; ".join(terrs), {"errors": terrs}, resource="input")
     ch["id"] = channel_id
     ch["loaded_from"] = str(src) if src else None
     if ch.get("watermark"):

@@ -69,3 +69,14 @@ Nút thắt là render (CPU). Có NVENC thì nhanh hơn nhiều (chưa đo: máy
 3. Kênh có `made_for_kids` đúng; `privacy` ở `private` cho tới khi tin tưởng.
 4. Đặt `--title` riêng (đừng đăng công khai tiêu đề của người khác).
 5. Chạy một job ngắn bằng TTS giả để xem toàn bộ gói output, rồi mới bật TTS/upload thật.
+
+### Template (Phase 10) — kiểm chứng thật
+
+| Hạng mục | Cách kiểm | Kết quả |
+|---|---|---|
+| Job thật (ffmpeg + ContentFlow thật) với template mặc định và template `thumb_gold`/`youtube_framed`/`tiktok_framed`: video 1920×1080, 3 part 1080×1920, thumbnail 1648×928, ảnh chụp khung hình đúng khung/vùng video | script smoke (VIDEO_ONLY từ audio mẫu), xem ảnh | OK |
+| Phase 8 end-to-end (YouTube thật → Source → render thật → output → nới target) vẫn đạt khi render dùng template builtin | `scripts/validate_real.py <URL>` | OK ("KẾT QUẢ: ĐẠT") |
+| Template: vòng đời, immutability, snapshot sống qua publish v3/restart/retry, invalidation theo kind, cache key, tương thích layout cũ, migrate, portable path, path traversal, import asset an toàn | `tests/test_templates*.py`, `modules/ContentFlow/tests/test_templating.py` (+ `real_ffmpeg`) | OK |
+| Template Studio bằng Chrome thật: tạo → kéo/nhập số → undo/redo → lưu → kiểm tra → xem trước → render thử → publish → chọn cho kênh → xem trước RUN; axe, tràn ngang ở 1440/390 px sáng/tối | `qa.mjs --only templates` (`real_templates.py`) | OK (75 kiểm tra) |
+
+**Chưa kiểm chứng / giới hạn:** chữ trong template **video** (renderer video chưa vẽ chữ); `align` chỉ `center`; thumbnail trong danh sách template là khung sơ đồ (xem trước thật trong Studio); NVENC/Linux/macOS như trước.

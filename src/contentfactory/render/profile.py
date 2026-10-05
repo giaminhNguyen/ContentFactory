@@ -25,7 +25,8 @@ DEFAULTS: dict = {
 RES_RX = re.compile(r"^(\d{3,5})x(\d{3,5})$")
 # phần của profile ảnh hưởng tới KẾT QUẢ video (vào khóa cache); deadline/retry thì không
 KEY_FIELDS = ("id", "resolution", "fps", "source_pool", "selection_mode", "source_processing", "encoder", "frame_path", "viewport",
-              "config_overrides")
+              "config_overrides", "template")
+LEGACY_LAYOUT_KEYS = ("frame_path", "viewport", "config_overrides")     # bố cục kiểu cũ trong profile: thay bằng template (D-92)
 
 
 def _merge(a: dict, b: dict) -> dict:
@@ -81,3 +82,28 @@ def pool_spec(profile: dict, config_render: dict | None) -> dict | None:
     sync.setdefault("remove_audio", True)
     sync.setdefault("encoder", "auto")
     return spec
+
+
+def has_legacy_layout(prof: dict) -> bool:
+    """Profile còn mang bố cục kiểu cũ (frame/viewport/override ContentFlow) — chỉ còn dùng làm tương thích, nên chuyển sang template."""
+    return (any(prof.get(k) for k in LEGACY_LAYOUT_KEYS) or bool((prof.get("thumbnail") or {}).get("config_overrides"))
+            or prof.get("resolution") != DEFAULTS.get(prof.get("id"), {}).get("resolution", prof.get("resolution")))
+
+
+def template_ref(snap: dict | None) -> dict | None:
+    """Phần nhận dạng của snapshot template (vào khóa cache/report): đổi version, nội dung hoặc asset => khác."""
+    return {"id": snap["id"], "version": snap["version"], "fingerprint": snap.get("fingerprint")} if snap else None
+
+
+def apply_template(prof: dict, snap: dict | None) -> dict:
+    """Template (đã chốt vào job) quyết định khung hình/độ phân giải/fps; layout kiểu cũ trong profile bị bỏ qua (có cảnh báo ở lúc tạo job)."""
+    if not snap:
+        return prof
+    p = copy.deepcopy(prof)
+    w, h = snap["summary"]["canvas"]
+    fps = snap["summary"].get("fps")
+    p.update(width=int(w), height=int(h), resolution=f"{w}x{h}", aspect_ratio=f"{w}:{h}", frame_path=None, viewport=None, config_overrides={},
+             template=template_ref(snap))
+    if fps:
+        p["fps"] = int(fps)
+    return p

@@ -265,6 +265,19 @@ class Doctor:
                     st = "fail" if getattr(self.adapters.get("render"), "requires_pool", False) else st
             self.add(f"channel.{cid}", g, st, f"'{ch['name']}'" + (": " + "; ".join(notes) if notes else ", preset đủ"))
 
+    def templates(self) -> None:
+        g = "Template"
+        render = self.adapters.get("render")
+        if not _real(self.cfg, "render") or not getattr(render, "supports_templates", False):
+            self.add("templates", g, "skip", "adapter render hiện tại không dùng template ContentFlow")
+            return
+        from .template_ops import TemplateOps
+        for n, item in enumerate(TemplateOps(self.cfg, api=render.templates).health()):
+            first = item["message"].split(":")[0][:40]
+            self.add("templates" if n == 0 else f"templates.{n}", g, item["level"], item["message"],
+                     "cập nhật module ContentFlow (setup/update) hoặc chọn template khác cho kênh" if item["level"] == "fail" else
+                     "chạy `cf templates migrate`" if "migrate" in item["message"] else "")
+
     # -------------------------------------------------------------------------------------------------- chạy tất cả
     @staticmethod
     def _free_gb(p: Path) -> float:
@@ -279,7 +292,7 @@ class Doctor:
         except Exception as e:                                          # noqa: BLE001 - cấu hình sai: ghi nhận, vẫn chạy các kiểm tra còn lại
             self.adapter_error = f"cấu hình adapter lỗi: {e}"
             self.add("adapters", "Hệ thống", "fail", self.adapter_error, "sửa config/config.json hoặc config.local.json")
-        for step in (self.system, self.media, self.components, self.sources, self.channels):
+        for step in (self.system, self.media, self.components, self.sources, self.channels, self.templates):
             try:
                 step()
             except Exception as e:                                      # noqa: BLE001 - một kiểm tra hỏng không được làm mất cả báo cáo

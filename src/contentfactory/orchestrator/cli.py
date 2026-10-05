@@ -113,12 +113,13 @@ Lệnh cơ bản:
   resume    tiếp tục job đang bị giữ (mất mạng, quota...) ; retry: chạy lại job lỗi
   doctor    kiểm tra máy đã sẵn sàng chưa và cần làm gì
   channels  danh sách kênh; channel-init <id>: tạo kênh mới (preset đầy đủ)
+  templates template thumbnail/video (ContentFlow): list, use <kênh> <khóa> <id>, publish, duplicate, test-render, migrate...
   setup / update / start / demo   cài đặt máy mới / cập nhật / chạy dịch vụ nền / chạy thử nhanh
 
 Lệnh nâng cao: cf --advanced -h   (submit, plan, run, config, pools, retry-part, sequences, cleanup, resources...)
 """
 
-BASIC = {"ui", "samples", "go", "status", "open", "resume", "retry", "doctor", "channels", "channel-init", "setup", "update", "start", "demo"}
+BASIC = {"ui", "samples", "go", "status", "open", "resume", "retry", "doctor", "channels", "channel-init", "templates", "setup", "update", "start", "demo"}
 
 
 def build_parser(advanced: bool) -> argparse.ArgumentParser:
@@ -165,6 +166,14 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     ci.add_argument("--kids", choices=["yes", "no"], default="no", help="made_for_kids của kênh (khai báo COPPA, mặc định no)")
     ci.add_argument("--last-used", type=int, default=0, help="số Full Audio đã đăng trước đó")
     ci.add_argument("--force", action="store_true")
+    tp = add("templates", "template thumbnail/video: list | show | use | validate | publish | archive | duplicate | preview | test-render | assets | migrate")
+    tp.add_argument("action", nargs="?", default="list", choices=["list", "show", "use", "validate", "publish", "archive", "duplicate", "preview", "test-render", "assets", "migrate"])
+    tp.add_argument("args", nargs="*", help="show/validate/archive/preview/test-render <id> | use <kênh> <khóa> <id> | publish <id> <version> | duplicate <id> <id mới>")
+    tp.add_argument("--version", help="số version hoặc latest_published (use: ghim version)")
+    tp.add_argument("--type", choices=["thumbnail", "video"])
+    tp.add_argument("--fallback", help="use: id template dự phòng (chỉ khi khai báo rõ ràng)")
+    tp.add_argument("--apply", action="store_true", help="migrate: thực sự ghi (mặc định chỉ liệt kê)")
+    tp.add_argument("--json", action="store_true")
     for name, hp in (("setup", "cài đặt máy mới (idempotent)"), ("update", "cập nhật code/module/dependency")):
         sp = add(name, hp)
         sp.add_argument("--yes", action="store_true", help="không hỏi, dùng mặc định")
@@ -209,9 +218,68 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     rp = add("retry-part", "render lại đúng một part TikTok của job (ở render_tiktok)")
     rp.add_argument("job_id")
     rp.add_argument("part", type=int)
+    rr = add("rerender", "dựng lại video/thumbnail của job bằng template HIỆN TẠI của kênh (job mới; không chạy lại Story/TTS/Audio)")
+    rr.add_argument("job_id")
+    rtp = add("retemplate", "chọn lại template cho MỘT kind của job (thumbnail|youtube|tiktok) và chốt snapshot mới")
+    rtp.add_argument("job_id")
+    rtp.add_argument("kind", choices=["thumbnail", "youtube", "tiktok"])
+    rtp.add_argument("template_id")
+    rtp.add_argument("--version", help="ghim version (mặc định latest_published)")
     cl = add("cleanup", "Auto Cleanup ngay (không đụng output/); --dry-run để chỉ xem")
     cl.add_argument("--dry-run", action="store_true")
     return ap
+
+
+def _templates_cmd(a: argparse.Namespace, root: Path) -> int:
+    from ..contracts import StageError
+    from .template_ops import TemplateOps
+    try:
+        ops = TemplateOps(load_config(root))
+        act, args = a.action, a.args
+        out = None
+        if act == "list":
+            out = ops.list(a.type, include_archived=True)
+            if not a.json:
+                for r in out:
+                    pub = f"v{r['latest_published']}" if r["latest_published"] else "-"
+                    print(f"{r['id']:22} {r['type']:9} {r['scope']:8} publish={pub:4} {'draft=v' + str(r['draft']) if r['draft'] else '':9} "
+                          f"{(r['name'] or '')[:28]:28} {','.join(u['channel'] + ':' + u['key'] for u in r['used_by'])}")
+                return 0
+        elif act == "show":
+            out = ops.api.get_template(id=args[0], version=int(a.version) if a.version and a.version.isdigit() else (a.version or "latest"))
+        elif act == "use":
+            ch, key, tid = args[:3]
+            out = ops.set_channel_template(ch, key, tid, int(a.version) if a.version and a.version.isdigit() else "latest_published", a.fallback)
+        elif act == "validate":
+            out = ops.api.validate(id=args[0], version=int(a.version) if a.version else None)
+            if not a.json:
+                for x in out["errors"] + out["warnings"]:
+                    print(f"{x['level']:8} {x['message']}")
+                print("OK" if out["ok"] else "KHÔNG HỢP LỆ")
+                return 0 if out["ok"] else 1
+        elif act == "publish":
+            out = ops.api.publish(id=args[0], version=int(args[1]))
+        elif act == "archive":
+            out = ops.api.archive(id=args[0], version=int(a.version) if a.version else None)
+        elif act == "duplicate":
+            out = ops.api.duplicate(id=args[0], new_id=args[1])
+        elif act in ("preview", "test-render"):
+            fn = ops.api.preview if act == "preview" else ops.api.test_render
+            out = fn(id=args[0], version=int(a.version) if a.version else None)
+        elif act == "assets":
+            out = ops.api.list_assets(type=a.type)
+        elif act == "migrate":
+            out = ops.migrate(apply=a.apply)
+            if not a.json:
+                for x in out:
+                    print(f"{'đã chuyển' if a.apply else 'sẽ chuyển'}: {x['where']} ({x['scope']}) -> template {x['id']}")
+                print("không có bố cục kiểu cũ cần chuyển" if not out else ("" if a.apply else "Chạy lại với --apply để thực hiện (có sao lưu .bak)."))
+                return 0
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    except (StageError, IndexError, ValueError) as e:
+        print(f"LỖI: {getattr(e, 'message', None) or ('thiếu tham số: ' + str(e) if isinstance(e, IndexError) else e)}")
+        return 2
 
 
 def _fmt_bytes(n: float) -> str:
@@ -241,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ! {x}")
         print(r["next"])
         return 0
+    if a.cmd == "templates":
+        return _templates_cmd(a, root)
     if a.cmd in ("doctor", "channels", "channel-init", "setup", "update", "demo"):
         from . import doctor as DR
         from . import ops
@@ -307,6 +377,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if pl.errors else 0
     elif a.cmd == "resume":
         print(f"job {a.job_id}: {orc.resume(a.job_id, now=a.now)}")
+    elif a.cmd == "rerender":
+        from . import ops
+        new = ops.rerender(orc, a.job_id)
+        print(f"job {new}: dựng lại từ audio của job {a.job_id} bằng template hiện tại của kênh; chạy `cf run`")
+    elif a.cmd == "retemplate":
+        snap = orc.retemplate(a.job_id, a.kind, a.template_id, int(a.version) if a.version else "latest_published")
+        print(f"job {a.job_id}: {a.kind} -> {snap['id']}@v{snap['version']} (chỉ stage render tương ứng chạy lại)")
     elif a.cmd == "config":
         if a.auto_resume:
             orc.set_auto_resume(a.job_id, a.auto_resume == "on")

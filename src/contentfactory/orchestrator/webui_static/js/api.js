@@ -37,7 +37,26 @@ async function request(method, path, { body, query, signal, raw } = {}) {
   return data;
 }
 
+// Ảnh/video xem trước cần token (không đặt header được trên <img>/<video>): tải thành blob rồi dùng object URL. Cache theo đường dẫn.
+const blobs = new Map();
+async function blobUrl(path, { fresh = false } = {}) {
+  if (!fresh && blobs.has(path)) return blobs.get(path);
+  let res;
+  try { res = await fetch(path, { headers: { "X-CF-Token": token() }, cache: "no-store" }); }
+  catch { throw new ApiError("Không kết nối được tới ContentFactory.", { network: true }); }
+  if (!res.ok) {
+    let e = {};
+    try { e = (await res.json()).error || {}; } catch { /* không phải JSON */ }
+    throw new ApiError(e.message || `Lỗi ${res.status}`, { code: e.code || "HTTP_" + res.status, hint: e.hint || "", status: res.status });
+  }
+  const url = URL.createObjectURL(await res.blob());
+  blobs.set(path, url);
+  return url;
+}
+export function forgetBlob(path) { const u = blobs.get(path); if (u) { URL.revokeObjectURL(u); blobs.delete(path); } }
+
 export const api = {
+  blobUrl,
   get: (path, opts) => request("GET", path, opts),
   post: (path, body, opts) => request("POST", path, { ...opts, body: body ?? {} }),
   put: (path, body, opts) => request("PUT", path, { ...opts, body: body ?? {} }),

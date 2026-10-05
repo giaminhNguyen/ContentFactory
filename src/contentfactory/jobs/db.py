@@ -495,6 +495,14 @@ class JobStore:
                       (target_stage, P.INDEX[target_stage], now, job_id))
             self._note(c, job_id, j["state"], now, f"target_stage -> {target_stage}")
 
+    def set_params(self, job_id: str, params: dict, note: str, now: float | None = None) -> None:
+        """Ghi lại params của job (hành động explicit, vd chọn lại template); `note` vào lịch sử chuyển trạng thái."""
+        now = now or time.time()
+        with self._tx() as c:
+            j = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+            c.execute("UPDATE jobs SET params=?, updated_at=? WHERE id=?", (json.dumps(params, ensure_ascii=False), now, job_id))
+            self._note(c, job_id, j["state"], now, note)
+
     def set_auto_resume(self, job_id: str, value: bool, now: float | None = None) -> None:
         now = now or time.time()
         with self._tx() as c:

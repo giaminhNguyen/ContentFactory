@@ -44,6 +44,14 @@ Pool thread theo job; mỗi stage có **lane tài nguyên** (`limits`: mặc đ�
 
 `cf go` = submit + chạy + chờ. Preset kênh (`channel.json → preset`) áp vào params lúc tạo job (ưu tiên: người dùng > preset > mặc định); mọi lựa chọn tự động ghi vào `params.auto`. Auto TTS profile/pool, Auto Naming, Auto Cleanup, `doctor`, `setup/update/start`: xem D-82…D-87.
 
+## Template (Phase 10)
+
+Bố cục thumbnail/video là **template có phiên bản** do ContentFlow sở hữu; Channel Config chọn ID, job chốt version + snapshot (`params.templates`), RenderAdapter gửi tham chiếu (không tọa độ), ContentFlow compile template → renderer sẵn có. Xem `docs/TEMPLATE_SYSTEM.md`, D-92…D-97.
+
+```text
+Channel Config (template ID) → job: resolve version + snapshot → RenderAdapter → ContentFlow (Template Registry → Template Engine → Asset Registry → renderer)
+```
+
 ## Cấu hình
 
 `config/config.json` (commit) → `config/config.local.json` (máy này, không commit) → `config/secrets.local.env` (biến môi trường, không commit). Phần ngữ nghĩa vào snapshot của job; phần của máy (đường dẫn công cụ, token) thì không.

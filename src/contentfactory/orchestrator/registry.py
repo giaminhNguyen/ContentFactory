@@ -46,7 +46,7 @@ def _contentflow(cfg: Config) -> ContentFlowRender:
     return ContentFlowRender({"root": p(cf.get("root"), "modules/ContentFlow"), "python": cf.get("python"),
                               "base_dir": p(cf.get("base_dir"), "config/contentflow"),
                               "pools_dir": p(cfg.data.get("render", {}).get("pools_dir"), "runtime/pools"),
-                              "ffprobe": t.get("ffprobe"), "sync_wait_s": cf.get("sync_wait_s", 3600),
+                              "user_root": p(cf.get("user_root"), "contentflow_user"), "ffprobe": t.get("ffprobe"), "sync_wait_s": cf.get("sync_wait_s", 3600),
                               "verify_output": cf.get("verify_output", True)})
 
 
@@ -69,16 +69,19 @@ def _factories(cfg: Config) -> dict:
     }
 
 
+def build_adapter(cfg: Config, kind: str, factories: dict | None = None):
+    name = cfg["adapters"][kind]
+    factories = factories or _factories(cfg)
+    if (kind, name) in factories:
+        return factories[(kind, name)]()
+    if ":" in name:
+        mod, cls_name = name.split(":", 1)
+        conf = cfg.data.get("adapter_config", {}).get(kind)
+        cls = getattr(importlib.import_module(mod), cls_name)
+        return cls(conf) if conf is not None else cls()
+    raise ValueError(f"adapter {kind}={name!r} không tồn tại")
+
+
 def build_adapters(cfg: Config) -> dict[str, object]:
-    factories, out = _factories(cfg), {}
-    for kind, name in cfg["adapters"].items():
-        if (kind, name) in factories:
-            out[kind] = factories[(kind, name)]()
-        elif ":" in name:
-            mod, cls_name = name.split(":", 1)
-            conf = cfg.data.get("adapter_config", {}).get(kind)
-            cls = getattr(importlib.import_module(mod), cls_name)
-            out[kind] = cls(conf) if conf is not None else cls()
-        else:
-            raise ValueError(f"adapter {kind}={name!r} không tồn tại")
-    return out
+    factories = _factories(cfg)
+    return {kind: build_adapter(cfg, kind, factories) for kind in cfg["adapters"]}

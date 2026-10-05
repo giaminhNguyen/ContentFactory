@@ -162,7 +162,7 @@ export async function mount(root, ctx) {
     for (const p of pv?.problems || []) {
       if (p.field === "kids") continue;
       if (p.field === "title") { titleField.setError(p.hint ? `${p.message} ${p.hint}` : p.message); continue; }
-      problems.append(alertBox({ tone: "wait", title: p.message, body: p.hint || null }));
+      problems.append(alertBox({ tone: "wait", title: p.message, body: p.hint || null, actions: p.code === "INVALID_CHANNEL_TEMPLATE" ? [btn({ label: "Sửa template của kênh", size: "sm", href: `#/channels/${s.channel}` })] : [] }));
     }
     if (!(pv?.problems || []).some((p) => p.field === "title")) titleField.setError(null);
     const ok = !!(pv && pv.can_run) && !s.running;
@@ -210,7 +210,11 @@ export async function mount(root, ctx) {
     previewBox.append(h("div", { class: "label" }, "Hệ thống sẽ làm"), plan);
     const lines = [];
     lines.push(`Kênh “${pv.channel_name}”: tập kế tiếp là Full Audio ${pv.sequence_next}; chế độ đăng mặc định: ${pv.privacy}.`);
-    for (const a of pv.auto || []) lines.push(`Tự chọn ${a.what}: ${typeof a.value === "object" ? Array.isArray(a.value) ? a.value.join(", ") : "theo preset" : a.value} — ${a.why}`);
+    if (pv.templates && Object.keys(pv.templates).length) {
+      const L = { thumbnail: "Thumbnail", youtube: "YouTube", tiktok: "TikTok" };
+      lines.push("Template: " + Object.entries(pv.templates).map(([k, t]) => `${L[k] || k}: ${t.name || t.id} (v${t.version})`).join(" · "));
+    }
+    for (const a of (pv.auto || []).filter((x) => !String(x.what).startsWith("template."))) lines.push(`Tự chọn ${a.what}: ${typeof a.value === "object" ? Array.isArray(a.value) ? a.value.join(", ") : "theo preset" : a.value} — ${a.why}`);
     previewBox.append(h("div", null, h("div", { class: "label small muted" }, "Đã tự nhận ra / tự chọn"), h("ul", { class: "autolist" }, ...lines.map((t) => h("li", null, t)))));
   }
 

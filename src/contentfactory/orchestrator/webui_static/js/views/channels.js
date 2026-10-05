@@ -4,6 +4,7 @@ import { h, clear, loadCss } from "../dom.js";
 import { icon } from "../icons.js";
 import { btn, busy, field, input, select, alertBox, emptyState, errorState, skeleton, pageHead, toast, confirmDialog, openDialog, disclosure } from "../components.js";
 import * as motion from "../motion.js";
+import { templateBlock } from "./channel_templates.js";
 
 // ---------- tiện ích đường dẫn trên model (xóa khóa rỗng, dọn object rỗng) ----------
 const clone = (o) => JSON.parse(JSON.stringify(o ?? {}));
@@ -32,6 +33,7 @@ const TT_RES = [["", "Mặc định của hệ thống"], ["1080x1920", "1080×1
 
 export async function mount(root, ctx) {
   loadCss("/css/channels.css");
+  loadCss("/css/templates.css");
   const { app, navigate, scope, params } = ctx;
   let channels = [], editor = null, selected = params[0] || null, listAnimated = false;
 
@@ -211,6 +213,17 @@ function createEditor(host, id, { scope, onSaved }) {
     return field({ label, hint, control: ctl });
   }
 
+  // Chọn template được lưu ngay (API riêng) nên phải cập nhật cả model lẫn "base" để form không báo "chưa lưu" sai và không ghi đè lựa chọn khi Lưu.
+  function rebaseTemplates(key, ref) {
+    const apply = (o) => { if (ref) (o.templates ||= {})[key] = ref; else if (o.templates) { delete o.templates[key]; if (!Object.keys(o.templates).length) delete o.templates; } };
+    apply(model);
+    const b = JSON.parse(base || "{}");
+    apply(b);
+    base = canonStr(b);
+    if (rawArea && document.activeElement !== rawArea) rawArea.value = JSON.stringify(model, null, 2);
+    if (saveBtn) updateDirty();
+  }
+
   const sec = (title, ...kids) => h("section", { class: "form-section", "aria-label": title }, h("h3", null, title), ...kids);
 
   function build() {
@@ -244,14 +257,19 @@ function createEditor(host, id, { scope, onSaved }) {
           pick("preset.pools.youtube", { label: "Video nền cho YouTube", empty: "Tự chọn theo hướng khung hình", options: poolOpts("preset.pools.youtube") }),
           pick("preset.pools.tiktok", { label: "Video nền cho TikTok", empty: "Tự chọn theo hướng khung hình", options: poolOpts("preset.pools.tiktok") })),
         h("div", { class: "grid-2" },
-          pick("preset.render.youtube.resolution", { label: "Độ phân giải video YouTube", options: withCurrent(YT_RES, getp(model, "preset.render.youtube.resolution")) }),
+          getp(model, "preset.render.youtube.resolution")      // độ phân giải giờ do template quyết định (canvas): chỉ hiện khi kênh còn giá trị cũ để gỡ
+            ? pick("preset.render.youtube.resolution", { label: "Độ phân giải YouTube (cũ — template quyết định)", empty: "Bỏ (dùng template)", options: withCurrent(YT_RES, getp(model, "preset.render.youtube.resolution")) })
+            : h("div"),
           num("preset.render.youtube.fps", { label: "FPS video YouTube (tuỳ chọn)", hint: "Để trống = mặc định.", min: 1, max: 120, int: true })),
         h("div", { class: "grid-2" },
-          pick("preset.render.tiktok.resolution", { label: "Độ phân giải video TikTok", options: withCurrent(TT_RES, getp(model, "preset.render.tiktok.resolution")) }),
+          getp(model, "preset.render.tiktok.resolution")
+            ? pick("preset.render.tiktok.resolution", { label: "Độ phân giải TikTok (cũ — template quyết định)", empty: "Bỏ (dùng template)", options: withCurrent(TT_RES, getp(model, "preset.render.tiktok.resolution")) })
+            : h("div"),
           num("preset.render.tiktok.fps", { label: "FPS video TikTok (tuỳ chọn)", hint: "Để trống = mặc định.", min: 1, max: 120, int: true })),
         h("div", { class: "grid-2" },
           num("preset.tiktok.speed", { label: "Tốc độ audio TikTok", hint: "1–3, giữ nguyên cao độ. Trống = theo cài đặt chung.", min: 1, max: 3, step: "0.1" }),
           num("preset.tiktok.target_part_sec", { label: "Độ dài mỗi part TikTok (phút)", hint: "Hệ thống cắt ở ranh giới câu/đoạn gần nhất. Trống = theo cài đặt chung.", min: 0.25, max: 30, step: "0.25", scale: 60 }))),
+      sec("Template thumbnail & video", templateBlock(id, { onSaved: rebaseTemplates })),
       sec("Đăng YouTube",
         h("div", { class: "grid-2" },
           pick("publishing.privacy", { label: "Chế độ đăng", options: priv, empty: "Mặc định (private)", hint: "Nên để private cho tới khi bạn tin tưởng pipeline." }),
