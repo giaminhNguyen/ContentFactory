@@ -15,6 +15,7 @@ from ..adapters import fake
 from ..adapters.story_branch import StoryBranchAdapter
 from ..output.publisher import BuiltinOutputPublisher
 from ..source.chain import ProviderChain
+from ..tts.planner import RuleSegmentPlanner
 from ..source.providers import LocalSubtitleProvider, PlainTextProvider, SubtitleSupperVipProvider, YtDlpProvider
 from .config import Config
 
@@ -42,7 +43,7 @@ def _factories(cfg: Config) -> dict:
         ("source", "provider_chain"): lambda: _source_chain(cfg),
         ("story", "fake"): fake.FakeStory,
         ("story", "story_branch"): lambda: StoryBranchAdapter(sb, oh_root),
-        ("tts", "fake"): fake.FakeTTS, ("audio", "fake"): fake.FakeAudio, ("render", "fake"): fake.FakeRender,
+        ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("output", "builtin"): lambda: BuiltinOutputPublisher(cfg["output"]),
     }
@@ -55,7 +56,9 @@ def build_adapters(cfg: Config) -> dict[str, object]:
             out[kind] = factories[(kind, name)]()
         elif ":" in name:
             mod, cls_name = name.split(":", 1)
-            out[kind] = getattr(importlib.import_module(mod), cls_name)()
+            conf = cfg.data.get("adapter_config", {}).get(kind)
+            cls = getattr(importlib.import_module(mod), cls_name)
+            out[kind] = cls(conf) if conf is not None else cls()
         else:
             raise ValueError(f"adapter {kind}={name!r} không tồn tại")
     return out

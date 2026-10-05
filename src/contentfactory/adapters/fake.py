@@ -70,6 +70,13 @@ def _silence(seconds: float) -> bytes:
     return b"\x00\x00" * int(RATE * seconds)
 
 
+def _tone(seconds: float) -> bytes:
+    """Sóng vuông biên độ nhỏ (không phải im lặng) để QA im lặng/hỏng của TTS Manager có ý nghĩa."""
+    half = (3000).to_bytes(2, "little", signed=True) * 40 + (-3000).to_bytes(2, "little", signed=True) * 40
+    n = int(RATE * seconds)
+    return (half * (n // 80 + 1))[: 2 * n]
+
+
 HEALTH = {"ok": True, "fake": True}
 
 
@@ -115,13 +122,14 @@ class FakeTTS:
     engine_id = "fake"
 
     def capabilities(self) -> dict:
-        return {"max_chars": 600, "languages": ["vi"], "speed": False, "ssml": False, "sample_rate": RATE}
+        return {"max_chars": 600, "languages": ["vi"], "speed": False, "ssml": False, "sample_rate": RATE,
+                "engine_version": "fake-1", "output_formats": ["wav"]}
 
     def synthesize(self, segment, profile: dict, out_path: Path, ctx: StageContext):
         hook(ctx, f"tts_chunk_{segment['index']}")
         record_call(ctx, f"tts_chunk_{segment['index']}")
         secs = max(0.2, len(segment["text"]) / 400)
-        atomic_write(out_path, lambda tmp: _write_wav(tmp, _silence(secs)))
+        atomic_write(out_path, lambda tmp: _write_wav(tmp, _tone(secs)))
         return {"index": segment["index"], "duration_sec": secs}
 
     def health(self) -> dict:

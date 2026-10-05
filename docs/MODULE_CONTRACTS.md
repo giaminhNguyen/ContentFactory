@@ -178,48 +178,44 @@ class StoryAdapter(Protocol):
   - `FakeStory`: sinh 3 section có heading/marker để kiểm Assembler (test pipeline).
   - Dự phòng chưa xây: S2 `DirectLLMStoryAdapter` (D-03).
 
-## 3. TTSAdapter
+## 3. TTSAdapter, TTS Manager, profile, Analyzer (đã triển khai ở Phase 3)
 
-**Trách nhiệm:** biến text thành audio chunk với một engine cụ thể (HANDOFF §6). **Module mới hoàn toàn (A18).**
+**Trách nhiệm:** biến text thành audio chunk với một engine cụ thể (HANDOFF §6) mà **không khóa hệ thống vào engine nào**. Quyết định: `DECISIONS.md` D-57…D-63. Mã: `tts/` (schema, normalize, planner, qa, manager, analyzer, autotune, stage) và `adapters/command_tts.py`.
+
+### 3.1 Hợp đồng adapter (tối thiểu)
 
 ```python
-class TTSProfile(TypedDict):
-    engine: str; profile_version: str
-    voice: str; language: str
-    segment: {"preferred_chars": int, "max_chars": int, "min_chars": int}   # HANDOFF §6.3
-    break_priority: list[str]
-    pause_ms: {"paragraph": int, "sentence": int, "dialogue": int}
-    settings: dict                  # tham số riêng engine (speed, model, sample_rate...)
-    provenance: dict                # confidence/source cho từng rule (HANDOFF §7)
-
-class Segment(TypedDict):
-    index: int; text: str; pause_after_ms: int
-
-class ChunkResult(TypedDict):
-    index: int; audio: ArtifactRef | None; duration_sec: float; error: StageError | None
-
-class TTSCapabilities(TypedDict):
-    max_chars: int | None; languages: list[str]; speed: bool; ssml: bool
-    streaming: bool; output_formats: list[str]; sample_rate: int; max_concurrency: int
-
 class TTSAdapter(Protocol):
     engine_id: str
-    def capabilities(self) -> TTSCapabilities: ...
-    def synthesize(self, segment: Segment, profile: TTSProfile, ctx: StageContext) -> ChunkResult: ...
-    def health(self) -> HealthReport: ...
+    def capabilities(self) -> dict: ...                  # TTSCapabilities (3.2); trường thiếu được điền mặc định
+    def synthesize(self, segment: Segment, profile: dict, out_path: Path, ctx: StageContext) -> ChunkResult: ...
+    def health(self) -> dict: ...
+# Segment = {index, text, pause_after_ms, key}   ChunkResult = {index, duration_sec}
 ```
+- **Một segment → một file WAV** tại `out_path`, ghi atomic (`.part` → rename). `profile` là profile **flat** hiệu lực (3.3).
+- Lỗi: `TRANSIENT` (429/5xx/timeout/file hỏng: Manager thử lại riêng segment), `AUTH` (thiếu/hết hạn credential: job giữ `PAUSED_CREDENTIAL`), `RESOURCE` (+`resource`: GPU/OOM/thiếu module/…), `POLICY` (input/config sai). Adapter không retry, không cache, không cắt đoạn, không ghép.
+- **Thêm adapter mới = config, không sửa core:** `adapters.tts = "package.module:Class"`, `adapter_config.tts = {...}` ⇒ `Class(config)`. Engine CLI không cần viết code: `contentfactory.adapters.command_tts:CommandTTS` + spec (Analyzer sinh sẵn).
 
-- Adapter chỉ làm **một segment → một file audio**. Việc lập kế hoạch cắt, validator, retry từng chunk, cache, QA, ghép thuộc về *TTS Manager* (module điều phối nằm trên adapter, không phải adapter):
+### 3.2 Capability schema (`schema.CAPABILITY_FIELDS`)
+`max_chars` (int|null), `languages`, `voices`, `speed`, `ssml`, `streaming`, `batch`, `voice_cloning`, `requires_reference_audio`, `output_formats` (mặc định `["wav"]`), `sample_rate`, `max_concurrency`, `engine_version` (vào cache key), `cache_settings` (setting nào ảnh hưởng âm thanh; null = tất cả), `device`. Sai kiểu ⇒ `POLICY BAD_CAPABILITY`.
 
+### 3.3 Profile
+- **Flat (hiệu lực):** `engine, language, voice, model, settings{}, profile_version, segment{preferred_chars, max_chars, min_chars}, break_priority[], pause_ms{paragraph, sentence, dialogue}, joiner, normalize{strip_markdown, collapse_punct, ellipsis, ensure_terminal_punct, replacements[]}, qa{silence_ratio_max, duration_chars_per_sec, min_duration_sec}, retry{max_attempts, backoff_s[]}, planner{ai_retries}`. `resolve()` = mặc định ⊕ giá trị job (dạng trần, dạng annotated, hoặc dạng Phase 1 `{max_chars, pause_ms}`) kẹp theo capability.
+- **Annotated (lưu trữ):** `{schema: 1, engine, status: candidate|ready, <trường>: Fact, needs_user[{key, reason, detail, ref}], capabilities, meta}` với `Fact = {value, source, confidence, evidence[{ref, quote}], note?, alternatives?[]}`; `source` ∈ `official_docs|source_code|official_example|runtime_test|ai_inference|user|default`, `confidence` ∈ `high|medium|low`. Kiểm bằng `validate_annotated`.
+
+### 3.4 TTS Manager (`tts/manager.py`)
 ```text
-story.txt -> Preprocess -> SegmentPlanner(AI, theo rule) -> RuleValidator(tất định)
-          -> segments.json -> TTS Manager (retry từng chunk, cache) -> chunks/000001.wav
-          -> Audio QA -> master_audio (qua AudioProcessor.assemble)
+story.txt -> normalize_text -> Planner(rule|ai) -> validate_plan -> segments.json
+          -> mỗi segment: cache job-local -> cache chung -> adapter.synthesize (retry riêng) -> QA chunk -> sidecar + cache
+          -> AudioProcessor.assemble -> audio/master.wav ; tts/tts_manifest.json
 ```
+- Artifact stage `tts`: `audio_master` (+ `duration_sec`) và `tts_manifest` (JSON; schema 1; xem D-59). Adapter orchestrator-inject: `tts`, `audio`, `planner` (`rule` mặc định; `module:Class` cho planner khác, giao diện `plan(text, profile, feedback) -> list[Segment]`, thuộc tính `name`).
+- Validator (`validate_plan`) mã lỗi: `EMPTY_PLAN, BAD_INDEX, EMPTY_SEGMENT, NO_SPEECH, TOO_LONG, BAD_PAUSE, TEXT_MISMATCH`; cảnh báo: `SHORT, CUT_MID_SENTENCE`. QA chunk: `UNDECODABLE, TOO_SHORT, SILENT, DURATION_TOO_SHORT_FOR_TEXT, DURATION_TOO_LONG_FOR_TEXT` (+ `AudioProcessor.qa`).
+- **Cache key chunk:** D-59. Checkpoint tiến độ: `ctx.progress(done, total, "segments")`.
 
-- **Cache key chunk:** `text + engine + model + voice + relevant settings + profile_version` (HANDOFF §6.7).
-- **Lỗi:** quá `max_chars` → `POLICY` (lỗi planner/validator, không phải engine); 429/5xx → `TRANSIENT`; thiếu API key → `AUTH`.
-- Skill `gen-audio-queue` (VieNeu-TTS) có sẵn trong môi trường người dùng có thể là tham chiếu cho một adapter đầu tiên — **chưa audit**, không thuộc 3 project.
+### 3.5 Onboarding và Auto Tune
+- `tts.analyzer.analyze(root, engine, ai_infer) -> {engine, capabilities, profile(annotated candidate), adapter{kind, ready, spec|code, config}, needs_user, candidates, files}`; `fetch_reference`, `write_onboarding(result, out_dir)`; CLI `scripts/tts_onboard.py`. Không chạy mã của repo. Chi tiết và giới hạn: D-61.
+- `tts.autotune.AutoTuner(adapter, language, profile).run() -> TuneReport`, `apply_to_profile(profile, report)`; CLI `scripts/tts_tune.py`. Chỉ chạy khi người dùng yêu cầu. D-62.
 
 ## 4. AudioProcessor
 
@@ -395,7 +391,7 @@ Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `
 |---|---|---|---|
 | source | NEW → SOURCE_PROCESSING → SOURCE_READY | SourceAdapter + Transcript Processor | — → subtitle_raw, transcript_structured, transcript, metadata |
 | story | SOURCE_READY → STORY_RUNNING → STORY_READY | StoryAdapter + Story Assembler + validator bất biến | transcript, metadata → story_text, story_report |
-| tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTSAdapter + AudioProcessor | story_text → audio_master |
+| tts | STORY_READY → TTS_RUNNING → AUDIO_READY | TTS Manager + TTSAdapter + AudioProcessor + SegmentPlanner | story_text → audio_master, tts_manifest |
 | audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master → audio_youtube, audio_tiktok |
 | render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | RenderAdapter (GPU) | audio_youtube, metadata → video_youtube, thumbnail |
 | render_tiktok | TIKTOK_RENDER_READY → TIKTOK_RENDERING → OUTPUT_READY | RenderAdapter (GPU) | audio_tiktok → video_tiktok |
@@ -419,7 +415,7 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 | `OutputPublisher.publish` | `(job, manifest, cfg)` | `(OutputRequest, ctx)` với đường dẫn artifact | Module không đọc DB/manifest, chỉ nhận artifact |
 | `RenderAdapter` | có `sync_source`, `status` | chỉ `render_video`, `render_thumbnail`, `health` | Source Sync và reconcile thuộc Phase 5 |
 | `PublishAdapter` | có `find()` | chỉ `publish`, `health` | tra cứu sau crash thuộc Phase 6; Phase 1 dựa vào `idempotency_key = stage_key` |
-| `TTSAdapter` | có `capabilities()` đầy đủ | `capabilities()` trả dict tự do | schema chính thức thuộc Phase 3 |
+| `TTSAdapter` | có `capabilities()` đầy đủ | `capabilities()` trả dict tự do | **Phase 3 đã chốt schema** (§3.2): `normalize_capabilities` điền trường thiếu, adapter Phase 1 vẫn dùng được |
 | `StageContext` | có `secrets`, `deadline_s`, `on_progress` | có `params`, `inputs`, `config`, `cancel`, `log`, `stage_key`, `attempt` | thêm khi có nhu cầu thật |
 | Tên stage | `*_PLANNING/*_RENDERING`, `MASTER_AUDIO_READY` | theo danh sách Phase 1 (§9) | yêu cầu Phase 1; tương ứng `TTS_RUNNING`, `AUDIO_READY` |
 
@@ -494,7 +490,8 @@ class Stage:                         # mở rộng bảng ở §9
 | Kind | Validator |
 |---|---|
 | `story_text` | `story.validate.validate_story_text` (không heading/marker/rỗng/lặp) |
-| `audio_master`, `audio_youtube`, `audio_tiktok` | `AudioProcessor.qa` (đọc được, duration > 0, không im lặng bất thường) |
+| `audio_master`, `audio_youtube`, `audio_tiktok` | `AudioProcessor.qa` (đọc được, duration > 0, không im lặng bất thường); validator WAV của `orchestrator/validation.py` |
+| `tts_manifest` | JSON hợp lệ (schema §3.4) |
 | `video_youtube`, `video_tiktok`, `thumbnail` | tồn tại, đọc được, kích thước hợp lệ |
 | `transcript`, `transcript_structured`, `subtitle_raw`, `metadata` | khớp sha256 + provenance (`raw_sha256`, `parser_version`, `config_hash`) |
 

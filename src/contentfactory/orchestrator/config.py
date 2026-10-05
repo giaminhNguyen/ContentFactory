@@ -8,8 +8,10 @@ from pathlib import Path
 
 DEFAULTS: dict = {
     "paths": {"workspace": "workspace", "output": "output", "runtime": "runtime", "db": "runtime/contentfactory.db"},
-    "adapters": {"source": "fake", "story": "fake", "tts": "fake", "audio": "fake",
+    "adapters": {"source": "fake", "story": "fake", "tts": "fake", "planner": "rule", "audio": "fake",
                  "render": "fake", "publish": "fake", "output": "builtin"},
+    # Cấu hình truyền vào adapter nạp bằng "package.module:Class": {"tts": {...}} => Class(config). Adapter mới không cần sửa core.
+    "adapter_config": {},
     "limits": {"default": 2, "gpu": 1},                     # đồng thời theo tài nguyên (D-15)
     # retry (D-40): backoff có jitter, sàn/trần, ưu tiên Retry-After; quá ngưỡng thì GIỮ job thay vì ngủ trong hàng đợi
     "retry": {"max_attempts": 3, "backoff_s": [2, 10, 60], "max_interruptions": 5, "jitter": 0.2, "cap_s": 300,

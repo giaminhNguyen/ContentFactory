@@ -365,6 +365,8 @@ Audio full dự kiến thường khoảng 40-60 phút ở tốc độ YouTube.
 
 ## 6. TTS module - kiến trúc đã chốt
 
+> **Trạng thái:** framework **đã triển khai ở Phase 3** (Manager, Planner + Validator, retry theo segment, cache, manifest; xem `docs/MODULE_CONTRACTS.md` §3, `docs/DECISIONS.md` D-57…D-63). **Chưa có engine TTS thật**, chưa kiểm chứng với LLM thật. Phần mô tả dưới đây là thiết kế gốc; nơi khác biệt, tài liệu `docs/` là chuẩn.
+
 ### 6.1 Core flow
 
 ```text
@@ -532,6 +534,8 @@ Chunk lỗi quay lại retry queue.
 ---
 
 ## 7. TTS Auto-Profile - hướng mới đã chốt
+
+> **Trạng thái:** **đã triển khai khung ở Phase 3**: TTS Analyzer tĩnh (repo/docs/source → capabilities, profile candidate có `source`/`confidence`/evidence, ứng viên adapter, `needs_user`) và Auto Tune (benchmark nội bộ). Mới thử với repo mẫu và engine giả/CLI mẫu; phân tích bằng AI thật và engine thật là Phase 8 (`docs/DECISIONS.md` D-61, D-62).
 
 Người dùng không muốn tự nghiên cứu thông số từng TTS.
 

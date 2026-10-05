@@ -51,12 +51,13 @@ Không bắt đầu TTS (Phase 3).
 | Spike yt_uploader thật | build, tạo OAuth client, upload `private` lên kênh thử, đặt thumbnail, thử `idempotency_key` | R4; bỏ qua nếu chưa có OAuth client + kênh thử |
 | `doctor` bản đầu | gom `health()` của adapter, ffmpeg/NVENC, `media_worker health`, yt-dlp, claude CLI | HANDOFF §19 |
 
-## Phase 3 — TTS
+## Phase 3 — TTS framework + auto onboarding ✅ (đã xong; chưa có engine TTS thật)
 
-**Làm:** `TTSAdapter` cho **một** engine đầu tiên, TTSProfile/TTSRule schema, Text Preprocessor, SegmentPlanner (AI) + RuleValidator tất định, TTS Manager (chunk, retry từng chunk, cache), Audio QA, `AudioProcessor.assemble`.
-**Xong khi:** `story.txt` 40–60 phút → `master.wav`; hỏng một chunk chỉ retry chunk đó; chạy lại không gọi lại TTS (cache hit); đổi video/watermark/title không làm TTS chạy lại.
-**Ràng buộc:** không phụ thuộc publishing metadata ngoài identifier (`project.id`, `language`) (D-48).
-**Không làm ở phase này:** TTS Auto-Profile/Auto Tune (HANDOFF §7) — để Phase 8.
+**Đã làm:** hợp đồng `TTSAdapter` + capability schema; profile schema có `source/confidence/evidence` cho từng giá trị; Text Normalizer; Rule Segment Planner + AI Segment Planner (chỉ gom câu) + validator tất định; TTS Manager (retry riêng từng segment, QA chunk, cache hai tầng theo nội dung, `tts_manifest`); `CommandTTS` (adapter CLI tổng quát) và cơ chế `module:Class` + `adapter_config` (thêm engine không sửa core); TTS Analyzer (repo/docs/source → capabilities + profile candidate + ứng viên adapter + `needs_user`); Auto Tune framework (benchmark nội bộ, thang độ dài, phát hiện lỗi/timeout/hỏng/im lặng/bất thường). Xem `DECISIONS.md` D-57…D-63, `MODULE_CONTRACTS.md` §3.
+**Kiểm chứng:** +51 test (`tests/test_tts.py`; tổng 198): FakeTTS chạy cả pipeline, validator bắt kế hoạch xấu (mất/lặp/đổi chữ, cắt giữa từ, quá dài…), retry đúng segment lỗi, cache hit khi giống / miss khi đổi voice/model/settings/engine/phiên bản (và không miss khi chỉ đổi pause), cache hỏng không được tin, profile evidence/confidence, adapter ngoài repo và engine CLI onboard từ repo mẫu chạy trong pipeline không sửa core, Analyzer trên repo mẫu và nhiều dạng nguồn, Auto Tune với các kiểu hỏng; kiểm đột biến cho khóa cache, validator và retry theo segment.
+**Chưa kiểm chứng / chưa làm:** engine TTS thật nào (chỉ fake + CLI mẫu), LLM thật cho AI Planner và Analyzer, adapter HTTP tổng quát, synth song song, định dạng ngoài WAV, đọc số/ngày, chất lượng nghe, repo TTS thật cho extractor (D-61, D-62, D-63). **Việc cần làm tiếp để dùng thật:** chọn engine đầu tiên (Phase 8 hoặc trước đó), chạy `tts_onboard.py` + `tts_tune.py` trên nó, rồi nghe thử.
+**Ràng buộc giữ nguyên:** không phụ thuộc publishing metadata ngoài identifier (`project.id`, `language`) (D-48).
+Không bắt đầu Audio (Phase 4).
 
 ## Phase 4 — Audio
 
@@ -78,15 +79,16 @@ Không bắt đầu TTS (Phase 3).
 **Làm:** worker pool theo stage (HANDOFF §14), giới hạn đồng thời theo tài nguyên (GPU/đĩa, R12), nhiều job song song với workspace riêng, `update.ps1`, `doctor` đầy đủ (HANDOFF §19), CLI/UI tối thiểu (form Input/Channel/TTS/Pool + RUN).
 **Xong khi:** ≥3 job chạy chồng stage mà không tranh chấp; máy mới `git clone → setup → start` chạy được.
 
-## Phase 8 — TTS Auto-Profile (HANDOFF §7–8)
+## Phase 8 — Engine TTS thật + Auto-Profile bằng AI (HANDOFF §7–8)
 
-**Làm:** TTS Source Analyzer (repo/docs → adapter draft + candidate profile có `confidence/source`), Auto Tune benchmark tùy chọn, thêm engine thứ hai để kiểm chứng tính tổng quát của contract.
-**Xong khi:** thêm một TTS mới chỉ bằng repo/docs reference, không nhập tham số tay.
+**Đã có từ Phase 3:** Analyzer tĩnh, Auto Tune, `CommandTTS`, profile có evidence (D-57…D-63).
+**Làm:** onboard engine TTS thật đầu tiên và engine thứ hai (kiểm chứng contract tổng quát), nối LLM thật cho `ai_infer` của Analyzer và `AISegmentPlanner` (kiểm chứng chất lượng, chi phí), chạy Auto Tune trên engine thật, human review nghe thử, adapter HTTP tổng quát nếu engine cần, dọn dẹp cache TTS.
+**Xong khi:** thêm một TTS mới chỉ bằng repo/docs reference, không nhập tham số tay, và nghe được kết quả chấp nhận được.
 
 ## Phụ thuộc
 
 ```text
-P0 audit -> P1 core -> P2 Source + Story -> P3 TTS -> P4 Audio -> P5 Render -> P6 Publishing -> P7 Async + vận hành -> P8 TTS Auto-Profile
+P0 audit -> P1 core -> P2 Source + Story -> P3 TTS framework -> P4 Audio -> P5 Render -> P6 Publishing -> P7 Async + vận hành -> P8 TTS Auto-Profile
                   \-> (Việc chờ: kiểm chứng Story thật, spike ContentFlow/yt_uploader, doctor, job control layer) chạy song song khi cần
 ```
 Từ P3 trở đi là đánh số hiện hành (D-49); nội dung chi tiết là đề xuất. P3 cần `story.txt`, có thể dùng `FakeStory` cho tới khi Story thật được kiểm chứng. Thumbnail (P5) cần `project.title` và `channel.name`; Metadata Builder và Sequence Manager (P6) cần Channel Config.

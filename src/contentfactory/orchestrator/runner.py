@@ -380,6 +380,7 @@ class Orchestrator:
             ctx = StageContext(job_id=job_id, stage=stage.name, attempt=claim.attempt, stage_key=key or "",
                                workspace=jd, stage_dir=jd / stage.workdir, params=claim.params, inputs=inputs,
                                config={"output_dir": str(self.cfg.path("output")),
+                                       "tts_cache_dir": str(self.cfg.path("runtime") / "cache" / "tts"),
                                        "source": sem.get("source", self.cfg.data.get("source", {}))},
                                cancel=self.cancel, log=log, progress=self._progress_fn(job_id, stage.name))
             log("stage_started", stage_key=(key or "")[:12])
