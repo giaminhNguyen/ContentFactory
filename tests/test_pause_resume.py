@@ -256,6 +256,27 @@ class PolicyTableTest(RootCase):
     def out(self, err, used=0):
         return outcome_for(err, used, self.P, 1000.0, lambda: 0.5)
 
+    def test_backoff_exponent_is_capped_for_very_long_outages(self):
+        from contentfactory.orchestrator.monitor import CallableProbe
+        o = self.orc()
+        o.monitor.probes["network"] = CallableProbe("network", lambda: (False, "down"))
+        o.monitor.base_s, o.monitor.max_s = 30.0, 300.0
+        o.store.put_resource_status("network", False, "down", 0.0, 0.0, None, 5000)          # ~vài ngày mất mạng liên tục
+        st = o.monitor.check("network", force=True)                                         # trước đây: OverflowError làm sập cả vòng lặp
+        self.assertFalse(st["ok"])
+        self.assertAlmostEqual(st["next_check_at"] - st["checked_at"], 300.0, places=3)
+
+    def test_a_failing_background_task_does_not_kill_the_scheduler(self):
+        o = self.orc()
+        jid = o.submit(params(), auto_resume=False)
+
+        def boom():
+            raise RuntimeError("monitor hỏng")
+        o._monitor_tick = boom
+        o.run()
+        self.assertEqual(o.store.get_job(jid)["state"], P.PUBLISHED)                        # job vẫn chạy xong
+        self.assertTrue(any("background_task_error" in x for x in (self.root / "runtime" / "logs" / "orchestrator.jsonl").read_text(encoding="utf-8").splitlines()))
+
     def test_table(self):
         T = ErrorClass.TRANSIENT
         o = self.out(StageError(T, "X"))

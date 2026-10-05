@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <!--CF_TOKEN-->
+  <title>ContentFactory</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231d4ed8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2L4 14h7l-1 8 9-12h-7z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="/vendor/gsap.min.js" defer></script>
+  <script type="module" src="/js/main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#view">Bỏ qua điều hướng, tới nội dung</a>
+  <div id="banners"></div>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Điều hướng chính">
+      <div class="brand" id="brand"></div>
+      <nav class="nav" id="nav" aria-label="Các khu vực"></nav>
+      <div class="sidebar-foot" id="foot"></div>
+    </aside>
+    <main class="main" id="view" tabindex="-1" aria-labelledby="page-title"></main>
+  </div>
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+  <div id="dialogs"></div>
+  <div class="sr-only" id="route-live" aria-live="polite"></div>
+  <noscript>ContentFactory cần JavaScript để chạy giao diện. Bạn vẫn dùng được dòng lệnh: <code>cf go "&lt;link&gt;" --channel &lt;kênh&gt;</code>.</noscript>
+</body>
+</html>

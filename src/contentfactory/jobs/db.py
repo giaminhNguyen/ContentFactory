@@ -230,6 +230,22 @@ class JobStore:
     def list_jobs(self) -> list[dict]:
         return [self._job(r) for r in self._q("SELECT * FROM jobs ORDER BY seq")]
 
+    def job_index(self) -> list[dict]:
+        """Bản nhẹ cho UI: chỉ các cột đủ để phân nhóm trạng thái (không parse params/snapshot), mới nhất trước."""
+        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, updated_at FROM jobs ORDER BY seq DESC")]
+
+    def jobs_by_ids(self, ids: list[str]) -> list[dict]:
+        if not ids:
+            return []
+        rows = self._q(f"SELECT * FROM jobs WHERE id IN ({','.join('?' * len(ids))})", tuple(ids))
+        by = {r["id"]: self._job(r) for r in rows}
+        return [by[i] for i in ids if i in by]
+
+    def jobs_version(self) -> str:
+        """Dấu thay đổi rẻ cho polling: đổi khi có job mới hoặc bất kỳ job nào đổi trạng thái/tiến độ."""
+        r = self._q("SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM jobs")[0]
+        return f"{r['n']}:{r['u']}"
+
     def discard_job(self, job_id: str) -> None:
         """Dọn dẹp một job vừa tạo mà khâu khởi tạo (import artifact) thất bại; không dùng cho job đã chạy."""
         with self._tx() as c:
@@ -458,8 +474,8 @@ class JobStore:
             cp[stage] = {**info, "updated": now}
             done, total = info.get("done"), info.get("total")
             label = f"{stage} {done}/{total}" if total else (f"{stage} {done}" if done is not None else stage)
-            c.execute("UPDATE jobs SET checkpoint=?, progress=? WHERE id=?",
-                      (json.dumps(cp, ensure_ascii=False), label + (f" {info['detail']}" if info.get("detail") else ""), job_id))
+            c.execute("UPDATE jobs SET checkpoint=?, progress=?, updated_at=? WHERE id=?",
+                      (json.dumps(cp, ensure_ascii=False), label + (f" {info['detail']}" if info.get("detail") else ""), now, job_id))
 
     def add_artifacts(self, job_id: str, stage: str, artifacts: list[ArtifactRef], now: float | None = None) -> None:
         """Đăng ký artifact không do một stage_run sinh ra (stage giả `import`)."""

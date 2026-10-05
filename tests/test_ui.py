@@ -1,0 +1,590 @@
+"""Phase 9 — backend của giao diện: facade (service/service_admin) và máy chủ HTTP cục bộ (webui)."""
+import http.client
+import json
+import os
+import shutil
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+import wave
+from pathlib import Path
+
+from contentfactory.contracts import StageError
+from contentfactory.jobs import pipeline as P
+from contentfactory.orchestrator.config import load_config
+from contentfactory.orchestrator.runner import Orchestrator
+from contentfactory.orchestrator.service import Service
+from contentfactory.orchestrator.service_admin import AdminService
+from contentfactory.orchestrator.webui import App, UiServer
+from tests.support import RootCase, params, wait_until
+from tests.test_automode import LENIENT_AUDIO, tts_profile, write_channel, write_config
+from tests.test_render import FakeCFCase
+
+URL = "https://www.youtube.com/watch?v=abcdefghijk"
+KIDS_NO = {"made_for_kids": False}
+
+
+def write_wav(path: Path, seconds: float = 3.0) -> Path:
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * int(8000 * seconds))
+    return path
+
+
+class UiCase(RootCase):
+    def setUp(self):
+        super().setUp()
+        write_config(self.root, job_defaults={"tiktok": {"speed": 2.0, "target_part_sec": 0.8}}, auto={"hold_wait_s": 2})
+        write_channel(self.root, "kenh", {"name": "Kênh Thử", "sequence": {"last_used": 4}, "publishing": {"made_for_kids": False, "privacy": "unlisted"},
+                                          "preset": {"audio": LENIENT_AUDIO}})
+        write_channel(self.root, "chua_khai", {"name": "Chưa khai", "preset": {"audio": LENIENT_AUDIO}})
+        self.o = self.orc()
+        self.svc = Service(self.o)
+        self.adm = AdminService(self.o)
+
+    def run_job(self, **kw) -> str:
+        r = self.svc.create_run({"input": {"value": URL}, "channel": "kenh", "run": "full", **kw})
+        self.o.run()
+        return r["job_id"]
+
+    def story_file(self) -> Path:
+        p = self.root / "story.txt"
+        p.write_text("\n\n".join(f"Đoạn {i}: " + "Tôi đi trên con đường làng vắng. " * 6 for i in range(1, 6)), encoding="utf-8")
+        return p
+
+
+# ================================================================================== nhận dạng đầu vào
+class DetectTest(UiCase):
+    def test_youtube_urls(self):
+        for u, vid in ((URL, "abcdefghijk"), ("https://youtu.be/abcdefghijk?t=3", "abcdefghijk"), ("https://www.youtube.com/shorts/abcdefghijk", "abcdefghijk"),
+                       ("  https://m.youtube.com/watch?v=abcdefghijk&list=x ", "abcdefghijk")):
+            d = self.svc.detect_input(u)
+            self.assertEqual((d["ok"], d["kind"], d["details"]["video_id"]), (True, "youtube_url", vid), u)
+            self.assertEqual([m["id"] for m in d["modes"]], ["full", "through_tts", "story", "subtitle"])
+            self.assertFalse(d["needs_title"])
+
+    def test_bad_urls_and_paths_explain_what_to_do(self):
+        self.assertIn("YouTube", self.svc.detect_input("https://example.com/watch?v=abcdefghijk")["problem"])
+        self.assertIn("mã video", self.svc.detect_input("https://www.youtube.com/")["problem"])
+        self.assertIn("Không tìm thấy", self.svc.detect_input(str(self.root / "khong-co.srt"))["problem"])
+        self.assertEqual(self.svc.detect_input("")["kind"], "unknown")
+        (self.root / "x.exe").write_bytes(b"x")
+        self.assertIn(".exe", self.svc.detect_input(str(self.root / "x.exe"))["problem"])
+
+    def test_files_by_kind_and_valid_modes_only(self):
+        srt = self.root / "phu-de.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nXin chào\n", encoding="utf-8")
+        d = self.svc.detect_input(str(srt))
+        self.assertEqual((d["kind"], [m["id"] for m in d["modes"]]), ("transcript_file", ["full", "through_tts", "story"]))   # đã có phụ đề: không có "chỉ lấy phụ đề"
+        d = self.svc.detect_input(str(self.story_file()))
+        self.assertEqual((d["kind"], d["needs_title"], d["ambiguous"]), ("story_text", True, True))
+        self.assertEqual([m["id"] for m in d["modes"]], ["story_full", "tts_only", "video_after_tts"])
+        self.assertEqual(d["alternatives"], ["transcript_file"])
+        plain = self.root / "ghi-chu.txt"
+        plain.write_text("nội dung", encoding="utf-8")
+        d = self.svc.detect_input(str(plain))
+        self.assertEqual((d["kind"], d["ambiguous"], d["alternatives"]), ("transcript_file", True, ["story_text"]))
+        self.assertEqual(self.svc.detect_input(str(plain), "story_text")["kind"], "story_text")                                # người dùng đổi cách hiểu
+        d = self.svc.detect_input(str(write_wav(self.root / "a.wav")))
+        self.assertEqual((d["kind"], d["needs_title"]), ("audio", True))
+        self.assertEqual([m["id"] for m in d["modes"]], ["audio_full", "audio_package", "audio_video", "audio_youtube"])
+
+    def test_project_folder(self):
+        pkg = self.root / "out" / "p"
+        pkg.mkdir(parents=True)
+        (pkg / "project.json").write_text(json.dumps({"job_id": "000007", "version": 2, "project": {"title": "T"}}), encoding="utf-8")
+        d = self.svc.detect_input(str(pkg))
+        self.assertEqual((d["kind"], d["ok"], d["modes"], d["details"]["job_id"]), ("project", False, [], "000007"))
+        (self.root / "empty").mkdir()
+        self.assertIn("project.json", self.svc.detect_input(str(self.root / "empty"))["problem"])
+
+
+# ================================================================================== kế hoạch + tạo job
+class RunTest(UiCase):
+    def test_preview_asks_for_the_kids_declaration_only_when_needed(self):
+        pv = self.svc.preview_run({"input": {"value": URL}, "channel": "chua_khai", "run": "full"})
+        self.assertTrue(pv["needs_kids"] and not pv["can_run"])
+        self.assertEqual(pv["problems"][0]["code"], "MISSING_MADE_FOR_KIDS")
+        self.assertTrue(self.svc.preview_run({"input": {"value": URL}, "channel": "chua_khai", "run": "full", "kids": False})["can_run"])
+        self.assertTrue(self.svc.preview_run({"input": {"value": URL}, "channel": "chua_khai", "run": "story"})["can_run"])           # không tới publish: không cần khai
+        pv = self.svc.preview_run({"input": {"value": URL}, "channel": "kenh", "run": "full"})
+        self.assertEqual((pv["can_run"], pv["sequence_next"], pv["privacy"], pv["channel_name"]), (True, 5, "unlisted", "Kênh Thử"))
+        self.assertEqual([s["state"] for s in pv["plan"]["stages"]], ["run"] * 8)
+        self.assertTrue(pv["warnings"])                                                              # chưa đặt tên truyện: cảnh báo tiêu đề nguồn
+
+    def test_preview_shows_what_is_skipped_and_what_is_auto_selected(self):
+        tts_profile("giong_vi", self.root)
+        pv = self.svc.preview_run({"input": {"value": str(self.story_file())}, "channel": "kenh", "run": "tts_only", "title": "Tên"})
+        self.assertEqual({s["name"]: s["state"] for s in pv["plan"]["stages"]}, {"source": "off", "story": "off", "tts": "run", "audio": "off", "render_youtube": "off",
+                                                                                 "render_tiktok": "off", "output": "off", "publish": "off"})
+        self.assertIn("tts_profile", {a["what"] for a in pv["auto"]})
+        pv = self.svc.preview_run({"input": {"value": str(self.story_file())}, "channel": "kenh", "run": "tts_only"})
+        self.assertEqual((pv["can_run"], pv["problems"][0]["field"]), (False, "title"))
+        pv = self.svc.preview_run({"input": {"value": URL}, "channel": "khong_co_kenh_nay_va_loi", "run": "full", "kids": False})
+        self.assertTrue(pv["can_run"])                                                              # kênh chưa có file => cấu hình mặc định
+        write_channel(self.root, "hong", {"preset": {"nope": 1}})
+        pv = self.svc.preview_run({"input": {"value": URL}, "channel": "hong", "run": "full"})
+        self.assertEqual(pv["problems"][0]["code"], "INVALID_CHANNEL_CONFIG")
+
+    def test_every_mode_maps_to_the_right_start_and_target(self):
+        story, wav = str(self.story_file()), str(write_wav(self.root / "a.wav"))
+        cases = [({"input": {"value": URL}, "run": "subtitle"}, (None, "source")), ({"input": {"value": URL}, "run": "story"}, (None, "story")),
+                 ({"input": {"value": URL}, "run": "through_tts"}, (None, "tts")),
+                 ({"input": {"value": story}, "run": "tts_only", "title": "T"}, ("tts", "tts")),
+                 ({"input": {"value": story}, "run": "video_after_tts", "title": "T"}, ("tts", "render_tiktok")),
+                 ({"input": {"value": story}, "run": "story_full", "title": "T", "kids": False}, ("tts", "publish")),
+                 ({"input": {"value": wav}, "run": "audio_video", "title": "T"}, ("audio", "render_tiktok")),
+                 ({"input": {"value": wav}, "run": "audio_youtube", "title": "T"}, ("audio", "render_youtube")),
+                 ({"input": {"value": wav}, "run": "audio_package", "title": "T"}, ("audio", "output")),
+                 ({"input": {"value": wav}, "run": "audio_full", "title": "T", "kids": False}, ("audio", "publish"))]
+        for payload, (start, target) in cases:
+            r = self.svc.create_run({"channel": "kenh", **payload})
+            j = self.o.store.get_job(r["job_id"])
+            self.assertEqual((j["start_stage"], j["target_stage"]), (start or "source", target), payload["run"])
+            self.assertEqual(j["params"]["ui"]["sig"] is not None, True)
+
+    def test_full_path_from_each_partial_input_reaches_the_package(self):
+        r = self.svc.create_run({"input": {"value": str(write_wav(self.root / "a.wav"))}, "channel": "kenh", "run": "audio_package", "title": "Có sẵn audio"})
+        self.o.run()
+        d = self.svc.job_detail(r["job_id"])
+        self.assertEqual(d["status"], "completed")
+        self.assertTrue(Path(d["output"]["project_dir"]).is_dir())
+        self.assertEqual([p["state"] for p in d["pipeline"]], ["provided", "not_planned", "provided", "done", "done", "done", "done", "not_planned"])    # metadata + audio do người dùng đưa vào
+        r2 = self.svc.create_run({"input": {"value": str(self.story_file())}, "channel": "kenh", "run": "story_full", "title": "Từ truyện", "kids": False})
+        self.o.run()
+        d2 = self.svc.job_detail(r2["job_id"])
+        self.assertEqual(d2["status"], "completed")
+        self.assertEqual([p["state"] for p in d2["pipeline"]][:2], ["provided", "provided"])        # tên + truyện do người dùng đưa vào: không bị hiểu nhầm là hệ thống đã chạy
+        self.assertEqual([p["state"] for p in d2["pipeline"]][2:], ["done"] * 6)
+
+    def test_request_id_and_same_input_dedupe(self):
+        a = self.svc.create_run({"request_id": "r1", "input": {"value": URL}, "channel": "kenh", "run": "full"})
+        b = self.svc.create_run({"request_id": "r1", "input": {"value": URL}, "channel": "kenh", "run": "full"})
+        self.assertEqual((a["deduped"], b["deduped"], b["reason"], b["job_id"]), (False, True, "request", a["job_id"]))
+        c = self.svc.create_run({"request_id": "r2", "input": {"value": URL}, "channel": "kenh", "run": "full"})
+        self.assertEqual((c["deduped"], c["reason"], c["job_id"]), (True, "same_input_running", a["job_id"]))
+        d = self.svc.create_run({"request_id": "r3", "input": {"value": URL}, "channel": "kenh", "run": "story"})
+        self.assertFalse(d["deduped"])                                                          # chế độ khác = việc khác
+        self.assertEqual(len(self.o.store.list_jobs()), 2)
+        self.svc2 = Service(self.o)
+        self.assertTrue(self.svc2.create_run({"request_id": "r1", "input": {"value": URL}, "channel": "kenh", "run": "full"})["deduped"])   # nhớ qua lần khởi động lại
+        self.o.run()
+        e = self.svc.create_run({"request_id": "r4", "input": {"value": URL}, "channel": "kenh", "run": "full"})
+        self.assertFalse(e["deduped"])                                                          # job cũ đã xong: chạy lại có chủ ý thì tạo job mới
+
+    def test_validation_errors_create_no_job(self):
+        story = str(self.story_file())
+        bad = [({"input": {"value": story}, "run": "tts_only"}, "MISSING_TITLE"), ({"input": {"value": URL}, "run": "tts_only"}, "INVALID_RUN_MODE"),
+               ({"input": {"value": "https://example.com/x"}, "run": "full"}, "INVALID_INPUT"), ({"input": {"value": URL}, "run": "full", "channel": "chua_khai"}, "MISSING_MADE_FOR_KIDS")]
+        for payload, code in bad:
+            with self.assertRaises(StageError) as e:
+                self.svc.create_run({"channel": "kenh", **payload})
+            self.assertEqual(e.exception.code, code, payload)
+        self.assertEqual(self.o.store.list_jobs(), [])
+
+    def test_remember_kids_declaration_writes_the_channel_once(self):
+        self.svc.create_run({"input": {"value": URL}, "channel": "chua_khai", "run": "full", "kids": True, "remember_kids": True})
+        ch = json.loads((self.root / "channels" / "chua_khai" / "channel.json").read_text(encoding="utf-8"))
+        self.assertIs(ch["publishing"]["made_for_kids"], True)
+        self.assertEqual(ch["preset"], {"audio": LENIENT_AUDIO})                                  # phần còn lại của kênh không bị đụng
+        self.assertFalse(self.svc.preview_run({"input": {"value": URL}, "channel": "chua_khai", "run": "full"})["needs_kids"])
+
+
+# ================================================================================== danh sách + chi tiết
+class JobsViewTest(UiCase):
+    def test_list_counts_filters_pagination_and_version(self):
+        done = self.run_job()
+        held = self.svc.create_run({"input": {"value": URL + "1"}, "channel": "kenh", "run": "full", "auto_resume": False})["job_id"]
+        self.o.store.get_job(held)
+        l = self.svc.list_jobs()
+        self.assertEqual(l["counts"]["all"], 2)
+        self.assertEqual(l["counts"]["completed"], 1)
+        row = next(j for j in l["jobs"] if j["id"] == done)
+        self.assertEqual((row["status"], row["fraction"], row["title"], row["channel"]), ("completed", 1.0, "Truyện thử nghiệm", "kenh"))
+        self.assertTrue(Path(row["output_dir"]).is_dir())
+        self.assertEqual(self.svc.list_jobs("completed")["total"], 1)
+        self.assertEqual([j["id"] for j in self.svc.list_jobs("running")["jobs"]], [held])             # job mới tạo = đang xếp hàng
+        self.assertEqual(self.svc.list_jobs(limit=1)["has_more"], True)
+        self.assertEqual(len(self.svc.list_jobs(limit=1, offset=1)["jobs"]), 1)
+        v = l["version"]
+        self.assertEqual(self.svc.list_jobs(since=v), {"changed": False, "version": v})
+        self.o.run()
+        self.assertTrue(self.svc.list_jobs(since=v)["changed"])
+
+    def test_progress_updates_bump_the_version_so_polling_sees_them(self):
+        j = self.svc.create_run({"input": {"value": URL}, "channel": "kenh", "run": "full"})["job_id"]
+        v = self.svc.list_jobs()["version"]
+        time.sleep(0.01)
+        self.o.store.set_checkpoint(j, "source", {"done": 1, "total": 3, "detail": "x"})
+        self.assertNotEqual(self.svc.list_jobs(since=v)["version"], v)
+
+    def test_held_failed_and_attention_rows_carry_the_next_action(self):
+        self.o.monitor.probes["network"] = type("Down", (), {"resource": "network", "check": lambda s: (False, "down")})()
+        net = {"story": {"error_class": "RESOURCE", "resource": "network", "fail_until_attempt": 99}}
+        a = self.o.submit(params(fake=net), auto_resume=False)
+        b = self.o.submit(params(fake={"tts_chunk_2": {"error_class": "POLICY", "fail_until_attempt": 99}}), auto_resume=False)
+        c = self.o.submit(params(fake={"story": {"error_class": "AUTH", "fail_until_attempt": 99}}), auto_resume=False)
+        self.o.run()
+        rows = {j["id"]: j for j in self.svc.list_jobs()["jobs"]}
+        self.assertEqual((rows[a]["status"], rows[a]["next_action"], rows[a]["hold"]["title"]), ("waiting", "resume", "Đang chờ mạng"))
+        self.assertEqual((rows[b]["status"], rows[b]["next_action"]), ("failed", "retry"))
+        self.assertEqual((rows[c]["status"], rows[c]["next_action"]), ("attention", "resume"))
+        self.assertEqual({j["id"] for j in self.svc.list_jobs("attention")["jobs"]}, {b, c})          # lỗi nằm chung nhóm "cần xử lý"
+        self.assertEqual([j["id"] for j in self.svc.list_jobs("waiting")["jobs"]], [a])
+
+    def test_job_detail_pipeline_for_completed_held_and_failed(self):
+        self.o.monitor.probes["network"] = type("Down", (), {"resource": "network", "check": lambda s: (False, "down")})()
+        h = self.o.submit(params(fake={"story": {"error_class": "RESOURCE", "resource": "network", "fail_until_attempt": 99}}), auto_resume=False)
+        f = self.o.submit(params(fake={"tts_chunk_3": {"error_class": "POLICY", "fail_until_attempt": 99}}), auto_resume=False)
+        self.o.run()                                                                                  # lỗi trước: job thành công cùng nội dung sẽ lấp cache TTS làm mất lỗi giả lập
+        done = self.run_job()
+        d = self.svc.job_detail(done)
+        self.assertEqual([p["state"] for p in d["pipeline"]], ["done"] * 8)
+        self.assertEqual((d["diagnosis"]["status"], d["output"]["tiktok_parts"] > 0, d["output"]["youtube_title"].startswith("[Full Audio 5]")), ("completed", True, True))
+        dh = self.svc.job_detail(h)
+        self.assertEqual([p["state"] for p in dh["pipeline"]][:3], ["done", "held", "waiting"])
+        self.assertEqual(dh["diagnosis"]["resume"]["actions"], ["resume", "enable_auto_resume"])
+        df = self.svc.job_detail(f)
+        self.assertEqual([p["state"] for p in df["pipeline"]][:4], ["done", "done", "failed", "waiting"])
+        self.assertEqual((df["pipeline"][2]["done"], df["pipeline"][2]["total"]), (1, 6))
+        self.assertEqual(df["diagnosis"]["resume"]["actions"], ["retry"])
+        with self.assertRaises(StageError) as e:
+            self.svc.job_detail("999999")
+        self.assertEqual(e.exception.code, "JOB_NOT_FOUND")
+
+    def test_actions_resume_retry_and_auto_resume(self):
+        flag = self.root / "net.flag"
+        flag.write_text("x")
+        self.o.monitor.probes["network"] = type("P", (), {"resource": "network", "check": lambda s: (not flag.exists(), "flag")})()
+        f = self.o.submit(params(fake={"tts_chunk_3": {"error_class": "POLICY", "fail_until_attempt": 99}}), auto_resume=False)
+        j = self.o.submit(params(fake={"story": {"error_class": "RESOURCE", "resource": "network", "code": "NET", "fail_while_file": str(flag)}}), auto_resume=False)
+        self.o.run()
+        self.assertEqual(self.svc.resume(j)["result"], "still_down")
+        self.assertEqual(self.svc.set_auto_resume(j, True)["auto_resume"], True)
+        self.assertTrue(self.o.store.get_job(j)["auto_resume"])
+        flag.unlink()
+        self.assertEqual(self.svc.resume(j, now=True)["result"], "resumed")
+        self.o.run()
+        self.assertEqual(self.svc.job_detail(j)["status"], "completed")
+        self.assertEqual(self.svc.resume(j)["result"], "not_held")
+        with self.assertRaises(StageError):
+            self.svc.retry(j)                                                                    # chỉ job lỗi mới chạy lại được
+        self.assertEqual(self.svc.job_detail(f)["status"], "failed")
+        self.assertIn("Giọng đọc", self.svc.retry(f)["message"])
+        self.assertNotEqual(self.o.store.get_job(f)["state"], P.FAILED)                           # đã xếp lại đúng stage lỗi
+
+    def test_open_output_opens_only_the_pipelines_own_folder(self):
+        j = self.run_job()
+        opened = []
+        r = self.svc.open_output(j, opened.append)
+        self.assertEqual(opened, [r["opened"]])
+        self.assertEqual(Path(opened[0]).parent, self.root / "output")
+        shutil.rmtree(opened[0])
+        with self.assertRaises(StageError) as e:
+            self.svc.open_output(j, opened.append)
+        self.assertEqual(e.exception.code, "OUTPUT_MOVED")
+        self.assertEqual(len(opened), 1)
+        k = self.svc.create_run({"input": {"value": URL + "2"}, "channel": "kenh", "run": "subtitle"})["job_id"]
+        with self.assertRaises(StageError) as e:
+            self.svc.open_output(k, opened.append)
+        self.assertEqual(e.exception.code, "NO_OUTPUT")
+
+    def test_log_tail_is_bounded_and_pages_backwards(self):
+        j = self.run_job()
+        full = [json.loads(x) for x in (self.root / "workspace" / f"job_{j}" / "job.log.jsonl").read_text(encoding="utf-8").splitlines()]
+        a = self.svc.job_log(j, tail=10)
+        self.assertEqual(len(a["lines"]), 10)
+        self.assertEqual(a["lines"][-1]["event"], full[-1]["event"])
+        self.assertTrue(a["has_more"])
+        seen = a["lines"]
+        cursor = a
+        while cursor["has_more"]:
+            cursor = self.svc.job_log(j, tail=10, before=cursor["start"])
+            seen = cursor["lines"] + seen
+        self.assertEqual([x["event"] for x in seen], [x["event"] for x in full])                   # phân trang ngược khớp đúng toàn bộ log
+        self.assertEqual(self.svc.job_log("000099")["lines"], [])
+
+
+# ================================================================================== kênh
+class ChannelsTest(UiCase):
+    def test_get_save_validate_preview_and_create(self):
+        tts_profile("giong_vi", self.root)
+        g = self.svc.get_channel("kenh")
+        self.assertEqual(g["channel"]["name"], "Kênh Thử")
+        self.assertEqual(g["options"]["tts_profiles"][0]["name"], "giong_vi")
+        raw = g["raw"]
+        raw["preset"]["tts_profile"] = "giong_vi"
+        raw["title_template"] = "[Tập {sequence}] {project_title}"
+        self.svc.save_channel("kenh", raw)
+        self.assertEqual(self.svc.get_channel("kenh")["channel"]["title_template"], "[Tập {sequence}] {project_title}")
+        before = (self.root / "channels" / "kenh" / "channel.json").read_text(encoding="utf-8")
+        for bad in ({"name": ""}, {"title_template": "{khong_co}"}, {"preset": {"nope": 1}}, {"publishing": {"privacy": "ai-cung-xem"}}, "not-a-dict"):
+            with self.assertRaises(StageError) as e:
+                self.svc.save_channel("kenh", bad)
+            self.assertIn("CHANNEL", e.exception.code)
+        self.assertEqual((self.root / "channels" / "kenh" / "channel.json").read_text(encoding="utf-8"), before)      # sai thì không ghi
+        pv = self.svc.channel_preview("kenh", "Truyện Ma")
+        self.assertEqual((pv["youtube_title"], pv["sequence"], pv["thumbnail"]), ("[Tập 5] Truyện Ma", 5, {"channel_name": "Kênh Thử", "title": "Truyện Ma"}))
+        self.svc.create_channel("moi", "Kênh Mới", True, 9)
+        self.assertEqual(self.svc.get_channel("moi")["channel"]["sequence"]["last_used"], 9)
+        for bad_id in ("", "a b", "../x", "x" * 41):
+            with self.assertRaises(StageError):
+                self.svc.create_channel(bad_id, None, False)
+        with self.assertRaises(StageError) as e:
+            self.svc.create_channel("moi", None, False)
+        self.assertEqual(e.exception.code, "CHANNEL_EXISTS")
+        with self.assertRaises(StageError):
+            self.svc.get_channel("khong-co")
+        self.assertEqual({c["id"] for c in self.svc.list_channels()["channels"]}, {"kenh", "chua_khai", "moi"})
+
+    def test_asset_upload_is_sanitised_and_typed(self):
+        r = self.svc.save_channel_asset("kenh", "../../watermark của tôi!.wav", b"RIFFxxxx")
+        self.assertRegex(r["name"], r"^[\w.\-]+\.wav$")
+        self.assertTrue((self.root / "channels" / "kenh" / r["name"]).is_file())
+        self.assertFalse((self.root / "watermark.wav").exists())
+        for bad in ("virus.exe", ".htaccess", "x.txt"):
+            with self.assertRaises(StageError):
+                self.svc.save_channel_asset("kenh", bad, b"x")
+
+
+# ================================================================================== cài đặt / TTS / pool / doctor
+class AdminTest(UiCase):
+    def test_settings_roundtrip_validation_and_masking(self):
+        s = self.adm.get_settings()
+        keys = {i["key"] for i in s["items"]}
+        self.assertTrue({"auto_resume_default", "limits.gpu", "cleanup.enabled", "job_defaults.tiktok.speed"} <= keys)
+        self.assertEqual({i["group"] for i in s["items"]}, {g["id"] for g in s["groups"]})
+        r = self.adm.update_settings({"limits.gpu": 2, "auto_resume_default": False, "job_defaults.tiktok.speed": 1.5, "monitor.disk_min_free_gb.default": 2})
+        self.assertEqual(r["restart_needed"], ["monitor.disk_min_free_gb.default"])
+        self.assertEqual(self.o.cfg.limit("gpu"), 2)                                              # đọc "sống": có hiệu lực ngay
+        local = json.loads((self.root / "config" / "config.local.json").read_text(encoding="utf-8"))
+        self.assertEqual((local["limits"]["gpu"], local["auto_resume_default"], local["job_defaults"]["tiktok"]["speed"]), (2, False, 1.5))
+        item = next(i for i in self.adm.get_settings()["items"] if i["key"] == "limits.gpu")
+        self.assertEqual((item["value"], item["modified"]), (2, True))
+        self.assertEqual(load_config(self.root).limit("gpu"), 2)                                  # lần khởi động sau vẫn còn
+        for bad in ({"limits.gpu": 0}, {"limits.gpu": 2.5}, {"limits.gpu": "2"}, {"auto_resume_default": "yes"}, {"nope.key": 1}, {"publishing.defaults.privacy": "all"},
+                    {"job_defaults.tiktok.speed": 9}, {"job_defaults.language": ""}):
+            with self.assertRaises(StageError):
+                self.adm.update_settings(bad)
+        self.assertEqual(self.o.cfg.limit("gpu"), 2)                                              # lỗi thì không đổi gì
+        self.o.cfg.data["tools"]["yt_uploader"]["token"] = "SECRET-TOKEN-1"
+        eff = json.dumps(self.adm.effective_config())
+        self.assertNotIn("SECRET-TOKEN-1", eff)
+        self.assertIn("***", eff)
+
+    def test_broken_local_config_is_never_overwritten(self):
+        f = self.root / "config" / "config.local.json"
+        f.write_text("{hỏng", encoding="utf-8")
+        with self.assertRaises(StageError) as e:
+            self.adm.update_settings({"limits.gpu": 2})
+        self.assertEqual(e.exception.code, "CONFIG_LOCAL_INVALID")
+        self.assertEqual(f.read_text(encoding="utf-8"), "{hỏng")
+
+    def test_tts_overview_lists_profiles_without_leaking_credentials(self):
+        tts_profile("giong_vi", self.root, tuned=True)
+        tts_profile("api_voice", self.root, needs=[("env:CF_UI_TEST_KEY", "credential")])
+        os.environ["CF_UI_TEST_KEY"] = "gia-tri-bi-mat-123"
+        self.addCleanup(os.environ.pop, "CF_UI_TEST_KEY", None)
+        t = self.adm.tts_overview()
+        self.assertTrue(t["engine"]["is_fake"] and t["engine"]["ok"])
+        by = {p["name"]: p for p in t["profiles"]}
+        self.assertEqual(t["auto"]["selected"], "giong_vi")
+        self.assertTrue(by["giong_vi"]["selected_by_auto"] and by["giong_vi"]["autotune"]["works"])
+        self.assertEqual(by["api_voice"]["credentials"], [{"name": "CF_UI_TEST_KEY", "ready": True}])
+        self.assertNotIn("gia-tri-bi-mat-123", json.dumps(t))
+        d = self.adm.tts_profile_detail("giong_vi")
+        self.assertTrue(d["facts"] and {"path", "value", "source", "confidence"} <= set(d["facts"][0]))
+        with self.assertRaises(StageError):
+            self.adm.tts_profile_detail("khong-co")
+        with self.assertRaises(StageError) as e:
+            self.adm.tts_onboard("  ")
+        self.assertEqual(e.exception.code, "MISSING_REFERENCE")
+
+    def test_tts_onboard_runs_as_a_background_task_and_reports_errors(self):
+        tid = self.adm.tts_onboard(str(self.root / "khong-ton-tai"))["task_id"]
+        wait_until(lambda: self.adm.tasks.get(tid)["state"] != "running", timeout=20, what="task xong")
+        t = self.adm.tasks.get(tid)
+        self.assertEqual(t["state"], "error")
+        self.assertTrue(t["error"]["message"])
+        ref = Path(__file__).resolve().parent / "fixtures" / "tts_repo"
+        tid = self.adm.tts_onboard(str(ref))["task_id"]
+        wait_until(lambda: self.adm.tasks.get(tid)["state"] != "running", timeout=30, what="onboard xong")
+        t = self.adm.tasks.get(tid)
+        self.assertEqual(t["state"], "done", t)
+        self.assertTrue(t["result"]["engine"])
+        self.assertTrue((Path(t["result"]["out_dir"]) / "profile.candidate.json").is_file())
+
+    def test_doctor_runs_in_background_and_groups_results(self):
+        self.assertIsNone(self.adm.doctor_status()["report"])
+        self.assertTrue(self.adm.doctor_run()["started"])
+        wait_until(lambda: not self.adm.doctor_status()["running"] and self.adm.doctor_status()["report"], timeout=60, what="doctor xong")
+        st = self.adm.doctor_status()
+        labels = {g["label"]: g["status"] for g in st["groups"]}
+        self.assertEqual(labels["TTS"], "warning")                                                # TTS giả luôn bị cảnh báo
+        self.assertEqual(labels["Cơ sở dữ liệu"], "healthy")
+        self.assertTrue(st["summary"]["ready"])
+        self.assertEqual(sum(len(g["checks"]) for g in st["groups"]), len(st["report"]["checks"]))   # không check nào bị rơi khỏi nhóm
+
+
+class PoolsTest(FakeCFCase):
+    def test_pools_listing_sync_upsert_and_delete(self):
+        o = self.orc()
+        adm = AdminService(o)
+        p = adm.pools()
+        self.assertTrue(p["uses_pool"])
+        rows = {r["name"]: r for r in p["pools"]}
+        self.assertEqual(set(rows), {"gameplay", "gameplay_vertical"})
+        self.assertEqual((rows["gameplay"]["files"], rows["gameplay"]["orientation"], rows["gameplay_vertical"]["orientation"]), (2, None, "portrait"))
+        self.assertEqual(rows["gameplay"]["used_by"], ["youtube"])
+        tid = adm.pool_sync(None)["task_id"]
+        wait_until(lambda: adm.tasks.get(tid)["state"] != "running", timeout=60, what="sync xong")
+        self.assertEqual(adm.tasks.get(tid)["state"], "done")
+        self.assertEqual({r["name"]: r["state"] for r in adm.pools()["pools"]}, {"gameplay": "ready", "gameplay_vertical": "ready"})
+        new = self.root / "raw_new"
+        new.mkdir()
+        adm.pool_upsert("khac", str(new), "landscape")
+        row = next(r for r in adm.pools()["pools"] if r["name"] == "khac")
+        self.assertEqual((row["files"], row["problems"], row["state"]), (0, ["Thư mục không có video nào (mp4/mov/mkv…)."], "problem"))
+        local = json.loads((self.root / "config" / "config.local.json").read_text(encoding="utf-8"))
+        self.assertEqual(local["render"]["pools"]["khac"]["orientation"], "landscape")
+        for name, d in (("tên xấu!", str(new)), ("ok", str(self.root / "khong-co"))):
+            with self.assertRaises(StageError):
+                adm.pool_upsert(name, d, None)
+        adm.pool_delete("khac")
+        self.assertNotIn("khac", {r["name"] for r in adm.pools()["pools"]})
+        with self.assertRaises(StageError) as e:
+            adm.pool_delete("gameplay")
+        self.assertEqual(e.exception.code, "POOL_IN_BASE_CONFIG")
+
+    def test_fake_render_has_no_pools(self):
+        write_config(self.root, adapters={"render": "fake"})
+        p = AdminService(self.orc()).pools()
+        self.assertFalse(p["uses_pool"])
+        with self.assertRaises(StageError) as e:
+            AdminService(self.orc()).pool_sync(None)
+        self.assertEqual(e.exception.code, "NO_POOLS")
+
+
+# ================================================================================== HTTP
+class HttpTest(UiCase):
+    def setUp(self):
+        super().setUp()
+        self.opened: list[str] = []
+        self.app = App(self.o, run_loop=True, opener=self.opened.append)
+        self.srv = UiServer(self.app, 0)
+        self.srv.start()
+        self.addCleanup(self.srv.stop)
+        self.base = self.srv.url.rstrip("/")
+
+    def call(self, method, path, body=None, headers=None, token=True, raw=None):
+        h = {"Content-Type": "application/json", **({"X-CF-Token": self.app.token} if token else {}), **(headers or {})}
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        req = urllib.request.Request(self.base + path, method=method, data=data, headers=h)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.status, json.loads(r.read() or b"{}") if "json" in r.headers.get("Content-Type", "") else r.read(), r.headers
+        except urllib.error.HTTPError as e:
+            raw_body = e.read()
+            return e.code, (json.loads(raw_body) if raw_body else {}), e.headers
+
+    def test_token_host_and_origin_protection(self):
+        self.assertEqual(self.call("GET", "/api/bootstrap", token=False)[0], 401)
+        self.assertEqual(self.call("GET", "/api/bootstrap", headers={"X-CF-Token": "sai"}, token=False)[0], 401)
+        self.assertEqual(self.call("GET", "/api/bootstrap")[0], 200)
+        c = http.client.HTTPConnection("127.0.0.1", self.app.port, timeout=10)
+        c.request("GET", "/api/bootstrap", headers={"Host": "evil.example", "X-CF-Token": self.app.token})
+        self.assertEqual(c.getresponse().status, 403)                                                # chống DNS rebinding
+        c.close()
+        s, body, _ = self.call("POST", "/api/detect", {"value": URL}, headers={"Origin": "http://evil.example"})
+        self.assertEqual((s, body["error"]["code"]), (403, "BAD_ORIGIN"))                           # chống CSRF
+        self.assertEqual(self.call("POST", "/api/detect", {"value": URL}, headers={"Origin": f"http://127.0.0.1:{self.app.port}"})[0], 200)
+        self.assertEqual(self.srv.httpd.server_address[0], "127.0.0.1")
+
+    def test_static_files_token_injection_and_safety(self):
+        s, html, h = self.call("GET", "/", token=False)
+        self.assertEqual(s, 200)
+        self.assertIn(f'<meta name="cf-token" content="{self.app.token}">'.encode(), html)
+        self.assertIn("default-src 'self'", h["Content-Security-Policy"])
+        self.assertEqual(h["Cache-Control"], "no-store")
+        s, js, h = self.call("GET", "/js/main.js", token=False)
+        self.assertEqual((s, h["Content-Type"].split(";")[0]), (200, "text/javascript"))
+        etag = h["ETag"]
+        self.assertEqual(self.call("GET", "/js/main.js", headers={"If-None-Match": etag}, token=False)[0], 304)
+        self.assertEqual(self.call("GET", "/vendor/gsap.min.js", token=False)[0], 200)
+        self.assertEqual(self.call("GET", "/jobs/123", token=False)[0], 200)                         # đường dẫn client-side => index.html
+        for evil in ("/../../config/config.json", "/..%2F..%2Fconfig%2Fconfig.json", "/js/../../config.py", "/%2e%2e/%2e%2e/HANDOFF.md"):
+            s, body, _ = self.call("GET", evil, token=False)
+            self.assertNotIn(b"adapters", body if isinstance(body, bytes) else json.dumps(body).encode(), evil)
+        self.assertEqual(self.call("POST", "/", {}, token=False)[0], 405)
+
+    def test_api_errors_are_human_readable_json(self):
+        s, b, _ = self.call("GET", "/api/jobs/999999")
+        self.assertEqual((s, b["error"]["code"]), (404, "JOB_NOT_FOUND"))
+        self.assertTrue(b["error"]["message"] and "Traceback" not in json.dumps(b))
+        self.assertEqual(self.call("GET", "/api/khong-co")[0], 404)
+        self.assertEqual(self.call("DELETE", "/api/bootstrap")[0], 405)
+        s, b, _ = self.call("POST", "/api/detect", raw=b"{khong phai json")
+        self.assertEqual((s, b["error"]["code"]), (400, "BAD_JSON"))
+        s, b, _ = self.call("POST", "/api/detect", raw=b"[1,2]")
+        self.assertEqual(s, 400)
+        s, b, _ = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "tts_only"})
+        self.assertEqual((s, b["error"]["code"]), (400, "INVALID_RUN_MODE"))
+        s, b, _ = self.call("POST", "/api/detect", raw=b"x" * (1 << 21))
+        self.assertEqual(s, 413)
+        s, b, _ = self.call("PUT", "/api/settings", {"changes": {"limits.gpu": 99}})
+        self.assertEqual((s, b["error"]["code"]), (400, "INVALID_SETTING"))
+
+    def test_daily_flow_over_http_with_the_background_runner(self):
+        s, boot, _ = self.call("GET", "/api/bootstrap")
+        self.assertEqual((s, boot["runtime"]["runner"], {c["id"] for c in boot["channels"]} >= {"kenh"}), (200, True, True))
+        s, pv, _ = self.call("POST", "/api/preview", {"input": {"value": URL}, "channel": "kenh", "run": "full", "title": "Truyện Qua HTTP"})
+        self.assertTrue(pv["can_run"])
+        s, r, _ = self.call("POST", "/api/runs", {"request_id": "http-1", "input": {"value": URL}, "channel": "kenh", "run": "full", "title": "Truyện Qua HTTP"})
+        self.assertEqual((s, r["deduped"]), (200, False))
+        s, again, _ = self.call("POST", "/api/runs", {"request_id": "http-1", "input": {"value": URL}, "channel": "kenh", "run": "full", "title": "Truyện Qua HTTP"})
+        self.assertEqual((again["deduped"], again["job_id"]), (True, r["job_id"]))
+        wait_until(lambda: self.call("GET", f"/api/jobs/{r['job_id']}")[1]["status"] == "completed", timeout=60, what="job xong qua runner nền")
+        d = self.call("GET", f"/api/jobs/{r['job_id']}")[1]
+        self.assertEqual(d["title"], "Truyện Qua HTTP")
+        self.assertEqual(d["output"]["youtube_title"], "[Full Audio 5] | Truyện Qua HTTP")
+        s, o, _ = self.call("POST", f"/api/jobs/{r['job_id']}/open-output", {})
+        self.assertEqual((s, self.opened), (200, [o["opened"]]))
+        lst = self.call("GET", "/api/jobs?status=completed")[1]
+        self.assertEqual([j["id"] for j in lst["jobs"]], [r["job_id"]])
+        self.assertEqual(self.call("GET", f"/api/jobs/{r['job_id']}/log?tail=5")[1]["lines"][-1]["event"], "stage_succeeded")
+
+    def test_admin_endpoints_respond(self):
+        for p in ("/api/channels", "/api/channels/kenh", "/api/channels/kenh/preview?title=A", "/api/tts", "/api/pools", "/api/settings", "/api/config/effective", "/api/doctor", "/api/runtime"):
+            self.assertEqual(self.call("GET", p)[0], 200, p)
+        s, b, _ = self.call("PUT", "/api/channels/kenh/asset?name=wm.wav", raw=b"RIFFdata", headers={"Content-Type": "application/octet-stream"})
+        self.assertEqual((s, b["name"]), (200, "wm.wav"))
+        self.assertEqual(self.call("POST", "/api/cleanup", {"dry_run": True})[0], 200)
+        s, b, _ = self.call("POST", "/api/samples", {})
+        self.assertEqual(s, 200)
+        self.assertTrue(Path(b["story"]).is_file() and Path(b["audio"]).is_file())
+        self.assertEqual(self.call("GET", "/api/tasks/khong-co")[0], 404)
+
+    def test_concurrent_polls_do_not_break_the_runner(self):
+        r = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "full"})[1]
+        errors = []
+
+        def poll():
+            try:
+                for _ in range(15):
+                    self.call("GET", "/api/jobs")
+                    self.call("GET", f"/api/jobs/{r['job_id']}")
+            except Exception as e:                                                                   # noqa: BLE001
+                errors.append(e)
+        ts = [threading.Thread(target=poll) for _ in range(6)]
+        [t.start() for t in ts]
+        [t.join(60) for t in ts]
+        self.assertEqual(errors, [])
+        wait_until(lambda: self.call("GET", f"/api/jobs/{r['job_id']}")[1]["status"] == "completed", timeout=60, what="job xong")
+
+
+if __name__ == "__main__":
+    unittest.main()

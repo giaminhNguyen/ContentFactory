@@ -3,6 +3,7 @@
 > Handoff kiến trúc đã chốt từ quá trình trao đổi.
 > **Cập nhật (tích hợp Subtitle_supperVip):** Source/Subtitle nay là một `SourceAdapter` có nhiều provider, `Subtitle_supperVip` là provider chính, ContentFactory vẫn là orchestrator duy nhất giữ state. Xem **§2A Current Integrations** và **§4A Source / Subtitle**. Các điểm đã lệch khỏi bản thiết kế đầu tiên được chỉnh trực tiếp trong tài liệu này; lý do và bằng chứng nằm ở `docs/` (`CURRENT_SYSTEM_AUDIT.md`, `DECISIONS.md`).
 > **Cập nhật (Phase 7):** UX mặc định là Auto Mode: `cf go <URL> --channel K` (preset kênh nhớ TTS profile/pool/render/watermark/publishing; ưu tiên `params > preset > mặc định`; mọi lựa chọn tự động được ghi vào `params.auto`). Xem D-82…D-87, `README.md` (hướng dẫn người dùng).
+> **Cập nhật (Phase 9):** có giao diện web cục bộ `cf ui` (D-89): dán link → chọn kênh → RUN → Mở output; nhận dạng đầu vào, chế độ một phần, giải thích trạng thái giữ/lỗi, kênh/TTS/pool/cài đặt/Doctor; `cf samples` tạo dữ liệu mẫu để thử (D-90). Xem `docs/UI_GUIDE.md`.
 > Mục tiêu: một pipeline duy nhất biến một nguồn truyện/video đầu vào thành **1 video YouTube hoàn chỉnh** và **nhiều video TikTok theo part**, trong khi hệ thống dễ thay module, dễ debug, dễ setup máy mới và không bắt người dùng phải hiểu chi tiết kỹ thuật.
 
 ---

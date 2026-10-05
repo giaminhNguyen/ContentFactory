@@ -73,6 +73,7 @@ class Orchestrator:
         self._last_tick = 0.0
         self._last_cleanup = 0.0
         self._manifest_lock = threading.Lock()
+        self._guard_logged: dict[str, float] = {}
         self.pool_sync = PoolSyncService(self)
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
 
@@ -330,8 +331,8 @@ class Orchestrator:
                 for job_id, action in self.store.recover_expired(self.cfg["retry"]["max_interruptions"]):
                     self.log.emit("lease_recovered", "warning", job_id, action=action)
                     self._manifest(job_id)
-                self._monitor_tick()
-                self._cleanup_tick()
+                self._guarded(self._monitor_tick)
+                self._guarded(self._cleanup_tick)
                 self._schedule(executor, futures)
                 # until_idle: thoát khi không còn job ACTIVE; job bị giữ không giữ tiến trình lại (dùng --forever để theo dõi)
                 if until_idle and not futures and self.store.nonterminal_count() == 0:
@@ -368,6 +369,16 @@ class Orchestrator:
                 self.store.heartbeat(self.owner, self.cfg["lease_s"])
             except Exception as e:                  # DB bận tạm thời: lần sau thử lại
                 self.log.emit("heartbeat_error", "warning", error=repr(e))
+
+    def _guarded(self, fn) -> None:
+        """Việc nền (theo dõi tài nguyên, dọn dẹp) lỗi không được làm sập vòng lặp lập lịch: ghi log (tối đa mỗi 60 s mỗi loại) rồi chạy tiếp."""
+        try:
+            fn()
+        except Exception as e:                                   # noqa: BLE001
+            now = time.time()
+            if now - self._guard_logged.get(fn.__name__, 0) > 60:
+                self._guard_logged[fn.__name__] = now
+                self.log.emit("background_task_error", "error", task=fn.__name__, error=repr(e), traceback=traceback.format_exc())
 
     def _monitor_tick(self) -> None:
         """Theo dõi tài nguyên của các job bị giữ (luôn, kể cả Auto Resume OFF) và tự resume job có Auto Resume ON."""

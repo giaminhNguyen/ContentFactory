@@ -241,7 +241,7 @@
 - Metadata Builder chạy ở đầu stage `output` (hoặc stage riêng nếu Phase 6 thấy cần) để `title.txt`/`description.txt` của gói output và payload upload cùng một nguồn; kết quả là artifact `publish_metadata`.
 
 ### D-49 ✅ Đánh số phase hiện hành
-- Phase 3 = TTS (đã làm: framework + onboarding + Auto Tune, xem D-57…D-63); Phase 4 = Audio (đã làm: Audio Quality Pipeline, xem D-64…D-69; AudioProcessor: audio YouTube có watermark, tăng tốc + cắt part TikTok); Phase 5 = Render (đã làm: tích hợp ContentFlow, xem D-70…D-75; ContentFlow adapter, profile 16:9/9:16, Source Sync, thumbnail); Phase 6 = Publishing (đã làm: Metadata Builder, Channel Config, Sequence Manager, gói output có phiên bản, `yt_uploader`, xem D-76…D-81); Phase 7 = Auto Mode + vận hành (đã làm: `go`, channel preset, auto TTS/pool/naming/cleanup, `doctor`/`setup`/`update`/`start`, xem D-82…D-87); Phase 8 = TTS Auto-Profile. Thay cho cách đánh số ở D-28.
+- Phase 3 = TTS (đã làm: framework + onboarding + Auto Tune, xem D-57…D-63); Phase 4 = Audio (đã làm: Audio Quality Pipeline, xem D-64…D-69; AudioProcessor: audio YouTube có watermark, tăng tốc + cắt part TikTok); Phase 5 = Render (đã làm: tích hợp ContentFlow, xem D-70…D-75; ContentFlow adapter, profile 16:9/9:16, Source Sync, thumbnail); Phase 6 = Publishing (đã làm: Metadata Builder, Channel Config, Sequence Manager, gói output có phiên bản, `yt_uploader`, xem D-76…D-81); Phase 7 = Auto Mode + vận hành (đã làm: `go`, channel preset, auto TTS/pool/naming/cleanup, `doctor`/`setup`/`update`/`start`, xem D-82…D-87); Phase 8 = kiểm chứng production (D-88); Phase 9 = giao diện web, dữ liệu mẫu, sửa lỗi QA (D-89…D-91); TTS Auto-Profile/engine thật là hạng mục tiếp theo. Thay cho cách đánh số ở D-28.
 
 ### D-50 ✅ Migration DB có phiên bản; hold là cột, không phải state mới
 - `SCHEMA` Phase 1 giữ nguyên (v0). `PRAGMA user_version` = 1 thêm **cột/bảng** (`start_stage`, `target_stage`, `target_idx`, `hold_*`, `resume_after`, `hold_sig`, `auto_resumes_without_progress`, `needs_user`, `auto_resume`, `config_snapshot/hash/revision`, `checkpoint`, `progress`; bảng `resource_status`). DB mới và DB cũ cùng đi qua `JobStore._migrate`: chỉ `ADD COLUMN`, một transaction, tuần tự hóa bằng `BEGIN IMMEDIATE`, sao lưu `<db>.bak-v0` (qua `sqlite3.backup`) nếu DB đã có job. Job cũ: `target_stage` NULL = chạy full; `snapshot` NULL = dùng config global (hành vi cũ).
@@ -458,6 +458,26 @@
 - **Bí mật**: `doctor` cảnh báo khi `config/config.json` (được commit) chứa khoá nhạy cảm; `setup` nhập client_secret không hiện lên màn hình; có test quét toàn bộ dữ liệu sinh ra (output/workspace/runtime/log/DB/`status`/`doctor --json`).
 - **Dọn code chết**: bỏ `JobStore.update_hold_detail`, `audio.profile.width_bytes`, tham số thừa của `_readme`. Fake adapter/fixture còn dùng bởi test được giữ.
 - **Chưa kiểm chứng ở Phase 8** (cần điều kiện ngoài, xem `docs/PRODUCTION_CHECKLIST.md`): Story thật (token), TTS thật, upload thật (OAuth), NVENC, video 10–60 phút, Linux/macOS.
+
+### D-89 ✅ Giao diện web cục bộ (Phase 9): stack, kiến trúc, bảo mật
+- **Stack:** chưa có frontend nào nên chọn: máy chủ HTTP **stdlib** (`orchestrator/webui.py`) + frontend tĩnh **ES modules không bước build** (`orchestrator/webui_static/`), GSAP 3.12 core đóng gói cục bộ (72 KB; không CDN/Google Fonts ⇒ chạy offline). Lý do: lõi chỉ dùng stdlib (D-17), setup máy mới không thêm Node/npm vào đường chạy, dễ sửa. Phụ thuộc phát triển (chỉ cho QA): `playwright-core` + `axe-core` ở `scripts/ui_qa/` (không thuộc lõi). `cf ui` = máy chủ + vòng lặp orchestrator trong cùng tiến trình (tự bật uploader, Source Sync, auto resume, cleanup).
+- **Facade, không logic nghiệp vụ ở frontend:** `service.py` (nhận dạng đầu vào, xem trước, tạo job, danh sách/chi tiết, kênh, output, log), `service_admin.py` (cài đặt qua bảng khai báo `SETTINGS`, TTS, pool, doctor, dọn dẹp, tác vụ nền), `diagnose.py` dùng chung với CLI. Chế độ chạy (`RUN_MODES`) ánh xạ vào mode/target của core; giao diện **không bao giờ hỏi `start_stage`** (suy từ loại đầu vào).
+- **Bảo mật cục bộ:** chỉ `127.0.0.1`; kiểm `Host`; token ngẫu nhiên mỗi phiên cho mọi `/api` (nhúng vào index.html); `Origin` cùng nguồn cho thao tác ghi; không endpoint nhận đường dẫn tuỳ ý (mở output chỉ đường dẫn pipeline ghi, trong `output/`); upload asset kênh làm sạch tên + giới hạn loại/kích thước; CSP `default-src 'self'`; không `innerHTML` với dữ liệu; cấu hình trả về được che khoá nhạy cảm; credential TTS chỉ hiện tên biến + có/không.
+- **Chống trùng hai lớp:** khóa nút (UI) + `request_id` (nhớ qua khởi động lại, `runtime/ui_requests.json`) + chữ ký nội dung (cùng đầu vào/kênh/chế độ/tên đang chạy ⇒ trả job đó). Job đã xong/lỗi thì chạy lại có chủ ý tạo job mới.
+- **Trạng thái:** 6 nhóm hiển thị (`running/queued/waiting/attention/completed/failed`) do `diagnose.ui_status`; giữ tạm thời (`waiting`) ≠ cần người (`attention`) ≠ lỗi (`failed`) ≠ xong. Đạt `target_stage` sớm cũng là `completed`.
+- **Cài đặt** ghi vào `config/config.local.json` (gộp từng khoá, không ghi đè khi file hỏng) + cập nhật cấu hình sống cho khoá đọc "sống"; khoá cần khởi động lại được đánh dấu.
+- **Polling, không websocket** (kiến trúc hiện tại không có sự kiện đẩy): `jobs?since=<version>` rẻ, poller dừng khi tab ẩn. Chi tiết số đo ở `docs/PERFORMANCE.md`.
+- **Motion:** quy ước ở `docs/UI_GUIDE.md` §7 (không `autoAlpha`, reduced-motion = không tween, `gsap.context` theo view).
+- **Hệ quả lõi:** `set_checkpoint` cập nhật `updated_at`; `JobStore.job_index/jobs_by_ids/jobs_version`; `diagnose.HOLD_INFO` có điều kiện hồi phục riêng.
+
+### D-90 ✅ Dữ liệu mẫu để thử (`cf samples`, nút "Tạo dữ liệu mẫu")
+- Phản hồi người dùng: chưa có truyện/video để thử. `orchestrator/samples.py` sinh trong `samples/`: truyện ngắn tiếng Việt (qua đúng bộ kiểm story), phụ đề `.srt`, audio `.wav` (bíp có nhịp nghỉ, qua QA audio thật), 3+3 clip video nền ngang/dọc (ffmpeg lavfi), template thumbnail (khi có font). **Đăng ký** pool và template vào `config.local.json` chỉ khi người dùng chưa cấu hình (không bao giờ ghi đè); chạy lại an toàn (bỏ qua file đã có; không tự đè file người dùng đã sửa; `--force` mới tạo lại). Thiếu ffmpeg ⇒ vẫn tạo phần còn lại và cảnh báo rõ.
+- Dữ liệu mẫu **không phải nội dung thật** (video tổng hợp, audio bíp); Story/TTS thật vẫn cần cấu hình riêng.
+
+### D-91 ✅ Lỗi runtime tìm thấy khi QA giao diện (Phase 9)
+- **Vòng lặp xử lý job sập vì `OverflowError`** trong backoff của Resource Monitor khi một tài nguyên hỏng liên tục rất lâu (`base_s * 2 ** (failures-1)`); job mới đứng im. Sửa: chặn số mũ ở 30; việc nền (`_monitor_tick`, `_cleanup_tick`) chạy qua `_guarded` — lỗi chỉ ghi log (`background_task_error`, tối đa mỗi 60 s) và không bao giờ làm sập lập lịch. Có test hồi quy.
+- **Hoạt họa không được làm mất focus:** cấm `autoAlpha`/`visibility:hidden` cho phần tử có thể đang focus.
+- Các lỗi bố cục/UX khác: `docs/UI_UX_AUDIT.md` §2.
 
 ## 2. Câu hỏi còn mở
 

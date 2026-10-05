@@ -89,7 +89,7 @@ class ResourceMonitor:
         except Exception as e:                                           # probe hỏng không được làm sập scheduler
             ok, detail = False, f"probe lỗi: {e!r}"
         failures = 0 if ok else (prev["failures"] + 1 if prev else 1)
-        interval = self.base_s if ok else min(self.max_s, self.base_s * 2 ** (failures - 1))
+        interval = self.base_s if ok else min(self.max_s, self.base_s * 2 ** min(failures - 1, 30))      # chặn số mũ: outage kéo dài hàng ngày không được làm tràn số float và sập vòng lặp
         self.store.put_resource_status(resource, ok, detail, now, now + interval, None, failures)
         return self.store.get_resource_status(resource)
 

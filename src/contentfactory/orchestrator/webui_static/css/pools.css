@@ -1,0 +1,6 @@
+/* Video nguồn: bổ sung cho app.css. */
+.pools-table td { vertical-align: middle; }
+.pools-table tr.has-problems td { border-bottom: 0; }
+.pool-problems td { padding-top: 0; background: var(--st-fail-bg); color: var(--st-fail-fg); }
+.pool-problems .autolist { margin: var(--s-2) 0; }
+.pool-path { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }

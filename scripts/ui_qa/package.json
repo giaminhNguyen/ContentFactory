@@ -1,0 +1,2 @@
+{ "name": "contentfactory-ui-qa", "private": true, "type": "module", "description": "Kiểm tra giao diện bằng trình duyệt thật (Chrome) + axe-core. Chỉ dùng khi phát triển; không phải phụ thuộc của lõi.",
+  "dependencies": { "playwright-core": "^1.48.0", "axe-core": "^4.10.0" } }

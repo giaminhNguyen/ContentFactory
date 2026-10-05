@@ -1,0 +1,279 @@
+// Màn hình chính: dán đầu vào -> (chọn kênh) -> RUN. Hệ thống nhận dạng đầu vào, chỉ đề xuất chế độ hợp lệ, hiện những gì sẽ tự chọn.
+import { api, newRequestId } from "../api.js";
+import { h, clear, patchList } from "../dom.js";
+import { icon } from "../icons.js";
+import { btn, busy, field, input, select, switchCtl, alertBox, pageHead, toast, toastError, openDialog } from "../components.js";
+import { createPoller } from "../poller.js";
+import { publishCounts } from "../router.js";
+import { createSamples } from "../samples.js";
+import { disclosure } from "../components.js";
+import * as motion from "../motion.js";
+import { jobRow, updateJobRow } from "./_jobrow.js";
+
+const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* bỏ qua */ } } };
+
+export async function mount(root, ctx) {
+  const { app, navigate, scope } = ctx;
+  const boot = app.boot;
+  const s = { value: "", kindOverride: null, title: "", channel: LS.get("cf-channel") || boot.default_channel, run: null, kids: null, remember: true,
+              autoResume: boot.auto_resume_default, rid: null, seq: 0, preview: null, running: false };
+  if (!boot.channels.some((c) => c.id === s.channel)) s.channel = boot.channels[0]?.id || boot.default_channel;
+  let timer = null;
+
+  // ---------- thành phần ----------
+  const valueIn = input({ placeholder: "Dán link YouTube hoặc đường dẫn file", "aria-describedby": "detect-line", autofocus: true, inputmode: "url" });
+  const pickBtn = btn({ label: "Chọn file…", icon: "file", onClick: async (e) => {
+    await busy(e.currentTarget, async () => {
+      try {
+        const r = await api.post("/api/pick", { kind: "file", title: "Chọn file đầu vào" });
+        if (r.unsupported) toast({ title: "Máy không có hộp thoại chọn file", message: r.message, tone: "wait" });
+        else if (r.path) { valueIn.value = r.path; onValue(); }
+      } catch (err) { toastError(err); }
+    });
+  } });
+  const detectLine = h("div", { class: "detect", id: "detect-line", "aria-live": "polite" });
+  const titleIn = input({ placeholder: "Tên truyện của bạn" });
+  const titleField = field({ label: "Tên truyện", control: titleIn, hint: "Dùng cho thumbnail, tiêu đề YouTube và tên thư mục output." });
+  const channelSel = select({ options: boot.channels.filter((c) => c.ok).map((c) => [c.id, c.name || c.id]), value: s.channel });
+  const newChannelBtn = btn({ label: "Kênh mới", icon: "plus", size: "sm", kind: "ghost", onClick: () => createChannel() });
+  const channelField = field({ label: "Kênh", control: channelSel });
+  channelField.append(h("div", null, newChannelBtn));
+  const modesBox = h("div", { class: "mode-list", role: "radiogroup", "aria-label": "Chạy đến đâu" });
+  const modesField = h("div", { class: "field" }, h("div", { class: "label", id: "modes-label" }, "Chạy đến đâu"), modesBox);
+  modesBox.setAttribute("aria-labelledby", "modes-label");
+  const kidsBox = h("div", { class: "sub-card", hidden: true, role: "group", "aria-labelledby": "kids-label" });
+  const autoSw = switchCtl({ label: "Auto Resume", checked: s.autoResume, onChange: (v) => { s.autoResume = v; } });
+  const autoHint = h("p", { class: "muted small" }, "Khi mất mạng, hết quota… job tự chạy tiếp thay vì chờ bạn bấm Tiếp tục.");
+  const previewBox = h("div", { class: "sub-card stack", hidden: true, "aria-live": "polite" });
+  const problems = h("div", { class: "stack", "aria-live": "polite" });
+  const runBtn = btn({ label: "RUN", icon: "play", kind: "primary lg", type: "button", disabled: true });
+  const runNote = h("span", { class: "muted small", id: "run-note" });
+  runBtn.setAttribute("aria-describedby", "run-note");
+
+  const fake = boot.runtime.fake_adapters || [];
+  const notice = fake.length
+    ? alertBox({ tone: "info", title: "Đang ở chế độ thử nghiệm", body: `Các bước ${fake.join(", ")} đang dùng bản giả (video/giọng đọc chỉ để kiểm tra pipeline). Chạy "setup" và cấu hình để dùng thật; mở Cài đặt & Doctor để xem còn thiếu gì.` })
+    : null;
+  const noChannels = boot.channels.length === 0;
+
+  const card = h("div", { class: "card run-card stack" },
+    h("div", { class: "field" }, h("label", { for: "run-input" }, "Đầu vào"), h("div", { class: "input-row" }, valueIn, pickBtn), detectLine),
+    titleField, channelField, modesField, kidsBox, previewBox, problems,
+    h("div", { class: "stack" }, autoSw, autoHint),
+    h("div", { class: "run-actions" }, runBtn, runNote));
+  valueIn.id = "run-input";
+
+  const recent = h("ul", { class: "joblist" });
+  const recentCard = h("section", { class: "card flush", "aria-labelledby": "recent-h", hidden: true },
+    h("div", { class: "card-title", style: "" }, h("h2", { id: "recent-h" }, "Gần đây"), btn({ label: "Xem tất cả", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), recent);
+  recentCard.firstChild.style.padding = "var(--s-4) var(--s-4) 0";
+
+  // dữ liệu mẫu: cho người chưa có truyện/video để thử
+  const samplesOut = h("div", { class: "row" });
+  const makeSamples = btn({ label: "Tạo dữ liệu mẫu", icon: "film", onClick: async (e) => {
+    const r = await createSamples(e.currentTarget);
+    if (!r) return;
+    clear(samplesOut);
+    for (const [label, key] of [["Dùng truyện mẫu", "story"], ["Dùng phụ đề mẫu", "subtitle"], ["Dùng audio mẫu", "audio"]]) {
+      samplesOut.append(btn({ label, size: "sm", onClick: () => { valueIn.value = r[key]; onValue(); valueIn.focus(); } }));
+    }
+    if (r.registered.length) app.boot.runtime = { ...app.boot.runtime };
+  } });
+  const samplesBlock = disclosure({ label: "Chưa có truyện hoặc video để thử?", content: h("div", { class: "stack", style: "padding-top: var(--s-2)" },
+    h("p", { class: "muted small" }, "Tạo sẵn một truyện ngắn, phụ đề, audio và vài video nền (ngang + dọc) trong thư mục samples/ để chạy thử toàn bộ pipeline; pool video nền được đăng ký giúp bạn. Đây chỉ là dữ liệu tổng hợp, không phải nội dung thật."),
+    h("div", { class: "row" }, makeSamples), samplesOut) });
+
+  root.append(pageHead("Chạy", "Dán link, chọn kênh, bấm RUN. Phần còn lại hệ thống tự lo."),
+    h("div", { class: "stack" }, notice, noChannels ? noChannelNotice() : null, card, samplesBlock, recentCard));
+
+  function noChannelNotice() {
+    return alertBox({ tone: "wait", title: "Chưa có kênh nào", body: "Tạo một kênh để hệ thống biết đặt tên, watermark, giọng đọc và video nền cho bạn.", actions: [btn({ label: "Tạo kênh", icon: "plus", size: "sm", onClick: () => createChannel() })] });
+  }
+
+  // ---------- nhập liệu ----------
+  function onValue() {
+    s.value = valueIn.value.trim();
+    s.kindOverride = null;
+    s.run = null;
+    s.rid = null;
+    schedule(250);
+  }
+  valueIn.addEventListener("input", onValue);
+  valueIn.addEventListener("paste", () => setTimeout(onValue, 0));
+  titleIn.addEventListener("input", () => { s.title = titleIn.value; s.rid = null; schedule(400); });
+  channelSel.addEventListener("change", () => { s.channel = channelSel.value; LS.set("cf-channel", s.channel); s.rid = null; s.kids = null; clear(kidsBox); schedule(0); });
+  valueIn.addEventListener("keydown", (e) => { if (e.key === "Enter" && !runBtn.disabled) runBtn.click(); });
+
+  function schedule(ms) { clearTimeout(timer); timer = setTimeout(refresh, ms); }
+
+  async function refresh() {
+    const my = ++s.seq;
+    if (!s.value) { s.preview = null; paint(); return; }
+    try {
+      const pv = await api.post("/api/preview", { input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids });
+      if (my !== s.seq) return;                         // đã có lần nhập mới hơn
+      s.preview = pv;
+      if (!s.run) s.run = pv.run;
+    } catch (e) {
+      if (my !== s.seq) return;
+      s.preview = { error: e };
+    }
+    paint();
+  }
+
+  function paint() {
+    const pv = s.preview;
+    clear(detectLine);
+    // nhận dạng
+    if (!s.value) detectLine.append(h("span", { class: "muted" }, "Hệ thống tự nhận ra: link YouTube, phụ đề, truyện (story.txt), audio…"));
+    else if (pv?.error) detectLine.append(icon("alert-circle", { size: 16 }), h("span", null, pv.error.message));
+    else if (pv) {
+      const d = pv.detect;
+      if (d.ok) {
+        detectLine.append(h("span", { class: "chip ok" }, icon("check", { size: 14 }), d.label));
+        const det = d.details || {};
+        if (det.video_id) detectLine.append(h("span", { class: "muted mono" }, det.video_id));
+        if (det.name) detectLine.append(h("span", { class: "muted" }, det.name));
+        if (d.ambiguous) {
+          const alt = d.alternatives[0];
+          const txt = alt === "story_text" ? "Đây là truyện (story.txt)" : "Đây là phụ đề / transcript";
+          detectLine.append(btn({ label: txt, kind: "ghost", size: "sm", onClick: () => { s.kindOverride = alt; s.run = null; refresh(); } }));
+        }
+        if (d.kind === "project") detectLine.append(h("span", { class: "muted" }, `Project "${det.title || ""}" đã có sẵn — mở thư mục để xem.`), btn({ label: "Mở job", size: "sm", kind: "ghost", href: det.job_id ? `#/jobs/${det.job_id}` : undefined, disabled: !det.job_id }));
+      } else if (d.problem) detectLine.append(icon("alert-circle", { size: 16 }), h("span", null, d.problem));
+    }
+    // tên truyện
+    const d = pv?.detect;
+    titleField.hidden = !(d && d.ok && d.modes.length);
+    const needs = !!d?.needs_title;
+    titleField.querySelector("label").lastChild?.nodeName === "SPAN" && titleField.querySelector("label").lastChild.remove();
+    if (needs) titleField.querySelector("label").append(h("span", { class: "muted", "aria-hidden": "true" }, " *"));
+    titleIn.required = needs;
+    titleIn.placeholder = needs ? "Bắt buộc: tên truyện của bạn" : "Không bắt buộc — để trống thì dùng tiêu đề video nguồn đã làm sạch";
+    // chế độ
+    modesField.hidden = !(d && d.ok && d.modes.length);
+    if (!modesField.hidden) patchModes(d.modes);
+    // kids
+    paintKids(pv);
+    // preview kế hoạch + tự chọn
+    paintPreview(pv);
+    // vấn đề
+    clear(problems);
+    for (const p of pv?.problems || []) {
+      if (p.field === "kids") continue;
+      if (p.field === "title") { titleField.setError(p.hint ? `${p.message} ${p.hint}` : p.message); continue; }
+      problems.append(alertBox({ tone: "wait", title: p.message, body: p.hint || null }));
+    }
+    if (!(pv?.problems || []).some((p) => p.field === "title")) titleField.setError(null);
+    const ok = !!(pv && pv.can_run) && !s.running;
+    runBtn.disabled = !ok;
+    runNote.textContent = !s.value ? "Nhập đầu vào để bắt đầu." : ok ? (pv.warnings?.[0] || "") : (pv?.problems?.length ? "Hoàn thành các mục ở trên để chạy." : "");
+  }
+
+  function patchModes(modes) {
+    const added = patchList(modesBox, modes, (m) => m.id,
+      (m) => {
+        const r = h("input", { type: "radio", name: "run-mode", value: m.id });
+        r.addEventListener("change", () => { s.run = m.id; s.rid = null; schedule(0); });
+        const el = h("label", { class: "mode" }, r, h("div", null, h("div", { class: "m-label" }, m.label), h("div", { class: "m-desc" }, m.description)));
+        el._r = r;
+        return el;
+      },
+      (el) => { /* nội dung chế độ không đổi */ });
+    for (const el of modesBox.children) el._r.checked = el._r.value === s.run;
+    scope.add(() => motion.itemsEnter(added));
+  }
+
+  function paintKids(pv) {
+    // Khai báo COPPA: hiện khi kênh chưa khai; giữ hiện sau khi người dùng chọn (nếu không hộp sẽ biến mất ngay khi chọn)
+    const show = !!pv?.needs_kids || (s.kids !== null && !!pv);
+    kidsBox.hidden = !show;
+    if (!show) { clear(kidsBox); return; }
+    if (kidsBox.childElementCount) return;
+    const mk = (v, text) => h("label", null, h("input", { type: "radio", name: "kids", value: String(v), onChange: () => { s.kids = v; s.rid = null; schedule(0); } }), text);
+    kidsBox.append(h("div", { class: "label", id: "kids-label" }, "Video của kênh này có dành cho trẻ em không?"),
+      h("p", { class: "muted small" }, "YouTube bắt buộc khai báo. Hệ thống không tự đoán."),
+      h("div", { class: "radio-row" }, mk(false, "Không dành cho trẻ em"), mk(true, "Có, dành cho trẻ em")),
+      h("label", { class: "switch" }, h("input", { type: "checkbox", checked: true, onChange: (e) => { s.remember = e.target.checked; } }), h("span", { class: "track", "aria-hidden": "true" }), h("span", null, "Ghi nhớ cho kênh này")));
+  }
+
+  function paintPreview(pv) {
+    clear(previewBox);
+    const show = !!(pv && pv.plan);
+    previewBox.hidden = !show;
+    if (!show) return;
+    const plan = h("div", { class: "plan", role: "list", "aria-label": "Các bước sẽ chạy" });
+    for (const st of pv.plan.stages) {
+      plan.append(h("span", { class: "step", role: "listitem", dataset: { s: st.state }, title: { run: "Sẽ chạy", skip: "Đã có/bỏ qua", off: "Không chạy" }[st.state] },
+        st.label, h("span", { class: "sr-only" }, ` — ${{ run: "sẽ chạy", skip: "bỏ qua", off: "không chạy" }[st.state]}`)));
+    }
+    previewBox.append(h("div", { class: "label" }, "Hệ thống sẽ làm"), plan);
+    const lines = [];
+    lines.push(`Kênh “${pv.channel_name}”: tập kế tiếp là Full Audio ${pv.sequence_next}; chế độ đăng mặc định: ${pv.privacy}.`);
+    for (const a of pv.auto || []) lines.push(`Tự chọn ${a.what}: ${typeof a.value === "object" ? Array.isArray(a.value) ? a.value.join(", ") : "theo preset" : a.value} — ${a.why}`);
+    previewBox.append(h("div", null, h("div", { class: "label small muted" }, "Đã tự nhận ra / tự chọn"), h("ul", { class: "autolist" }, ...lines.map((t) => h("li", null, t)))));
+  }
+
+  // ---------- tạo kênh nhanh ----------
+  async function createChannel() {
+    const idIn = input({ placeholder: "kenh_a" });
+    const nameIn = input({ placeholder: "Tên hiển thị" });
+    const kids = h("div", { class: "radio-row" }, h("label", null, h("input", { type: "radio", name: "nk", value: "no", checked: true }), "Không dành cho trẻ em"), h("label", null, h("input", { type: "radio", name: "nk", value: "yes" }), "Dành cho trẻ em"));
+    const idF = field({ label: "Mã kênh", control: idIn, hint: "Chữ không dấu, số, _ và -.", required: true });
+    const content = h("div", { class: "stack" }, idF, field({ label: "Tên hiển thị", control: nameIn }), h("div", { class: "field" }, h("div", { class: "label" }, "Video dành cho trẻ em? (khai báo bắt buộc)"), kids));
+    const r = await openDialog({ title: "Tạo kênh mới", content, actions: [{ label: "Huỷ", value: null }, { label: "Tạo kênh", kind: "primary", value: "ok", onClick: async () => {
+      try {
+        await api.post("/api/channels", { id: idIn.value.trim(), name: nameIn.value.trim() || idIn.value.trim(), kids: content.querySelector("input[name=nk]:checked").value === "yes" });
+        return true;
+      } catch (e) { idF.setError(e.message); return false; }
+    } }] });
+    if (r !== "ok") return;
+    const list = await api.get("/api/channels");
+    app.boot.channels = list.channels;
+    s.channel = idIn.value.trim();
+    LS.set("cf-channel", s.channel);
+    channelSel.replaceChildren(...list.channels.filter((c) => c.ok).map((c) => h("option", { value: c.id }, c.name || c.id)));
+    channelSel.value = s.channel;
+    toast({ title: "Đã tạo kênh", message: "Chỉnh watermark, giọng đọc, video nền ở trang Kênh.", tone: "done" });
+    schedule(0);
+  }
+
+  // ---------- RUN ----------
+  runBtn.addEventListener("click", async () => {
+    if (runBtn.disabled || s.running) return;
+    s.running = true;
+    s.rid = s.rid || newRequestId();
+    await busy(runBtn, async () => {
+      try {
+        const r = await api.post("/api/runs", { request_id: s.rid, input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids,
+                                                remember_kids: s.remember, auto_resume: s.autoResume });
+        toast(r.deduped ? { title: "Đã có job cùng nội dung đang chạy", message: "Chuyển tới job đó thay vì tạo thêm.", tone: "info" } : { title: `Đã xếp hàng job ${r.job_id}`, message: "Bạn có thể theo dõi tiến độ ở đây.", tone: "done" });
+        navigate(`/jobs/${r.job_id}`);
+      } catch (e) {
+        toastError(e, "Chưa chạy được");
+        s.rid = null;
+        schedule(0);
+      }
+    });
+    s.running = false;
+    if (root.isConnected) paint();
+  });
+
+  // ---------- gần đây (poller) ----------
+  let version = null;
+  const poller = createPoller(async (signal) => {
+    const d = await api.get("/api/jobs", { query: { status: "all", limit: 5, since: version }, signal });
+    if (!d.changed) return (app.counts?.running || 0) > 0 ? "fast" : "idle";
+    version = d.version;
+    publishCounts(d.counts);
+    recentCard.hidden = d.jobs.length === 0;
+    const added = patchList(recent, d.jobs, (j) => j.id, (j) => jobRow(j, () => poller.poke()), (el, j) => updateJobRow(el, j));
+    scope.add(() => motion.itemsEnter(added));
+    return d.jobs.some((j) => j.status === "running" || j.status === "queued") ? "fast" : "idle";
+  });
+  poller.start();
+
+  paint();
+  if (!s.value) valueIn.focus();
+  return { destroy() { clearTimeout(timer); poller.stop(); s.seq++; } };
+}

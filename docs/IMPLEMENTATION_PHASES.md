@@ -94,6 +94,11 @@ Không bắt đầu Phase 7.
 **Đã làm (D-88):** harness `scripts/validate_real.py` (URL thật → source thật → audio ffmpeg thật → ContentFlow thật → output; SUBTITLE_ONLY; VIDEO_ONLY dài), `tests/test_phase8.py` (video-only không cần story, chẩn đoán, bí mật, upload không chặn render, kill/restart với ffmpeg + ContentFlow thật), sửa lỗi tìm thấy, `docs/{USER_GUIDE,TROUBLESHOOTING,ARCHITECTURE,PRODUCTION_CHECKLIST}.md`.
 **Chưa kiểm chứng:** Story thật (token), TTS thật, upload thật, NVENC, video dài 10–60 phút, Linux/macOS (xem `docs/PRODUCTION_CHECKLIST.md` §B).
 
+## Phase 9 — Giao diện, UX, animation, hiệu năng ✅
+
+**Đã làm (D-89…D-91):** `cf ui` (máy chủ cục bộ + vòng lặp xử lý), 7 màn hình (Chạy, Job, Chi tiết job, Kênh, Giọng đọc, Video nguồn, Cài đặt & Doctor), nhận dạng đầu vào và chế độ một phần không lộ `start_stage`, giải thích trạng thái giữ/lỗi + hành động, chống thao tác trùng hai lớp, design system (token sáng/tối), GSAP có quy ước + reduced-motion, polling có kỷ luật, a11y (axe 0 vi phạm nghiêm trọng, bàn phím, focus), dữ liệu mẫu (`cf samples`), `docs/{UI_UX_AUDIT,DESIGN_SYSTEM,UI_GUIDE,PERFORMANCE}.md`, kiểm thử bằng Chrome thật (143 + 8 + 7 kiểm tra), sửa lỗi runtime tìm thấy (vòng lặp sập khi outage dài).
+**Chưa làm:** websocket/sự kiện đẩy, thông báo ngoài, đa ngôn ngữ giao diện (chỉ tiếng Việt), kiểm thử Firefox/Safari, đo FPS bằng số, giao diện cho Source/Story prompt nâng cao.
+
 ## Phase 8b — Engine TTS thật + Auto-Profile bằng AI (HANDOFF §7–8)
 
 **Đã có từ Phase 3:** Analyzer tĩnh, Auto Tune, `CommandTTS`, profile có evidence (D-57…D-63).

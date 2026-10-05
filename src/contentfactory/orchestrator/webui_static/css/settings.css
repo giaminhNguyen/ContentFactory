@@ -1,0 +1,21 @@
+/* Màn hình Cài đặt & Doctor. Chỉ phần bổ sung; token và component nằm ở app.css. */
+.setting .s-err { color: var(--st-fail-fg); font-size: var(--fs-sm); display: flex; gap: var(--s-1); align-items: flex-start; }
+.setting .s-err:empty { display: none; }
+.setting .s-ctl .input, .setting .s-ctl .select { max-width: 260px; }
+.setting .s-line { display: flex; gap: var(--s-2); align-items: center; }
+.setting .s-meta { font-size: var(--fs-xs); color: var(--muted); display: flex; gap: var(--s-2); flex-wrap: wrap; align-items: center; }
+.setting .s-warn { font-size: var(--fs-sm); color: var(--st-wait-fg); display: flex; gap: var(--s-1); align-items: flex-start; margin-top: var(--s-1); }
+.link-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--s-3); margin-top: var(--s-4); }
+.link-card { display: flex; gap: var(--s-3); align-items: center; padding: var(--s-4); border: 1px solid var(--border); border-radius: var(--r-2); background: var(--surface); color: var(--text); text-decoration: none; font-weight: 600; min-height: 56px; }
+.link-card:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.link-card small { display: block; color: var(--muted); font-weight: 400; font-size: var(--fs-xs); }
+.storage-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: var(--s-3); padding: var(--s-2) 0; border-bottom: 1px solid var(--border); align-items: center; font-size: var(--fs-sm); }
+.storage-row:last-child { border-bottom: 0; }
+.doctor-list { display: flex; flex-direction: column; gap: var(--s-3); }
+.health-group[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: var(--s-3); }
+.health-group .g-label { font-weight: 650; }
+.check .c-name { font-family: var(--mono); font-size: var(--fs-xs); color: var(--muted); }
+.check details summary { cursor: pointer; font-size: var(--fs-xs); color: var(--muted); }
+.check .hint-fix { color: var(--text); font-size: var(--fs-sm); }
+@media (max-width: 520px) { .storage-row { grid-template-columns: minmax(0, 1fr); } }
+.cfg-pre { font-family: var(--mono); font-size: var(--fs-xs); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); padding: var(--s-3); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; margin: 0; }

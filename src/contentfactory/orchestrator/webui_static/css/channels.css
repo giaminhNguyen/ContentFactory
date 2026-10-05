@@ -1,0 +1,9 @@
+/* Kênh: chỉ phần bổ sung cho app.css (token dùng chung). */
+.chan-editor { min-width: 0; }
+.chan-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chan-text { font-family: var(--font); font-size: var(--fs-md); min-height: 72px; }
+.chan-savebar { position: sticky; bottom: 0; padding: var(--s-3) 0; background: var(--surface); border-top: 1px solid var(--border); margin-top: var(--s-2); z-index: 1; }
+.chan-desc { white-space: pre-wrap; }
+.chan-thumb { display: inline-flex; flex-direction: column; gap: 2px; padding: var(--s-3) var(--s-4); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); max-width: 360px; }
+.chan-thumb span { color: var(--muted); }
+#wm-file { padding: var(--s-1) var(--s-2); }

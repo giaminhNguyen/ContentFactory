@@ -1,0 +1,454 @@
+"""Giao diện web cục bộ (D-89): `cf ui` = máy chủ HTTP (stdlib) + vòng lặp orchestrator trong cùng tiến trình + frontend tĩnh (không bước build).
+
+An toàn cho ứng dụng cục bộ: chỉ nghe 127.0.0.1; kiểm tra `Host` (chống DNS-rebinding); mọi `/api` cần header `X-CF-Token` (token ngẫu nhiên mỗi lần chạy,
+nhúng vào index.html) và với phương thức ghi thì `Origin` (nếu có) phải cùng nguồn (chống CSRF). Không có endpoint nhận đường dẫn tùy ý để mở/đọc.
+Lỗi trả về dạng `{"error": {"code", "message", "hint"}}` bằng tiếng Việt dễ hiểu; stack trace chỉ nằm trong log (`runtime/logs/ui.log`).
+"""
+from __future__ import annotations
+
+import json
+import mimetypes
+import re
+import secrets
+import threading
+import time
+import traceback
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+from ..contracts import ErrorClass, StageError
+from . import ops
+from .config import load_config
+from .runner import Orchestrator
+from .service import Service
+from .service_admin import AdminService
+
+STATIC = Path(__file__).resolve().parent / "webui_static"
+MAX_JSON = 1 << 20
+MAX_ASSET = 60 << 20
+VERSION = "1"
+
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+
+
+class App:
+    """Trạng thái dùng chung của một phiên `cf ui`: orchestrator, facade, token, vòng lặp nền."""
+
+    def __init__(self, orc: Orchestrator, *, run_loop: bool = True, opener=ops.open_path, token: str | None = None) -> None:
+        self.orc, self.cfg = orc, orc.cfg
+        self.service, self.admin = Service(orc), AdminService(orc)
+        self.token = token or secrets.token_urlsafe(24)
+        self.opener = opener
+        self.run_loop = run_loop
+        self._stop = threading.Event()
+        self._runner: threading.Thread | None = None
+        self.port = 0
+
+    # ------------------------------------------------------------------------------------------ nền
+    def start_runner(self) -> None:
+        if not self.run_loop or self._runner:
+            return
+        self._runner = threading.Thread(target=self._loop, name="orchestrator", daemon=True)
+        self._runner.start()
+        threading.Thread(target=self._uploader, name="uploader", daemon=True).start()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.orc.run(until_idle=False, stop=self._stop)
+            except Exception:                                            # noqa: BLE001 - vòng lặp không được chết im lặng
+                self.log_error("orchestrator loop crashed")
+                self._stop.wait(2.0)
+
+    def _uploader(self) -> None:
+        try:
+            ops.ensure_uploader(self.cfg, self.orc.adapters.get("publish"))
+        except Exception:                                                # noqa: BLE001
+            self.log_error("ensure_uploader")
+
+    def runner_running(self) -> bool:
+        return bool(self._runner and self._runner.is_alive())
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._runner:
+            self._runner.join(15)
+
+    def log_error(self, what: str) -> None:
+        try:
+            f = self.cfg.path("runtime") / "logs" / "ui.log"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            with open(f, "a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {what}\n{traceback.format_exc()}\n")
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------------------------------------ route
+    def bootstrap(self) -> dict:
+        ch = self.service.list_channels()
+        st = self.admin.get_settings()
+        return {"version": VERSION, "channels": ch["channels"], "default_channel": ch["default"],
+                "auto_resume_default": bool(self.cfg.data.get("auto_resume_default", True)), "runtime": self.admin.runtime_status(self.runner_running()),
+                "root": str(self.cfg.root), "storage": st["storage"][:0]}
+
+
+def _int(q: dict, key: str, default: int, lo: int = 0, hi: int = 1000) -> int:
+    try:
+        return max(lo, min(hi, int(q.get(key, [default])[0])))
+    except (TypeError, ValueError):
+        return default
+
+
+ROUTES: list[tuple[str, re.Pattern, str]] = []
+
+
+def route(method: str, pattern: str):
+    def deco(fn):
+        ROUTES.append((method, re.compile("^" + pattern + "$"), fn.__name__))
+        return fn
+    return deco
+
+
+class Api:
+    """Các handler; mỗi hàm nhận (app, match, query, body) và trả đối tượng JSON-able."""
+
+    @route("GET", "/api/bootstrap")
+    def bootstrap(app, m, q, b):
+        return app.bootstrap()
+
+    @route("GET", "/api/runtime")
+    def runtime(app, m, q, b):
+        return app.admin.runtime_status(app.runner_running())
+
+    @route("POST", "/api/detect")
+    def detect(app, m, q, b):
+        return app.service.detect_input(b.get("value", ""), b.get("kind"))
+
+    @route("POST", "/api/preview")
+    def preview(app, m, q, b):
+        return app.service.preview_run(b)
+
+    @route("POST", "/api/runs")
+    def create_run(app, m, q, b):
+        return app.service.create_run(b)
+
+    @route("GET", "/api/jobs")
+    def jobs(app, m, q, b):
+        return app.service.list_jobs(q.get("status", ["all"])[0], _int(q, "limit", 30, 1, 200), _int(q, "offset", 0, 0, 10 ** 7), q.get("since", [None])[0])
+
+    @route("GET", r"/api/jobs/(?P<id>[\w\-]+)")
+    def job(app, m, q, b):
+        return app.service.job_detail(m["id"])
+
+    @route("GET", r"/api/jobs/(?P<id>[\w\-]+)/log")
+    def job_log(app, m, q, b):
+        before = q.get("before", [None])[0]
+        return app.service.job_log(m["id"], _int(q, "tail", 150, 1, 500), int(before) if before else None)
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/resume")
+    def resume(app, m, q, b):
+        return app.service.resume(m["id"], bool(b.get("now")))
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/retry")
+    def retry(app, m, q, b):
+        return app.service.retry(m["id"])
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/auto-resume")
+    def auto_resume(app, m, q, b):
+        return app.service.set_auto_resume(m["id"], bool(b.get("enabled")))
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/open-output")
+    def open_output(app, m, q, b):
+        return app.service.open_output(m["id"], app.opener)
+
+    @route("GET", "/api/channels")
+    def channels(app, m, q, b):
+        return app.service.list_channels()
+
+    @route("POST", "/api/channels")
+    def channel_create(app, m, q, b):
+        return app.service.create_channel(str(b.get("id") or ""), b.get("name"), bool(b.get("kids")), int(b.get("last_used") or 0))
+
+    @route("GET", r"/api/channels/(?P<id>[\w\-]+)")
+    def channel_get(app, m, q, b):
+        return app.service.get_channel(m["id"])
+
+    @route("PUT", r"/api/channels/(?P<id>[\w\-]+)")
+    def channel_put(app, m, q, b):
+        return app.service.save_channel(m["id"], b.get("raw"))
+
+    @route("GET", r"/api/channels/(?P<id>[\w\-]+)/preview")
+    def channel_preview(app, m, q, b):
+        return app.service.channel_preview(m["id"], q.get("title", [None])[0])
+
+    @route("PUT", r"/api/channels/(?P<id>[\w\-]+)/asset")
+    def channel_asset(app, m, q, b):
+        return app.service.save_channel_asset(m["id"], q.get("name", [""])[0], b)
+
+    @route("GET", "/api/tts")
+    def tts(app, m, q, b):
+        return app.admin.tts_overview()
+
+    @route("GET", r"/api/tts/profiles/(?P<name>[\w\-\.]+)")
+    def tts_profile(app, m, q, b):
+        return app.admin.tts_profile_detail(m["name"])
+
+    @route("POST", "/api/tts/onboard")
+    def tts_onboard(app, m, q, b):
+        return app.admin.tts_onboard(b.get("reference", ""))
+
+    @route("GET", r"/api/tasks/(?P<id>\w+)")
+    def task(app, m, q, b):
+        t = app.admin.tasks.get(m["id"])
+        if t is None:
+            raise StageError(ErrorClass.POLICY, "TASK_NOT_FOUND", "Tác vụ không còn (đã quá cũ).")
+        return t
+
+    @route("GET", "/api/pools")
+    def pools(app, m, q, b):
+        return app.admin.pools()
+
+    @route("POST", "/api/pools/sync")
+    def pools_sync(app, m, q, b):
+        return app.admin.pool_sync(b.get("name"))
+
+    @route("PUT", r"/api/pools/(?P<name>[\w\-]+)")
+    def pool_put(app, m, q, b):
+        return app.admin.pool_upsert(m["name"], b.get("raw_dir", ""), b.get("orientation"))
+
+    @route("DELETE", r"/api/pools/(?P<name>[\w\-]+)")
+    def pool_del(app, m, q, b):
+        return app.admin.pool_delete(m["name"])
+
+    @route("GET", "/api/settings")
+    def settings(app, m, q, b):
+        return app.admin.get_settings()
+
+    @route("PUT", "/api/settings")
+    def settings_put(app, m, q, b):
+        return app.admin.update_settings(b.get("changes") or {})
+
+    @route("GET", "/api/config/effective")
+    def effective(app, m, q, b):
+        return app.admin.effective_config()
+
+    @route("POST", "/api/cleanup")
+    def cleanup(app, m, q, b):
+        return app.admin.cleanup(bool(b.get("dry_run", True)))
+
+    @route("GET", "/api/doctor")
+    def doctor(app, m, q, b):
+        return app.admin.doctor_status()
+
+    @route("POST", "/api/doctor/run")
+    def doctor_run(app, m, q, b):
+        return app.admin.doctor_run()
+
+    @route("POST", "/api/samples")
+    def samples(app, m, q, b):
+        return app.admin.make_samples()
+
+    @route("POST", "/api/pick")
+    def pick(app, m, q, b):
+        return app.admin.pick_path(b.get("kind", "file"), b.get("title", ""))
+
+
+def make_handler(app: App):
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "ContentFactoryUI/1"
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a) -> None:                               # im lặng: log lỗi đi vào runtime/logs/ui.log
+            pass
+
+        # ------------------------------------------------------------------ tiện ích
+        def _send(self, code: int, body: bytes, ctype: str, headers: dict | None = None) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def _json(self, code: int, obj) -> None:
+            self._send(code, json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8"), "application/json; charset=utf-8", {"Cache-Control": "no-store"})
+
+        def _error(self, code: int, err: str, message: str, hint: str = "") -> None:
+            self._json(code, {"error": {"code": err, "message": message, "hint": hint}})
+
+        def _host_ok(self) -> bool:
+            host = (self.headers.get("Host") or "").lower()
+            return host in (f"127.0.0.1:{app.port}", f"localhost:{app.port}")
+
+        # ------------------------------------------------------------------ phân phối
+        def do_GET(self) -> None:
+            self._dispatch()
+
+        do_POST = do_PUT = do_DELETE = do_HEAD = do_GET
+
+        def _dispatch(self) -> None:
+            try:
+                if not self._host_ok():
+                    return self._error(403, "BAD_HOST", "Yêu cầu không hợp lệ (Host).")
+                u = urlparse(self.path)
+                path = unquote(u.path)
+                if path.startswith("/api/"):
+                    return self._api(path, parse_qs(u.query))
+                if self.command not in ("GET", "HEAD"):
+                    return self._error(405, "METHOD", "Không hỗ trợ.")
+                return self._static(path)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception:                                            # noqa: BLE001
+                app.log_error(f"{self.command} {self.path}")
+                try:
+                    self._error(500, "INTERNAL", "Lỗi nội bộ của giao diện.", "Chi tiết trong runtime/logs/ui.log.")
+                except OSError:
+                    pass
+
+        def _api(self, path: str, query: dict) -> None:
+            if not secrets.compare_digest(self.headers.get("X-CF-Token") or "", app.token):
+                return self._error(401, "NO_TOKEN", "Thiếu hoặc sai token phiên.", "Tải lại trang.")
+            if self.command != "GET":
+                origin = self.headers.get("Origin")
+                if origin and origin not in (f"http://127.0.0.1:{app.port}", f"http://localhost:{app.port}"):
+                    return self._error(403, "BAD_ORIGIN", "Yêu cầu từ nguồn không được phép.")
+            method = "GET" if self.command == "HEAD" else self.command
+            for meth, rx, name in ROUTES:
+                m = rx.match(path)
+                if m and meth == method:
+                    body = self._body(name)
+                    if body is None:
+                        return
+                    try:
+                        return self._json(200, getattr(Api, name)(app, m, query, body))
+                    except StageError as e:
+                        code = 404 if e.code.endswith("NOT_FOUND") else 400
+                        return self._json(code, {"error": {"code": e.code, "message": e.message, "hint": (e.detail or {}).get("hint", ""), "class": e.error_class.value
+                                                             if hasattr(e.error_class, "value") else str(e.error_class)}})
+                    except (ValueError, KeyError, TypeError) as e:
+                        return self._error(400, "BAD_REQUEST", f"Yêu cầu không hợp lệ: {e}")
+            if any(rx.match(path) for _, rx, _ in ROUTES):
+                return self._error(405, "METHOD", "Phương thức không được hỗ trợ.")
+            return self._error(404, "NOT_FOUND", "Không có API này.")
+
+        def _body(self, name: str):
+            if self.command in ("GET", "HEAD", "DELETE"):
+                return {}
+            n = int(self.headers.get("Content-Length") or 0)
+            limit = MAX_ASSET if name == "channel_asset" else MAX_JSON
+            if n > limit:
+                left = min(n, 8 << 20)                                       # đọc bỏ phần thân (có trần) để trình duyệt nhận được 413 thay vì bị ngắt kết nối giữa chừng
+                while left > 0:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                self.close_connection = True
+                self._error(413, "TOO_LARGE", "Dữ liệu gửi lên quá lớn.")
+                return None
+            raw = self.rfile.read(n) if n else b""
+            if name == "channel_asset":
+                return raw
+            if not raw:
+                return {}
+            try:
+                d = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                self._error(400, "BAD_JSON", "Nội dung gửi lên không phải JSON hợp lệ.")
+                return None
+            if not isinstance(d, dict):
+                self._error(400, "BAD_JSON", "Nội dung phải là một object JSON.")
+                return None
+            return d
+
+        # ------------------------------------------------------------------ tĩnh
+        def _static(self, path: str) -> None:
+            rel = "index.html" if path in ("/", "") else path.lstrip("/")
+            f = (STATIC / rel).resolve()
+            if STATIC.resolve() not in f.parents or not f.is_file():
+                if "." not in Path(rel).name:                              # đường dẫn của router phía client
+                    f, rel = STATIC / "index.html", "index.html"
+                else:
+                    return self._error(404, "NOT_FOUND", "Không tìm thấy.")
+            data = f.read_bytes()
+            ctype = (mimetypes.guess_type(str(f))[0] or "application/octet-stream") + ("; charset=utf-8" if f.suffix in (".html", ".js", ".css", ".mjs", ".svg") else "")
+            headers = {}
+            if rel == "index.html":
+                data = data.replace(b"<!--CF_TOKEN-->", f'<meta name="cf-token" content="{app.token}">'.encode())
+                headers["Cache-Control"] = "no-store"
+                headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+                                                      "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            else:
+                etag = f'"{f.stat().st_mtime_ns:x}-{len(data):x}"'
+                headers["ETag"] = etag
+                headers["Cache-Control"] = "no-cache" if "vendor" not in rel else "public, max-age=604800"
+                if self.headers.get("If-None-Match") == etag:
+                    return self._send(HTTPStatus.NOT_MODIFIED, b"", ctype, headers)
+            self._send(200, data, ctype, headers)
+
+    return Handler
+
+
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:           # trình duyệt đóng kết nối giữa chừng là chuyện bình thường: không in traceback
+        import sys
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
+class UiServer:
+    def __init__(self, app: App, port: int = 8765) -> None:
+        self.app = app
+        self.httpd = _Server(("127.0.0.1", port), make_handler(app))
+        self.httpd.daemon_threads = True
+        app.port = self.httpd.server_address[1]
+        self.thread: threading.Thread | None = None
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.app.port}/"
+
+    def start(self) -> None:
+        self.app.start_runner()
+        self.thread = threading.Thread(target=self.httpd.serve_forever, name="ui-http", daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.app.stop()
+
+
+def serve(root: Path, port: int = 8765, open_browser: bool = True, run_loop: bool = True, echo=print) -> int:
+    import webbrowser
+    cfg = load_config(root)
+    orc = Orchestrator(cfg)
+    app = App(orc, run_loop=run_loop)
+    try:
+        srv = UiServer(app, port)
+    except OSError:
+        srv = UiServer(app, 0)                                           # cổng bận: tự chọn cổng khác
+    srv.start()
+    echo(f"ContentFactory đang chạy: {srv.url}   (Ctrl-C để dừng)")
+    if open_browser:
+        try:
+            webbrowser.open(srv.url)
+        except Exception:                                                # noqa: BLE001
+            pass
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        echo("Đang dừng…")
+    finally:
+        srv.stop()
+    return 0

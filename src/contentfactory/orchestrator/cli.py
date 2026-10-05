@@ -101,9 +101,12 @@ def _load_local_env(root: Path) -> None:
 
 
 BASIC_HELP = """\
-Hằng ngày chỉ cần:   cf go "<URL YouTube>" --channel <kênh> --open
+Hằng ngày chỉ cần:   cf ui   (mở giao diện: dán link, chọn kênh, RUN, mở output)
+                    hoặc:   cf go "<URL YouTube>" --channel <kênh> --open
 
 Lệnh cơ bản:
+  ui        mở giao diện web (cũng chạy nền: tự tiếp tục, đồng bộ video nền, dọn dẹp)
+  samples   tạo truyện/phụ đề/audio/video mẫu để thử khi chưa có gì
   go        URL + kênh -> chạy hết -> gói output (và đăng YouTube nếu đã cấu hình)
   status    xem các job (kèm đường dẫn gói output và link YouTube)
   open      mở thư mục output của job gần nhất
@@ -115,7 +118,7 @@ Lệnh cơ bản:
 Lệnh nâng cao: cf --advanced -h   (submit, plan, run, config, pools, retry-part, sequences, cleanup, resources...)
 """
 
-BASIC = {"go", "status", "open", "resume", "retry", "doctor", "channels", "channel-init", "setup", "update", "start", "demo"}
+BASIC = {"ui", "samples", "go", "status", "open", "resume", "retry", "doctor", "channels", "channel-init", "setup", "update", "start", "demo"}
 
 
 def build_parser(advanced: bool) -> argparse.ArgumentParser:
@@ -128,6 +131,14 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     def add(name: str, help: str):
         return sub.add_parser(name, help=help) if (name in BASIC or advanced) else sub.add_parser(name)     # không truyền help: lệnh ẩn không lọt vào -h
 
+    ui = add("ui", "mở giao diện web (máy chủ cục bộ 127.0.0.1 + chạy nền)")
+    ui.add_argument("--port", type=int, default=8765)
+    ui.add_argument("--no-open", action="store_true", help="không tự mở trình duyệt")
+    ui.add_argument("--no-runner", action="store_true", help="chỉ giao diện, không chạy vòng lặp xử lý job")
+    sm = add("samples", "tạo dữ liệu mẫu (truyện, phụ đề, audio, video nền) trong samples/ và đăng ký pool")
+    sm.add_argument("--dir", help="thư mục đích (mặc định: samples/ trong thư mục gốc)")
+    sm.add_argument("--no-register", action="store_true", help="không ghi pool/template vào config.local.json")
+    sm.add_argument("--force", action="store_true", help="tạo lại file đã có")
     g = add("go", "URL (hoặc file phụ đề) + kênh -> chạy hết -> gói output")
     g.add_argument("input", help="URL YouTube hoặc đường dẫn file phụ đề/transcript")
     g.add_argument("--channel", help="id kênh (mặc định: kênh trong job_defaults)")
@@ -214,6 +225,22 @@ def main(argv: list[str] | None = None) -> int:
     root = _root(a.root)
     _load_local_env(root)
     # ----- lệnh không cần dựng Orchestrator (không được hỏng vì cấu hình adapter sai/thiếu)
+    if a.cmd == "ui":
+        from . import webui
+        return webui.serve(root, a.port, not a.no_open, not a.no_runner)
+    if a.cmd == "samples":
+        from . import samples as SM
+        r = SM.make_samples(load_config(root), Path(a.dir) if a.dir else None, register=not a.no_register, force=a.force)
+        print(f"Dữ liệu mẫu trong {r['dir']}: tạo {len(r['created'])}, bỏ qua {len(r['skipped'])} file đã có")
+        for k in ("story", "subtitle", "audio"):
+            print(f"  {k:9}: {r[k]}")
+        print(f"  video nền : {r['video_dirs']['landscape']} (ngang), {r['video_dirs']['portrait']} (dọc)")
+        for x in r["registered"]:
+            print(f"  đã đăng ký: {x}")
+        for x in r["warnings"]:
+            print(f"  ! {x}")
+        print(r["next"])
+        return 0
     if a.cmd in ("doctor", "channels", "channel-init", "setup", "update", "demo"):
         from . import doctor as DR
         from . import ops

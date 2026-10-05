@@ -6,13 +6,21 @@ Từ **một link YouTube** ra **1 video YouTube (16:9) + N video TikTok (9:16, 
 link YouTube → phụ đề → truyện (Story) → giọng đọc (TTS) → audio chuẩn hoá → render YouTube + TikTok → thư mục output → (đăng YouTube)
 ```
 
-## Chạy hằng ngày — một lệnh
+## Chạy hằng ngày
+
+```text
+Mở ContentFactory  →  dán link YouTube  →  chọn kênh  →  RUN  →  Mở thư mục output
+```
+
+Mở bằng cách bấm đúp **`ContentFactory.cmd`** (hoặc `.\cf.cmd ui`): trình duyệt mở giao diện, ứng dụng xử lý job ngay trong nền. Hoặc không cần giao diện, một lệnh:
 
 ```powershell
 .\cf.cmd go "https://www.youtube.com/watch?v=..." --channel kenh_a --open
 ```
 
-Dán link, chọn kênh, chạy. `--open` mở thư mục kết quả khi xong. Không hỏi gì giữa chừng; mọi thứ suy ra được thì hệ thống tự chọn và **in ra đã chọn gì, vì sao** (giọng đọc, thư mục video nền, tên, số tập).
+Chưa có truyện/video để thử? Trong giao diện: **Chạy → "Chưa có truyện hoặc video để thử?" → Tạo dữ liệu mẫu** (hoặc `.\cf.cmd samples`): hệ thống tạo truyện, phụ đề, audio và video nền mẫu rồi cấu hình giúp bạn.
+
+Không hỏi gì giữa chừng; mọi thứ suy ra được thì hệ thống tự chọn và **cho bạn thấy đã chọn gì, vì sao** (giọng đọc, video nền, tên, số tập).
 
 Kết quả trong `output\<ngày>_<tên>\`:
 
@@ -43,6 +51,8 @@ Cập nhật: `.\update.ps1` (git pull, đưa module về đúng phiên bản, c
 
 | Lệnh | Việc |
 |---|---|
+| `cf ui` | mở giao diện (và chạy nền) |
+| `cf samples` | tạo dữ liệu mẫu để thử |
 | `cf go "<url>" --channel K [--title "..."] [--open]` | chạy hết, ra gói output |
 | `cf status` | các job + đường dẫn output + link YouTube |
 | `cf open [job]` | mở thư mục output gần nhất |
@@ -82,11 +92,11 @@ Thứ tự ưu tiên: tham số bạn gõ > preset kênh > mặc định. Chỉ 
 - **Upload YouTube thật chưa từng chạy** (cần OAuth client + tài khoản); quota, playlist, lịch đăng chưa kiểm chứng.
 - **Story thật (Claude CLI) chưa kiểm chứng đủ** với tiếng Việt và video dài; chi phí/token chưa đo.
 - Render ContentFlow video dài 10–60 phút và NVENC chưa kiểm chứng ở quy mô thật.
-- Thumbnail cần template + font tự đặt; chưa có UI (chỉ CLI); chưa có thông báo (email/Telegram); chỉ Windows được thử (script `.ps1`/`.cmd`).
+- Thumbnail cần template + font tự đặt (dữ liệu mẫu tạo giúp để thử); giao diện chỉ tiếng Việt và mới thử bằng Chrome; chưa có thông báo (email/Telegram); chỉ Windows được thử (script `.ps1`/`.cmd`).
 
 ## Tài liệu
 
-`docs/USER_GUIDE.md` (dùng hằng ngày, chạy một phần pipeline), `docs/TROUBLESHOOTING.md` (mã lỗi và cách xử lý), `docs/PRODUCTION_CHECKLIST.md` (cái gì đã kiểm chứng thật, cái gì chưa), `docs/ARCHITECTURE.md` (tóm tắt kiến trúc).
+`docs/USER_GUIDE.md` (dùng hằng ngày, chạy một phần pipeline), `docs/UI_GUIDE.md` (giao diện: màn hình, trạng thái, quy ước), `docs/DESIGN_SYSTEM.md`, `docs/PERFORMANCE.md`, `docs/TROUBLESHOOTING.md` (mã lỗi và cách xử lý), `docs/PRODUCTION_CHECKLIST.md` (cái gì đã kiểm chứng thật, cái gì chưa), `docs/ARCHITECTURE.md` (tóm tắt kiến trúc).
 
 ## Dành cho người phát triển
 

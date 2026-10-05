@@ -1,0 +1,13 @@
+/* Màn hình Giọng đọc (TTS). Chỉ phần bổ sung; token và component nằm ở app.css. */
+.tts-chips { display: flex; flex-wrap: wrap; gap: var(--s-1); }
+.tts-needs { margin: 0; padding-left: var(--s-4); font-size: var(--fs-sm); }
+.tts-needs li { margin: 1px 0; }
+.tts-cred { display: flex; flex-wrap: wrap; gap: var(--s-1); margin-top: var(--s-1); }
+.tts-auto { display: flex; gap: var(--s-3); align-items: flex-start; flex-wrap: wrap; }
+.tts-auto .big { font-size: var(--fs-lg); font-weight: 650; }
+.tts-facts td:first-child { font-family: var(--mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.tts-facts td { overflow-wrap: anywhere; }
+.tts-facts details summary { cursor: pointer; font-size: var(--fs-xs); color: var(--muted); }
+.tts-facts details ul { margin: var(--s-1) 0 0; padding-left: var(--s-4); font-size: var(--fs-xs); }
+.tts-result { display: flex; flex-direction: column; gap: var(--s-3); }
+.tts-mono { font-family: var(--mono); font-size: var(--fs-sm); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); padding: var(--s-2) var(--s-3); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }

@@ -20,6 +20,19 @@ Bắt đầu bằng: `cf doctor` (mỗi mục lỗi kèm cách sửa) rồi `cf 
 | `IMPORT_INVALID` | dùng lại artifact đã bị Auto Cleanup dọn (job > 14 ngày) | chạy lại từ stage đầu |
 | `UNEXPECTED` | lỗi chưa lường trước trong stage | gửi `job.log.jsonl` (có stack trace ở sự kiện `stage_exception`) |
 
+## Giao diện (`cf ui`)
+
+| Hiện tượng | Nguyên nhân | Cách xử lý |
+|---|---|---|
+| Trình duyệt không mở / trang trắng | cổng 8765 bận hoặc chặn script | xem dòng "ContentFactory đang chạy: http://…" (tự đổi cổng khi bận); thử `cf ui --port 8800`; tải lại trang (Ctrl+F5) |
+| "Thiếu hoặc sai token phiên" | trang mở từ phiên cũ của ứng dụng | tải lại trang |
+| Banner "Mất kết nối tới ContentFactory" | ứng dụng (cửa sổ dòng lệnh) đã đóng | mở lại `cf ui`; job dở dang tự chạy tiếp |
+| Chip "Chưa chạy nền" | mở bằng `cf ui --no-runner` | mở lại không có `--no-runner` để job được xử lý |
+| Job nằm "Đang xếp hàng" mãi | không có tiến trình xử lý | đảm bảo `cf ui` (hoặc `cf start`) đang chạy; xem Doctor |
+| "Chọn file…" báo máy không có hộp thoại | Python không có tkinter | dán đường dẫn đầy đủ vào ô Đầu vào |
+| Nút RUN không bật | còn mục báo thiếu ở trên nút (tên truyện, khai báo trẻ em, kênh lỗi…) | làm theo dòng hướng dẫn màu cam |
+| Log của giao diện | lỗi nội bộ của máy chủ UI | `runtime/logs/ui.log` |
+
 ## Tình huống
 
 **Job đứng yên, không chạy:** có thể đang bị giữ (`cf status`); hoặc chưa có tiến trình runner (`cf go` tự chạy; `cf submit` cần `cf run` hoặc `cf start`).

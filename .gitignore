@@ -18,3 +18,6 @@ modules/*/
 # Python
 __pycache__/
 *.pyc
+/scripts/ui_qa/node_modules/
+/scripts/ui_qa/out/
+/samples/

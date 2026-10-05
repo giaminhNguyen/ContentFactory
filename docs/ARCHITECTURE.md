@@ -50,4 +50,4 @@ Pool thread theo job; mỗi stage có **lane tài nguyên** (`limits`: mặc đ�
 
 ## Giao diện
 
-`cf ui` chạy máy chủ cục bộ (stdlib, chỉ `127.0.0.1`) cùng vòng lặp orchestrator; giao diện web tĩnh (không bước build) nói chuyện với một facade `orchestrator/service.py`. Xem `docs/UI_GUIDE.md`.
+`cf ui` chạy máy chủ cục bộ (stdlib, chỉ `127.0.0.1`, token phiên) cùng vòng lặp orchestrator; giao diện web tĩnh (ES modules, không bước build, GSAP đóng gói cục bộ) nói chuyện qua facade `service.py`/`service_admin.py` (+ `diagnose.py` dùng chung với CLI). Xem `docs/UI_GUIDE.md`, `docs/DESIGN_SYSTEM.md`, D-89…D-91.

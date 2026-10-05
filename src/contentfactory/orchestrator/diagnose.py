@@ -14,14 +14,14 @@ from ..jobs.workspace import job_dir
 USER_ONLY_HOLDS = frozenset({P.PAUSED_CREDENTIAL, P.PAUSED_MISSING_INPUT})
 
 # hold_reason -> (tiêu đề ngắn, giải thích, việc cần làm). {job} được thay bằng id job.
-HOLD_INFO: dict[str, tuple[str, str, str]] = {
-    P.PAUSED_NETWORK: ("Đang chờ mạng", "Mất kết nối mạng hoặc dịch vụ không trả lời.", "Tự tiếp tục khi có mạng nếu Auto Resume bật; hoặc bấm Tiếp tục khi mạng ổn."),
-    P.PAUSED_TOKEN: ("Đang chờ hạn mức AI", "Hết token/usage của dịch vụ AI (Claude/TTS API).", "Tự tiếp tục khi tới thời điểm reset nếu Auto Resume bật."),
-    P.PAUSED_QUOTA: ("Đang chờ quota", "Hết quota của nhà cung cấp (vd YouTube upload mỗi ngày).", "Tự tiếp tục khi quota reset nếu Auto Resume bật."),
-    P.PAUSED_DISK: ("Không đủ chỗ trống đĩa", "Ổ đĩa không còn đủ dung lượng cho stage này.", "Dọn dẹp (Cleanup) hoặc giải phóng ổ đĩa, rồi Tiếp tục."),
-    P.PAUSED_RESOURCE: ("Một công cụ chưa sẵn sàng", "ffmpeg, daemon upload, ContentFlow hoặc công cụ khác chưa chạy được.", "Mở Doctor để xem công cụ nào thiếu, sửa rồi Tiếp tục."),
-    P.PAUSED_CREDENTIAL: ("Cần xử lý tài khoản/credential", "Đăng nhập hoặc API key không hợp lệ/hết hạn.", "Đăng nhập lại (vd `yt-uploader login`) hoặc cập nhật key, rồi Tiếp tục."),
-    P.PAUSED_MISSING_INPUT: ("Thiếu dữ liệu đầu vào", "Thiếu file người dùng phải cung cấp (thumbnail template, thư mục video nguồn, …).", "Bổ sung theo chi tiết bên dưới rồi Tiếp tục."),
+HOLD_INFO: dict[str, tuple[str, str, str, str]] = {
+    P.PAUSED_NETWORK: ("Đang chờ mạng", "Mất kết nối mạng hoặc dịch vụ không trả lời.", "mạng ổn định trở lại", "Kiểm tra kết nối mạng."),
+    P.PAUSED_TOKEN: ("Đang chờ hạn mức AI", "Hết token/usage của dịch vụ AI (Claude/TTS API).", "hạn mức AI được reset", "Chờ reset hạn mức hoặc đổi tài khoản/API key."),
+    P.PAUSED_QUOTA: ("Đang chờ quota", "Hết quota của nhà cung cấp (vd YouTube upload mỗi ngày).", "quota được reset", "Chờ quota reset (thường theo ngày)."),
+    P.PAUSED_DISK: ("Không đủ chỗ trống đĩa", "Ổ đĩa không còn đủ dung lượng cho bước này.", "ổ đĩa có đủ chỗ trống", "Dọn dẹp (Cài đặt → Lưu trữ) hoặc giải phóng ổ đĩa."),
+    P.PAUSED_RESOURCE: ("Một công cụ chưa sẵn sàng", "ffmpeg, daemon upload, ContentFlow hoặc công cụ khác chưa chạy được.", "công cụ đó chạy được trở lại", "Mở Doctor để xem công cụ nào thiếu và sửa."),
+    P.PAUSED_CREDENTIAL: ("Cần xử lý tài khoản/credential", "Đăng nhập hoặc API key không hợp lệ/hết hạn.", "", "Đăng nhập lại (vd `yt-uploader login`) hoặc cập nhật key, rồi bấm Tiếp tục."),
+    P.PAUSED_MISSING_INPUT: ("Thiếu dữ liệu đầu vào", "Thiếu file người dùng phải cung cấp (template thumbnail, thư mục video nguồn…).", "", "Bổ sung theo chi tiết rồi bấm Tiếp tục."),
 }
 
 STAGE_LABEL = {"source": "Phụ đề", "story": "Truyện", "tts": "Giọng đọc (TTS)", "audio": "Audio", "render_youtube": "Video YouTube",
@@ -56,8 +56,8 @@ def hold_text(job: dict) -> dict | None:
     hr = job.get("hold_reason")
     if not hr:
         return None
-    title, why, todo = HOLD_INFO.get(hr, (hr, job.get("hold_detail") or "", "Mở Doctor để kiểm tra."))
-    return {"reason": hr, "title": title, "why": why, "todo": todo, "detail": job.get("hold_detail"), "needs_user": bool(job.get("needs_user")),
+    title, why, cond, todo = HOLD_INFO.get(hr, (hr, job.get("hold_detail") or "", "", "Mở Doctor để kiểm tra."))
+    return {"reason": hr, "title": title, "why": why, "cond": cond, "todo": todo, "detail": job.get("hold_detail"), "needs_user": bool(job.get("needs_user")),
             "auto_resume": bool(job.get("auto_resume")), "since": job.get("hold_since"), "resume_after": job.get("resume_after")}
 
 
@@ -77,15 +77,17 @@ def explain(orc, job_id: str) -> dict:
     if status == "failed":
         resume = {"mode": "retry", "text": f"Chạy lại đúng stage '{stage}': các stage trước giữ nguyên, không làm lại.", "actions": ["retry"], "cli": f"retry {job_id}"}
     elif hold:
-        if hold["needs_user"] or hold["reason"] in USER_ONLY_HOLDS:
+        cond = hold["cond"] or "nguyên nhân đã hết"
+        if hold["reason"] in USER_ONLY_HOLDS:
             resume = {"mode": "manual", "text": hold["todo"], "actions": ["resume"], "cli": f"resume {job_id}"}
+        elif hold["needs_user"]:
+            resume = {"mode": "manual", "text": f"{cond[:1].upper()}{cond[1:]} — bấm Tiếp tục để chạy tiếp.", "actions": ["resume"], "cli": f"resume {job_id}"}
         elif j.get("auto_resume"):
             when = time.strftime("%H:%M", time.localtime(j["resume_after"])) if j.get("resume_after") else None
-            resume = {"mode": "auto", "text": "Auto Resume đang bật: " + (f"tự thử lại lúc {when}. " if when else "tự tiếp tục khi hết nguyên nhân. ") + hold["todo"],
+            resume = {"mode": "auto", "text": f"Auto Resume đang bật: tự chạy tiếp khi {cond}" + (f" (dự kiến sau {when})" if when else "") + ".",
                       "actions": ["resume_now", "disable_auto_resume"], "cli": f"resume {job_id} --now"}
         else:
-            resume = {"mode": "manual", "text": "Auto Resume đang tắt: bấm Tiếp tục khi nguyên nhân đã hết. " + hold["todo"],
-                      "actions": ["resume", "enable_auto_resume"], "cli": f"resume {job_id}"}
+            resume = {"mode": "manual", "text": f"Auto Resume đang tắt: bấm Tiếp tục khi {cond}.", "actions": ["resume", "enable_auto_resume"], "cli": f"resume {job_id}"}
     else:
         resume = {"mode": "none", "text": "", "actions": [], "cli": None}
     arts = [{"kind": a["kind"], "stage": a["stage"], "path": a["path"]} for a in orc.store.artifacts(job_id)]

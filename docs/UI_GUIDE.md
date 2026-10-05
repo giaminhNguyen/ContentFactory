@@ -1,0 +1,87 @@
+# Giao diện ContentFactory — hướng dẫn
+
+## 1. Dùng hằng ngày
+
+```text
+Mở ContentFactory (ContentFactory.cmd hoặc `cf ui`)  →  dán link  →  (chọn kênh)  →  RUN  →  Mở thư mục output
+```
+
+`cf ui` mở trình duyệt tới máy chủ cục bộ `http://127.0.0.1:8765` **và chạy luôn vòng lặp xử lý job trong cùng tiến trình** (tự bật daemon upload, đồng bộ video nền, tự tiếp tục khi hết sự cố, dọn dẹp). Đóng cửa sổ dòng lệnh = dừng; job dở dang tự chạy tiếp lần sau. `--port N`, `--no-open`, `--no-runner` (chỉ xem, không xử lý job).
+
+Chưa có truyện/video để thử? Màn hình **Chạy → "Chưa có truyện hoặc video để thử?" → Tạo dữ liệu mẫu** (hoặc `cf samples`): sinh truyện, phụ đề, audio, video nền ngang/dọc, template thumbnail trong `samples/`, đăng ký pool giúp bạn; rồi bấm "Dùng truyện mẫu / phụ đề mẫu / audio mẫu" và RUN.
+
+## 2. Các màn hình
+
+| Màn hình | Việc |
+|---|---|
+| **Chạy** | Ô đầu vào (link YouTube hoặc đường dẫn file; nút Chọn file…) → hệ thống nhận dạng (Link YouTube / Phụ đề / Truyện / Audio / Project) và **chỉ đề xuất chế độ hợp lệ**; chọn kênh; ô tên truyện chỉ bắt buộc khi đầu vào không có tiêu đề (truyện, audio); khai báo "dành cho trẻ em" chỉ hỏi khi kênh chưa khai; xem trước "Hệ thống sẽ làm" (các bước chạy/bỏ qua) và những gì **tự chọn** (giọng đọc, video nền, tập kế tiếp, chế độ đăng); Auto Resume bật/tắt; RUN. Bên dưới: 5 job gần nhất. |
+| **Job** | Lọc: Tất cả / Đang chạy / Đang chờ / Cần xử lý / Hoàn tất (kèm số lượng); mỗi dòng: tên, kênh, bước hiện tại, tiến độ, trạng thái, nút đúng ngữ cảnh. Phân trang "Tải thêm". |
+| **Chi tiết job** | Pipeline 8 bước (xong / dùng lại / có sẵn / đang chạy / chờ / tạm dừng / lỗi / không chạy) kèm tiến độ và từng part TikTok; khung giải thích **vì sao đang dừng và hệ thống sẽ làm gì** + nút (Tiếp tục, Thử lại ngay, Chạy lại stage lỗi, Bật/Tắt Auto Resume); công tắc Auto Resume; khi xong: **Mở thư mục output**, link YouTube, danh sách file, tiêu đề/mô tả sẽ dùng, cảnh báo; "Chi tiết kỹ thuật" (tự chọn, các lần chạy, nhật ký) thu gọn. |
+| **Kênh** | Form có cấu trúc (không cần biết JSON): tên, mẫu tiêu đề/mô tả, số tập, watermark (tải lên/chọn), giọng đọc ưa thích, video nền cho YouTube/TikTok, profile render, tốc độ + độ dài part TikTok, chế độ đăng/tài khoản/tag/playlist/khai báo trẻ em, **xem trước** tiêu đề YouTube + chữ thumbnail; JSON thô ở mục Nâng cao. |
+| **Giọng đọc** | Engine đang dùng + sức khoẻ (cảnh báo rõ khi là giọng giả), "TTS: Auto — <profile>", bảng profile (trạng thái, ngôn ngữ, Auto Tune, độ tin cậy, thứ còn thiếu, credential chỉ hiện **tên biến** có/không), chi tiết bằng chứng; thêm engine mới chỉ bằng repo/docs (Analyzer tự phân tích). |
+| **Video nguồn** | Pool: thư mục, số video, hướng khung hình, trạng thái đồng bộ, lần gần nhất, vấn đề; Đồng bộ ngay/tất cả, thêm/sửa/xoá; tạo video mẫu. |
+| **Cài đặt & Doctor** | Tab Sức khoẻ hệ thống (12 hạng mục: Story, Phụ đề, TTS, FFmpeg, ContentFlow, GPU/NVENC, YouTube uploader, Nguồn video, Ổ đĩa, Cơ sở dữ liệu, Kênh, Hệ thống; trạng thái Ổn / Cần xem / Cần xử lý / Chưa dùng + cách sửa); tab theo nhóm: Chung, Audio, Render, Đăng, Tài nguyên, Lưu trữ (dùng dung lượng + dọn dẹp xem trước/xác nhận), Nâng cao (cấu hình đang áp dụng, đã che bí mật). Tự lưu khi đổi; thay đổi nguy hiểm hỏi xác nhận. |
+
+## 3. Cơ bản và Nâng cao
+
+Cơ bản = màn hình Chạy + Job. Mọi chi tiết khác là **tiết lộ dần**: thu gọn trong chi tiết job, tab Nâng cao, trang riêng. Lệnh dòng lệnh nâng cao (`cf --advanced -h`) và cấu hình JSON vẫn đầy đủ.
+
+## 4. Backend → giao diện (trạng thái)
+
+| Backend (`jobs.state`, `hold_reason`) | Nhóm hiển thị (`diagnose.ui_status`) | Nhãn | Người dùng làm gì |
+|---|---|---|---|
+| `NEW`, `*_READY` không bị giữ | `queued` | Đang xếp hàng | không |
+| `*_PROCESSING/RUNNING/RENDERING/PUBLISHING`, `UPLOADING` | `running` | Đang chạy | không |
+| `PAUSED_NETWORK/TOKEN/QUOTA/DISK/RESOURCE` | `waiting` | Đang chờ mạng / hạn mức AI / quota / ổ đĩa / công cụ | chờ (Auto Resume bật) hoặc bấm Tiếp tục |
+| `PAUSED_CREDENTIAL`, `PAUSED_MISSING_INPUT`, hoặc `needs_user` | `attention` | Cần bạn xử lý | làm theo hướng dẫn rồi Tiếp tục |
+| `FAILED` | `failed` | Lỗi | xem nguyên nhân, Chạy lại stage lỗi |
+| `PUBLISHED` hoặc đã tới `target_stage` | `completed` | Hoàn tất | Mở output |
+
+Nhóm lọc: Đang chạy = running+queued; Cần xử lý = attention+failed. Trạng thái từng bước (`done, reused, provided, running, waiting, held, failed, not_planned`) do `service._pipeline` tính từ `start_stage/target_stage`, các lần chạy và artifact import (bảng ở `js/status.js`; test `test_ui_js` khoá sự khớp giữa backend và frontend).
+
+## 5. Kiến trúc
+
+```text
+trình duyệt (ES modules, không build, GSAP vendor)
+   │  JSON qua HTTP 127.0.0.1, header X-CF-Token
+webui.py        máy chủ stdlib: route, token/Host/Origin, tĩnh (CSP), vòng lặp orchestrator
+service.py      facade: nhận dạng đầu vào, xem trước, tạo job (idempotent), danh sách/chi tiết, kênh, output
+service_admin.py  cài đặt (bảng khai báo), TTS, pool, doctor, dọn dẹp, tác vụ nền
+diagnose.py     explain()/ui_status() dùng chung với CLI
+```
+Frontend không chứa logic nghiệp vụ. Bảo mật cục bộ: chỉ `127.0.0.1`; kiểm `Host` (chống DNS rebinding); mọi `/api` cần token ngẫu nhiên mỗi phiên (nhúng vào `index.html`) và `Origin` cùng nguồn cho thao tác ghi (chống CSRF); không có endpoint nhận đường dẫn tuỳ ý để mở/đọc (mở output chỉ dùng đường dẫn pipeline đã ghi và nằm trong `output/`); CSP `default-src 'self'`; không `innerHTML` với dữ liệu.
+
+### API (tất cả `/api`, JSON; lỗi: `{"error":{"code","message","hint"}}` tiếng Việt, không stack trace)
+
+`GET bootstrap, runtime, jobs?status&limit&offset&since, jobs/<id>, jobs/<id>/log, channels, channels/<id>, channels/<id>/preview, tts, tts/profiles/<n>, pools, settings, config/effective, doctor, tasks/<id>` · `POST detect, preview, runs, jobs/<id>/{resume,retry,auto-resume,open-output}, channels, tts/onboard, pools/sync, cleanup, doctor/run, samples, pick` · `PUT channels/<id>, channels/<id>/asset, pools/<n>, settings` · `DELETE pools/<n>`.
+`jobs?since=<version>` trả `{changed:false}` rất nhẹ khi không có gì mới (version = số job + `updated_at` lớn nhất; tiến độ cũng cập nhật `updated_at`).
+
+## 6. Chống thao tác trùng
+
+Hai lớp: (1) giao diện khóa nút trong lúc gọi (`busy()`), RUN còn khóa bằng cờ cục bộ; (2) backend: `request_id` (gửi lại cùng yêu cầu ⇒ cùng job, nhớ qua khởi động lại) và chữ ký nội dung (cùng đầu vào + kênh + chế độ + tên đang chạy ⇒ trả job đó thay vì tạo thêm). Resume/Retry vốn idempotent ở core (CAS trạng thái). Upload dùng `idempotency_key` của daemon.
+
+## 7. Animation (GSAP)
+
+`js/motion.js` là chỗ duy nhất gọi GSAP. Quy ước: chỉ `opacity`/`transform` (và `height` cho vùng thu gọn); **không `autoAlpha`** (ẩn bằng visibility làm mất focus); 120–450 ms; mỗi view có `scope` (`gsap.context`) và router `revert()` khi rời view ⇒ không tween/listener mồ côi (QA đo); `prefers-reduced-motion` ⇒ không tween, trạng thái cuối áp ngay (phản hồi vẫn thấy qua đổi màu/chữ); vùng cập nhật liên tục (tiến độ) dùng `scaleX`, `overwrite: "auto"`; danh sách vận hành > 10 dòng không stagger. Dùng ở: chuyển view, dòng mới vào danh sách, pulse khi đổi trạng thái, thanh tiến độ, mở/đóng Nâng cao, dấu tích hoàn tất, toast, dialog.
+
+## 8. Quy tắc component
+
+Không tự dựng badge/nút/alert/empty/field trong view: dùng `components.js`. View = `export async function mount(root, ctx)` trả `{destroy()}`; mọi poller/timer/listener tạo trong `mount` phải dừng trong `destroy`. Poller (`js/poller.js`): không chồng yêu cầu, ngừng khi tab ẩn, nhanh khi có việc chạy, chậm khi rảnh, lùi dần khi lỗi, `since` để rẻ. Logic thuần (format, trạng thái, poller) có test `node --test`.
+
+## 9. Cách thêm…
+
+- **Một tùy chọn cài đặt:** thêm một dòng vào `SETTINGS` ở `service_admin.py` (khóa chấm, nhóm, nhãn, kiểu `bool|int|number|text|select|channel`, mô tả, khoảng/`options`/`danger`/`restart`). Giao diện, kiểm tra giá trị, lưu vào `config.local.json` và cập nhật cấu hình sống đều tự có.
+- **Một trạng thái/nhãn:** thêm vào `js/status.js` (và `diagnose.py` nếu là nhóm mới); test `test_ui_js` sẽ báo nếu lệch.
+- **Một chế độ chạy:** thêm vào `RUN_MODES` + `KIND_MODES` ở `service.py` (ánh xạ vào mode/target của core; không lộ `start_stage`).
+- **Một view:** `js/views/<tên>.js` + một dòng trong `ROUTES` (`router.js`) + một mục `NAV` (`main.js`).
+- **Một endpoint:** hàm trong `Api` (`webui.py`) với `@route`; logic ở facade, có test ở `tests/test_ui.py`.
+
+## 10. Kiểm thử giao diện
+
+```powershell
+python -m unittest tests.test_ui tests.test_ui_js tests.test_samples      # facade, HTTP, logic thuần (node), dữ liệu mẫu
+cd scripts\ui_qa ; npm install                                            # một lần: playwright-core + axe-core (dùng Chrome đã cài)
+python scripts\ui_qa\fixture_server.py --port 8799                        # UI + dữ liệu mẫu (job xong/lỗi/giữ/đang chạy); thêm --many 250 cho danh sách lớn
+node scripts\ui_qa\qa.mjs http://127.0.0.1:8799 <root>\fixture.json --shots out   # trang × cỡ cửa sổ × sáng/tối, axe, tràn ngang, luồng, bàn phím, reduced-motion, rò rỉ
+python scripts\ui_qa\real_root.py --port 8802                             # UI thật trên ffmpeg + ContentFlow thật; qa.mjs --only real
+```

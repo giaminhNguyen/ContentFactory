@@ -19,6 +19,20 @@ Trạng thái kiểm chứng thực tế trên máy phát triển (Windows 11, P
 | Resume/retry: mạng, quota, token, đĩa, kill, restart, part lỗi, upload lỗi, Auto Resume bật/tắt | test_pause_resume, test_resume, test_failure_retry, test_render, test_publishing | OK |
 | Dữ liệu: `project.title`, tiêu đề `[Full Audio N] \| …`, sequence ổn định qua retry, mô tả từ Channel Config, watermark theo kênh, `project.json`, output không có file tạm | test_publishing, test_automode | OK |
 
+### Giao diện (Phase 9) — kiểm chứng bằng Chrome thật
+
+| Hạng mục | Cách kiểm | Kết quả |
+|---|---|---|
+| Luồng hằng ngày (dán link → RUN → theo dõi → Mở output), bấm đúp RUN chỉ tạo 1 job | `qa.mjs --only daily` | OK |
+| Chế độ một phần (truyện/audio có sẵn, bắt buộc tên truyện, khai báo trẻ em) | `--only partial` | OK |
+| Job chờ mạng / cần đăng nhập / lỗi: giải thích, nút đúng ngữ cảnh, bật/tắt Auto Resume, không lộ stack trace | `--only paused` | OK |
+| Kênh (sửa/lưu/giữ sau tải lại), TTS (không lộ credential), cài đặt tự lưu, Doctor 12 nhóm | `--only config` | OK |
+| 7 trang × 4 cỡ cửa sổ × sáng/tối: không tràn ngang, không lỗi console/mạng, axe: 0 vi phạm nghiêm trọng | `--only pages` | OK (92 kiểm tra) |
+| Bàn phím/focus/dialog, reduced-motion, rò rỉ poller/listener/tween | `--only keyboard,motion,perf` | OK |
+| Danh sách 250 job, log dài, thời gian nạp, kích thước tài nguyên | `--only scale` | OK (`docs/PERFORMANCE.md`) |
+| **Ứng dụng thật**: tạo dữ liệu mẫu từ UI → RUN → ffmpeg + ContentFlow thật → YouTube 1920×1080, TikTok 1080×1920, thumbnail, tiêu đề đúng mẫu kênh | `real_root.py` + `--only real` | OK |
+| Dữ liệu mẫu qua đúng bộ kiểm story và QA audio thật | `tests/test_samples.py` | OK |
+
 ### Hiệu năng quan sát (CPU libx264, 1920×1080 / 1080×1920, audio 240 s)
 
 | Stage | Thời gian |
@@ -35,6 +49,7 @@ Nút thắt là render (CPU). Có NVENC thì nhanh hơn nhiều (chưa đo: máy
 
 | Hạng mục | Thiếu gì | Cách kiểm chứng khi có |
 |---|---|---|
+| Giao diện trên Firefox/Safari, máy yếu, FPS hoạt họa bằng số | chỉ có Chrome; headless không đo FPS tin cậy | thử tay trên các trình duyệt khác; đo bằng DevTools Performance |
 | Story thật bằng Claude Code CLI (tiếng Việt, truyện dài) | tốn token tài khoản; chưa có phiên chạy được duyệt chi phí | `python scripts/validate_real.py <URL> --story real` (thêm `--max-budget-usd` ở `run_real_job.py`) |
 | TTS thật | chưa onboard engine nào | Phase TTS: `scripts/tts_onboard.py` |
 | Upload YouTube thật | cần OAuth client Google + tài khoản | `setup` → `yt-uploader login` → `cf go ... ` với `privacy: private` |

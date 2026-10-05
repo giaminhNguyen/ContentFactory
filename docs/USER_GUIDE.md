@@ -6,7 +6,11 @@
 Mở ContentFactory  →  dán link YouTube  →  chọn kênh  →  RUN  →  Mở thư mục Output
 ```
 
-**Cách nhanh nhất (một lệnh):**
+**Bằng giao diện (khuyên dùng):** bấm đúp `ContentFactory.cmd` (hoặc `.\cf.cmd ui`). Màn hình **Chạy**: dán link (hoặc chọn file phụ đề/truyện/audio), chọn kênh nếu cần, bấm **RUN**; hệ thống chuyển tới trang theo dõi job và khi xong có nút **Mở thư mục output**. Chi tiết từng màn hình: `docs/UI_GUIDE.md`.
+
+**Chưa có truyện/video để thử?** Chạy → "Chưa có truyện hoặc video để thử?" → **Tạo dữ liệu mẫu** → "Dùng truyện mẫu" → chọn "Đọc + dựng video + đóng gói + đăng" → đặt tên → RUN. (Dòng lệnh: `.\cf.cmd samples`.)
+
+**Không cần giao diện (một lệnh):**
 
 ```powershell
 .\cf.cmd go "https://www.youtube.com/watch?v=..." --channel kenh_a --open
