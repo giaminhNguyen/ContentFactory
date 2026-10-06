@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS transitions(
   from_state TEXT, to_state TEXT NOT NULL, stage TEXT, attempt INTEGER, note TEXT);
 """
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # v1 (Phase 2.9): điều khiển job (start/target stage), hold + auto resume, checkpoint, config snapshot, resource monitor
 V1_JOB_COLUMNS = (
     ("start_stage", "TEXT"), ("target_stage", "TEXT"), ("target_idx", "INTEGER"),
@@ -88,6 +88,27 @@ V4_SQL = (
          created_at REAL NOT NULL, created_by TEXT NOT NULL, apply_policy TEXT NOT NULL, change TEXT NOT NULL,
          impact TEXT, sig TEXT, applied_at REAL, UNIQUE(job_id, revision))""",
     "CREATE UNIQUE INDEX IF NOT EXISTS pipeline_revisions_pending ON pipeline_revisions(job_id) WHERE status='pending'",
+)
+
+# v5 (Agent Plan Phase 4): Channel Run / Batch. Batch chỉ ĐIỀU PHỐI (enqueue job con + tổng hợp trạng thái); mỗi video vẫn là một job độc lập.
+# jobs.batch_id nối job con với batch; jobs.source_key ("youtube:<video_id>") + jobs.channel_id (kênh xuất bản) để chống xử lý trùng; chỉ mục duy nhất
+# (batch_id, source_key) khiến tạo trùng một video trong cùng batch (bấm đúp, chạy lại sau crash) không thể sinh hai job.
+V5_JOB_COLUMNS = (("batch_id", "TEXT"), ("source_key", "TEXT"), ("channel_id", "TEXT"))
+V5_SQL = (
+    "CREATE INDEX IF NOT EXISTS jobs_batch ON jobs(batch_id)",
+    "CREATE INDEX IF NOT EXISTS jobs_source ON jobs(source_key, channel_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS jobs_batch_source ON jobs(batch_id, source_key) WHERE batch_id IS NOT NULL AND source_key IS NOT NULL",
+    """CREATE TABLE IF NOT EXISTS batches(
+         id TEXT PRIMARY KEY, seq INTEGER UNIQUE NOT NULL, kind TEXT NOT NULL, source_provider TEXT NOT NULL, source_id TEXT NOT NULL,
+         source_url TEXT NOT NULL, source_title TEXT, source_channel_id TEXT, source_channel_url TEXT, source_channel_title TEXT,
+         output_channel_id TEXT NOT NULL, selection_spec TEXT NOT NULL, pipeline_spec TEXT NOT NULL, options TEXT NOT NULL,
+         control_state TEXT NOT NULL DEFAULT 'RUNNING', request_id TEXT UNIQUE, created_at REAL NOT NULL, updated_at REAL NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS batches_source ON batches(source_provider, source_id)",
+    """CREATE TABLE IF NOT EXISTS batch_items(
+         batch_id TEXT NOT NULL, position INTEGER NOT NULL, source_video_id TEXT NOT NULL, source_video_url TEXT NOT NULL, title TEXT,
+         published_at TEXT, duration REAL, job_id TEXT, status TEXT NOT NULL DEFAULT 'pending', skip_reason TEXT, error TEXT, metadata TEXT,
+         PRIMARY KEY(batch_id, source_video_id))""",
+    "CREATE INDEX IF NOT EXISTS batch_items_status ON batch_items(status)",
 )
 
 _RUNNING_STATES = tuple(s.running_state for s in P.STAGES)
@@ -196,6 +217,14 @@ class JobStore:
                             c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
                     for sql in V4_SQL:
                         c.execute(sql)
+                if ver < 5:
+                    have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+                    for name, decl in V5_JOB_COLUMNS:
+                        if name not in have:
+                            c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
+                    for sql in V5_SQL:
+                        c.execute(sql)
+                    c.execute("UPDATE jobs SET channel_id=json_extract(params,'$.channel') WHERE channel_id IS NULL")        # job cũ: kênh xuất bản lấy từ params
                 if ver < SCHEMA_VERSION:
                     c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
@@ -228,18 +257,19 @@ class JobStore:
     def create_job(self, params: dict, priority: int = 0, now: float | None = None, *, state: str = P.NEW,
                    start_stage: str | None = None, target_stage: str | None = None,
                    auto_resume: bool | None = None, snapshot: dict | None = None, config_hash: str | None = None,
-                   pipeline: dict | None = None) -> str:
+                   pipeline: dict | None = None, batch_id: str | None = None, source_key: str | None = None,
+                   channel_id: str | None = None) -> str:
         now = now or time.time()
         target_idx = P.INDEX[target_stage] if target_stage else None
         with self._tx() as c:
             seq = c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM jobs").fetchone()[0]
             job_id = f"{seq:06d}"
             c.execute("INSERT INTO jobs(id,seq,created_at,updated_at,state,params,priority,start_stage,target_stage,"
-                      "target_idx,auto_resume,config_snapshot,config_hash,pipeline_spec) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      "target_idx,auto_resume,config_snapshot,config_hash,pipeline_spec,batch_id,source_key,channel_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (job_id, seq, now, now, state, json.dumps(params, ensure_ascii=False), priority, start_stage,
                        target_stage, target_idx, None if auto_resume is None else int(auto_resume),
                        json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None, config_hash,
-                       json.dumps(pipeline, ensure_ascii=False) if pipeline is not None else None))
+                       json.dumps(pipeline, ensure_ascii=False) if pipeline is not None else None, batch_id, source_key, channel_id))
             c.execute("INSERT INTO transitions(ts,job_id,from_state,to_state,note) VALUES(?,?,NULL,?,?)",
                       (now, job_id, state, "created"))
         return job_id
@@ -266,7 +296,7 @@ class JobStore:
 
     def job_index(self) -> list[dict]:
         """Bản nhẹ cho UI: chỉ các cột đủ để phân nhóm trạng thái (không parse params/snapshot), mới nhất trước."""
-        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, updated_at FROM jobs ORDER BY seq DESC")]
+        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, batch_id, updated_at FROM jobs ORDER BY seq DESC")]
 
     def jobs_by_ids(self, ids: list[str]) -> list[dict]:
         if not ids:
@@ -616,6 +646,102 @@ class JobStore:
                       (now, rev["job_id"], expect_state, new_state, None, f"pipeline revision {rev['revision']} applied"
                        + (f" (rewind -> {new_state})" if new_state != expect_state else "")))
         return "applied"
+
+    # -- Channel Run / Batch ------------------------------------------------------------------------
+    @staticmethod
+    def _batch(r: sqlite3.Row) -> dict:
+        d = dict(r)
+        for k in ("selection_spec", "pipeline_spec", "options"):
+            d[k] = json.loads(d[k])
+        return d
+
+    def create_batch(self, spec: dict, items: list[dict], request_id: str | None = None, now: float | None = None) -> tuple[dict, bool]:
+        """Tạo batch + TOÀN BỘ item (status pending/skipped) trong một transaction: crash sau đó vẫn thấy đủ danh sách việc cần tạo job. Cùng `request_id`
+        (bấm đúp/gửi lại) trả batch cũ, không tạo thêm. Trả (batch, created)."""
+        now = now or time.time()
+        with self._tx() as c:
+            if request_id:
+                old = c.execute("SELECT * FROM batches WHERE request_id=?", (request_id,)).fetchone()
+                if old is not None:
+                    return self._batch(old), False
+            seq = c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM batches").fetchone()[0]
+            bid = f"B{seq:06d}"
+            c.execute("INSERT INTO batches(id,seq,kind,source_provider,source_id,source_url,source_title,source_channel_id,source_channel_url,"
+                      "source_channel_title,output_channel_id,selection_spec,pipeline_spec,options,control_state,request_id,created_at,updated_at) "
+                      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (bid, seq, spec["kind"], spec["source_provider"], spec["source_id"], spec["source_url"], spec.get("source_title"),
+                       spec.get("source_channel_id"), spec.get("source_channel_url"), spec.get("source_channel_title"), spec["output_channel_id"],
+                       json.dumps(spec["selection_spec"], ensure_ascii=False), json.dumps(spec["pipeline_spec"], ensure_ascii=False),
+                       json.dumps(spec.get("options") or {}, ensure_ascii=False), CONTROL_RUNNING, request_id, now, now))
+            self._add_items(c, bid, items, 0)
+            return self._batch(c.execute("SELECT * FROM batches WHERE id=?", (bid,)).fetchone()), True
+
+    @staticmethod
+    def _add_items(c: sqlite3.Connection, bid: str, items: list[dict], start: int) -> int:
+        n = 0
+        for i, it in enumerate(items, start + 1):
+            cur = c.execute("INSERT OR IGNORE INTO batch_items(batch_id,position,source_video_id,source_video_url,title,published_at,duration,status,skip_reason,metadata) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                            (bid, i, it["video_id"], it["url"], it.get("title"), it.get("published"), it.get("duration"), it.get("status", "pending"),
+                             it.get("skip_reason"), json.dumps(it.get("metadata") or {}, ensure_ascii=False)))
+            n += cur.rowcount
+        return n
+
+    def add_batch_items(self, bid: str, items: list[dict], now: float | None = None) -> int:
+        now = now or time.time()
+        with self._tx() as c:
+            start = c.execute("SELECT COALESCE(MAX(position),0) FROM batch_items WHERE batch_id=?", (bid,)).fetchone()[0]
+            n = self._add_items(c, bid, items, start)
+            c.execute("UPDATE batches SET updated_at=? WHERE id=?", (now, bid))
+            return n
+
+    def batch_by_request(self, request_id: str) -> dict | None:
+        rows = self._q("SELECT * FROM batches WHERE request_id=?", (request_id,))
+        return self._batch(rows[0]) if rows else None
+
+    def get_batch(self, bid: str) -> dict | None:
+        rows = self._q("SELECT * FROM batches WHERE id=?", (bid,))
+        return self._batch(rows[0]) if rows else None
+
+    def list_batches(self) -> list[dict]:
+        return [self._batch(r) for r in self._q("SELECT * FROM batches ORDER BY seq DESC")]
+
+    def batch_items(self, bid: str) -> list[dict]:
+        out = []
+        for r in self._q("SELECT * FROM batch_items WHERE batch_id=? ORDER BY position", (bid,)):
+            d = dict(r)
+            d["metadata"] = json.loads(d["metadata"]) if d["metadata"] else {}
+            out.append(d)
+        return out
+
+    def set_batch_item(self, bid: str, video_id: str, *, job_id: str | None = None, status: str, error: str | None = None) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE batch_items SET job_id=COALESCE(?, job_id), status=?, error=? WHERE batch_id=? AND source_video_id=?", (job_id, status, error, bid, video_id))
+
+    def pending_batch_items(self) -> list[dict]:
+        """Item chưa có job (batch còn sống): dùng để hoàn tất việc tạo job sau crash."""
+        return [dict(r) for r in self._q(
+            "SELECT i.* FROM batch_items i JOIN batches b ON b.id=i.batch_id WHERE i.status='pending' AND b.control_state!='CANCELLED' ORDER BY b.seq, i.position")]
+
+    def set_batch_control(self, bid: str, control_state: str, now: float | None = None) -> bool:
+        now = now or time.time()
+        with self._tx() as c:
+            cur = c.execute("UPDATE batches SET control_state=?, updated_at=? WHERE id=? AND control_state!=? AND control_state!='CANCELLED'", (control_state, now, bid, control_state))
+            return cur.rowcount > 0
+
+    def batch_job_index(self, bid: str) -> list[dict]:
+        """Bản nhẹ của các job con (đủ để suy trạng thái/đếm), theo thứ tự tạo."""
+        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, failed_stage, source_key, updated_at FROM jobs "
+                                         "WHERE batch_id=? ORDER BY seq", (bid,))]
+
+    def find_job_by_source(self, source_key: str, channel_id: str) -> str | None:
+        """Job gần nhất đã xử lý cùng video cho cùng kênh xuất bản (bỏ qua job đã hủy)."""
+        rows = self._q("SELECT id FROM jobs WHERE source_key=? AND channel_id=? AND control_state!='CANCELLED' ORDER BY seq DESC LIMIT 1", (source_key, channel_id))
+        return rows[0]["id"] if rows else None
+
+    def find_batch_job(self, bid: str, source_key: str) -> str | None:
+        rows = self._q("SELECT id FROM jobs WHERE batch_id=? AND source_key=?", (bid, source_key))
+        return rows[0]["id"] if rows else None
 
     # -- hold / resume ----------------------------------------------------------------------
     def release_hold(self, job_id: str, now: float | None = None, *, auto: bool = False,

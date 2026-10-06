@@ -23,7 +23,7 @@ from .subtitles import FORMATS, format_from_suffix
 from .youtube import YtDlp, choose_subtitle, parse_video_id
 
 BRIDGE = Path(__file__).resolve().parent / "bridge" / "supervip_bridge.py"
-INFO_KEYS = ("id", "title", "channel", "uploader", "duration", "upload_date", "language", "webpage_url")
+INFO_KEYS = ("id", "title", "channel", "channel_id", "channel_url", "uploader", "uploader_id", "duration", "upload_date", "language", "webpage_url")
 
 
 def _base(src: SourceInput, provider: str, source_type: str, **kw) -> SourceResult:

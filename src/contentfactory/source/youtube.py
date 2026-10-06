@@ -92,19 +92,39 @@ class YtDlp:
     def available(self) -> bool:
         return shutil.which(self.cmd[0]) is not None or Path(self.cmd[0]).exists()
 
-    def _run(self, args: list[str]) -> str:
+    def _exec(self, args: list[str]) -> subprocess.CompletedProcess:
         try:
-            p = subprocess.run([*self.cmd, *self.extra, *args], capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=self.timeout)
+            return subprocess.run([*self.cmd, *self.extra, *args], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=self.timeout)
         except FileNotFoundError:
             raise StageError(ErrorClass.RESOURCE, "YTDLP_MISSING",
                              f"không chạy được {self.cmd!r}; cài bằng `pip install yt-dlp` hoặc đặt youtube.yt_dlp_cmd",
                              resource="runtime") from None
         except subprocess.TimeoutExpired:
             raise StageError(ErrorClass.TRANSIENT, "YTDLP_TIMEOUT", f">{self.timeout}s", resource="network") from None
+
+    def _run(self, args: list[str]) -> str:
+        p = self._exec(args)
         if p.returncode != 0:
             raise classify_error(p.stderr)
         return p.stdout
+
+    def list_flat(self, url: str, end: int | None = None) -> dict:
+        """Liệt kê video của kênh/playlist CHỈ METADATA (không tải media): `--flat-playlist -J`. Kênh chưa có tab (vd Shorts/Live) hoặc chưa có video ⇒ danh sách rỗng,
+        không phải lỗi. yt-dlp báo lỗi một vài mục (video private/đã xóa) vẫn trả phần còn lại: dùng JSON nếu parse được."""
+        args = ["--flat-playlist", "--dump-single-json", "--no-warnings", "--ignore-errors"] + (["--playlist-end", str(int(end))] if end else [])
+        p = self._exec([*args, url])
+        try:
+            data = json.loads(p.stdout) if p.stdout.strip() else None
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            return data
+        if p.returncode != 0:
+            if re.search(r"does not have a .*tab|no videos|this channel has no|0 videos", p.stderr.lower()):
+                return {"entries": []}
+            raise classify_error(p.stderr)
+        raise StageError(ErrorClass.TRANSIENT, "YTDLP_BAD_JSON", p.stdout[:200])
 
     def info(self, url: str) -> dict:
         out = self._run(["--skip-download", "--dump-single-json", "--no-warnings", "--no-playlist", url])

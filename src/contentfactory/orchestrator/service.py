@@ -21,6 +21,7 @@ from ..fsutil import atomic_write_json
 from ..jobs import pipeline as P
 from ..jobs.plan import spec_for_mode
 from ..jobs.workspace import job_dir
+from ..source import discovery as DISC
 from ..output import metadata as MD
 from ..tts import prosody as PRO
 from . import auto as AU
@@ -58,7 +59,8 @@ KIND_MODES = {
     "story_text": ["story_full", "tts_only", "video_after_tts"],
     "audio": ["audio_full", "audio_package", "audio_video", "audio_youtube"],
 }
-KIND_LABEL = {"youtube_url": "Link YouTube", "transcript_file": "Phụ đề / transcript", "story_text": "Truyện (story.txt)", "audio": "Audio có sẵn",
+COLLECTION_KINDS = {"youtube_channel": "Kênh YouTube", "youtube_playlist": "Playlist YouTube"}
+KIND_LABEL = {**COLLECTION_KINDS, "youtube_url": "Link YouTube", "transcript_file": "Phụ đề / transcript", "story_text": "Truyện (story.txt)", "audio": "Audio có sẵn",
               "project": "Project đã có", "unknown": "Không nhận dạng được"}
 # Loại đầu vào -> (artifact đã có sẵn, có params.input để stage source chạy). Dùng cho plan của pipeline tùy chỉnh.
 INPUT_PROVIDES = {"youtube_url": (set(), True), "transcript_file": (set(), True), "story_text": ({"story_text", "metadata"}, False),
@@ -95,6 +97,9 @@ class Service:
                "needs_title": False, "details": {}, "problem": None}
         if not v:
             return out
+        if re.fullmatch(r"@[\w.\-]{2,60}", v, re.U):                       # @tên-kênh trần = kênh YouTube
+            v = f"https://www.youtube.com/{v}"
+            out["value"] = v
         if re.match(r"^https?://", v, re.I):
             u = urlparse(v)
             host = (u.hostname or "").lower()
@@ -103,6 +108,14 @@ class Service:
                 return out
             vid = (re.search(r"[?&]v=([\w-]{6,})", v) or re.search(r"youtu\.be/([\w-]{6,})", v) or re.search(r"/(?:shorts|embed|live)/([\w-]{6,})", v))
             if not vid:
+                try:
+                    info = DISC.classify(v)                                    # kênh / playlist: không tạo một job; mở luồng Channel Run
+                except StageError:
+                    info = None
+                if info and info["kind"] in ("channel", "playlist"):
+                    o = self._finish(out, f"youtube_{info['kind']}", {"id": info["id"], "canonical_url": info["canonical_url"], "host": host})
+                    o["collection"], o["modes"] = True, []
+                    return o
                 out["problem"] = "Link YouTube này không có mã video (v=...)."
                 return out
             return self._finish(out, "youtube_url", {"video_id": vid.group(1), "host": host})
@@ -196,6 +209,11 @@ class Service:
         kw["_extend"] = spec.get("extend")
         return params, kw
 
+    @staticmethod
+    def _require_kids(ch: dict, params: dict, reaches_publish: bool) -> None:
+        if reaches_publish and not isinstance((ch.get("publishing") or {}).get("made_for_kids"), bool) and "made_for_kids" not in params:
+            raise _err("MISSING_MADE_FOR_KIDS", "Kênh chưa khai báo video có dành cho trẻ em hay không.", "Chọn Có/Không rồi chạy lại.")
+
     def _target_reaches(self, run: str) -> int:
         label, _, spec = RUN_MODES[run]
         t = spec.get("extend") or spec.get("target_stage") or (P.MODES[spec["mode"]][1] if "mode" in spec else None)
@@ -285,6 +303,8 @@ class Service:
                 return {"job_id": self._requests[rid], "deduped": True, "reason": "request"}
             inp = payload.get("input") or {}
             det = self.detect_input(inp.get("value", ""), inp.get("kind"))
+            if det.get("collection"):
+                raise _err("USE_CHANNEL_RUN", f"Đây là {det['label'].lower()}: cần chọn video rồi tạo Channel Run, không tạo một job.", "Dùng “Quét kênh/playlist” để chọn video.")
             channel_id = str(payload.get("channel") or self.cfg.data["job_defaults"].get("channel") or "default")
             custom = self._custom(payload)
             run = None if custom else payload.get("run") or (det["modes"][0]["id"] if det["modes"] else "")
@@ -295,8 +315,7 @@ class Service:
                 reaches_publish = "publish" in cplan.run
             else:
                 reaches_publish = self._target_reaches(run) >= P.INDEX["publish"]
-            if reaches_publish and not isinstance((ch.get("publishing") or {}).get("made_for_kids"), bool) and "made_for_kids" not in params:
-                raise _err("MISSING_MADE_FOR_KIDS", "Kênh chưa khai báo video có dành cho trẻ em hay không.", "Chọn Có/Không rồi chạy lại.")
+            self._require_kids(ch, params, reaches_publish)
             sig = hashlib.sha1(json.dumps([det["value"], det["kind"], channel_id, run, (payload.get("title") or "").strip()]
                                           + ([custom["requested_stages"]] if custom else []), ensure_ascii=False).encode()).hexdigest()[:16]
             now = time.time()
@@ -405,6 +424,31 @@ class Service:
         v = (j["params"].get("input") or {}).get("value") or ""
         return (Path(v).name if v and not v.startswith("http") else v) or f"Job {j['id']}"
 
+    @staticmethod
+    def _safe_yt(url) -> str | None:
+        """Chỉ trả link https tới YouTube (đã được backend dựng từ id đã kiểm hoặc do uploader trả về); chuỗi lạ/javascript:/host khác => None."""
+        if not isinstance(url, str):
+            return None
+        u = urlparse(url.strip())
+        host = (u.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+        return url.strip() if u.scheme == "https" and host in ("youtube.com", "youtu.be") and not u.username else None
+
+    def _links(self, j: dict, meta: bool = False) -> dict:
+        """Link chuẩn do BACKEND giữ (D-101): video nguồn, kênh nguồn, video đã đăng. Frontend không tự đoán URL."""
+        src = j["params"].get("source") or {}
+        ch_url, ch_title = src.get("channel_url"), src.get("channel_title")
+        if meta and not ch_url:
+            for a in self.orc.store.artifacts(j["id"]):
+                if a["kind"] == "metadata":
+                    try:
+                        md = json.loads((job_dir(self.cfg.path("workspace"), j["id"]) / a["path"]).read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        break
+                    ch_url = DISC.channel_url(channel_id=md.get("channel_id")) or md.get("channel_url")
+                    ch_title = ch_title or md.get("channel") or md.get("uploader")
+                    break
+        return {"source_video_url": self._safe_yt(src.get("video_url")), "source_channel_url": self._safe_yt(ch_url), "source_channel_title": ch_title, "published_video_url": None}
+
     def summary(self, j: dict) -> dict:
         st = DG.ui_status(j)
         stage = DG.stage_of(j)
@@ -419,10 +463,13 @@ class Service:
             d = DG.explain(self.orc, j["id"])
             row["hold"] = {"title": (d["hold"] or {}).get("title") or d["stage_label"], "reason": d.get("reason_code")}
             row["next_action"] = d["resume"]["actions"][0] if d["resume"]["actions"] else None
+        row["links"] = self._links(j)
+        row["batch_id"] = j.get("batch_id")
         if st == "completed":
             o = self.output_info(j["id"])
             row["output_dir"] = o.get("project_dir")
             row["youtube_url"] = o.get("youtube_url")
+            row["links"]["published_video_url"] = self._safe_yt(o.get("youtube_url"))
         return row
 
     def _fraction(self, j: dict, cp: dict | None) -> float:
@@ -472,6 +519,7 @@ class Service:
         cur = REV.current_pipeline(j, imported)
         pend = self.orc.store.pending_revision(job_id)
         status = s["status"]
+        s["links"] = {**self._links(j, meta=True), "published_video_url": s["links"]["published_video_url"]}
         s.update(control={"state": j["control_state"], "origin": j.get("pause_origin"), "pausing": s["pausing"]},
                  pipeline_revision=j.get("pipeline_revision", 1), requested_stages=cur["requested_stages"],
                  pending_revision=({"revision": pend["revision"], "apply_policy": pend["apply_policy"], "created_at": pend["created_at"],
@@ -488,7 +536,7 @@ class Service:
 
     @staticmethod
     def _public_params(p: dict) -> dict:
-        keep = ("input", "channel", "language", "project", "tiktok", "made_for_kids")
+        keep = ("input", "channel", "language", "project", "tiktok", "made_for_kids", "source")
         out = {k: p[k] for k in keep if k in p}
         if p.get("templates"):                                       # chỉ phần nhận dạng của snapshot (không đẩy cả tài liệu template ra giao diện)
             out["templates"] = {k: {"id": v.get("id"), "version": v.get("version"), "name": v.get("name"), "checksum": str(v.get("checksum") or "")[:12]}

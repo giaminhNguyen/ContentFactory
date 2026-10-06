@@ -19,6 +19,7 @@ from contentfactory.orchestrator.service import Service
 from contentfactory.orchestrator.service_admin import AdminService
 from contentfactory.orchestrator.webui import App, UiServer
 from tests.support import RootCase, params, wait_until
+from tests.test_batches import FakeYouTube, discovery as make_discovery, entry as yt_entry
 from tests.test_automode import LENIENT_AUDIO, tts_profile, write_channel, write_config
 from tests.test_render import FakeCFCase
 
@@ -599,6 +600,34 @@ class HttpTest(UiCase):
         except urllib.error.HTTPError as e:
             raw_body = e.read()
             return e.code, (json.loads(raw_body) if raw_body else {}), e.headers
+
+    def test_channel_run_endpoints(self):
+        self.app.stop()                                                                    # không để vòng lặp nền chạy mất job con trong test
+        self.o.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(i) for i in range(12, 0, -1)]))
+        code, r, _ = self.call("POST", "/api/sources/inspect", {"value": "@abc"})
+        self.assertEqual((code, r["kind"], r["title"]), (200, "channel", "Truyện ABC"))
+        self.assertEqual(self.call("POST", "/api/sources/inspect", {"value": "https://vimeo.com/1"})[0], 400)
+        code, d, _ = self.call("POST", "/api/sources/youtube/discover", {"url": "@abc", "output_channel": "kenh"})
+        self.assertEqual((code, d["selected"], d["total"]), (200, 10, 12))
+        body = {"url": "@abc", "output_channel": "kenh", "run": "story", "request_id": "rq-1"}
+        code, b, _ = self.call("POST", "/api/batches", body)
+        self.assertEqual((code, b["counts"]["total"], b["status"], b["deduped"]), (200, 10, "QUEUED", False))
+        self.assertEqual(self.call("POST", "/api/batches", body)[1]["deduped"], True)
+        bid = b["id"]
+        self.assertEqual([x["id"] for x in self.call("GET", "/api/batches")[1]["batches"]], [bid])
+        code, det, _ = self.call("GET", f"/api/batches/{bid}?status=queued&limit=4")
+        self.assertEqual((code, len(det["items"]), det["has_more"], det["total_items"]), (200, 4, True, 10))
+        self.assertEqual(self.call("POST", f"/api/batches/{bid}/pause")[1]["paused"], 10)
+        self.assertEqual(self.call("GET", f"/api/batches/{bid}")[1]["status"], "PAUSED")
+        self.assertEqual(self.call("POST", f"/api/batches/{bid}/resume")[1]["resumed"], 10)
+        code, u, _ = self.call("POST", f"/api/batches/{bid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}, "scope": "unfinished"})
+        self.assertEqual((code, u["counts"]["applied"]), (200, 10))
+        self.assertEqual(self.call("POST", f"/api/batches/{bid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}, "scope": "x"})[0], 400)
+        self.assertEqual(self.call("POST", f"/api/batches/{bid}/cancel-queued")[1]["cancelled_jobs"], 10)
+        self.assertEqual(self.call("GET", "/api/batches/B999999")[0], 404)
+        self.assertEqual(self.call("POST", f"/api/batches/{bid}/rescan", token=False)[0], 401)
+        code, r, _ = self.call("POST", "/api/runs", {"input": {"value": "@abc"}, "channel": "kenh"})
+        self.assertEqual((code, r["error"]["code"]), (400, "USE_CHANNEL_RUN"))
 
     def test_prosody_endpoints(self):
         code, info, _ = self.call("GET", "/api/tts/prosody")

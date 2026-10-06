@@ -138,6 +138,35 @@ class Api:
     def pipeline_plan(app, m, q, b):
         return app.service.plan_pipeline(b)
 
+    @route("POST", "/api/sources/inspect")
+    def source_inspect(app, m, q, b):
+        return app.orc.batch_service().inspect(b.get("value", ""))
+
+    @route("POST", "/api/sources/youtube/discover")
+    def source_discover(app, m, q, b):
+        return app.orc.batch_service().discover(b)
+
+    @route("GET", "/api/batches")
+    def batches(app, m, q, b):
+        return app.orc.batch_service().list()
+
+    @route("POST", "/api/batches")
+    def batch_create(app, m, q, b):
+        return app.orc.batch_service().create(b)
+
+    @route("GET", r"/api/batches/(?P<id>B\d+)")
+    def batch_detail(app, m, q, b):
+        return app.orc.batch_service().detail(m["id"], q.get("status", [None])[0], _int(q, "limit", 50, 1, 200), _int(q, "offset", 0, 0, 10 ** 6))
+
+    @route("POST", r"/api/batches/(?P<id>B\d+)/(?P<action>pause|resume|retry-failed|cancel-queued|cancel|rescan)")
+    def batch_action(app, m, q, b):
+        return getattr(app.orc.batch_service(), m["action"].replace("-", "_"))(m["id"])
+
+    @route("POST", r"/api/batches/(?P<id>B\d+)/pipeline-revisions")
+    def batch_pipeline(app, m, q, b):
+        return app.orc.batch_service().update_pipeline(m["id"], {"requested_stages": ((b.get("pipeline") or {}).get("requested_stages"))}, b.get("scope") or "unfinished",
+                                                       b.get("job_ids"), b.get("apply_policy") or "after_current_safe_point")
+
     @route("POST", "/api/preview")
     def preview(app, m, q, b):
         return app.service.preview_run(b)

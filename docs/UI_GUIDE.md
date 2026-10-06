@@ -55,6 +55,8 @@ Frontend không chứa logic nghiệp vụ. Bảo mật cục bộ: chỉ `127.0
 ### API (tất cả `/api`, JSON; lỗi: `{"error":{"code","message","hint"}}` tiếng Việt, không stack trace)
 
 `GET bootstrap, runtime, jobs?status&limit&offset&since, jobs/<id>, jobs/<id>/log, channels, channels/<id>, channels/<id>/preview, tts, tts/profiles/<n>, pools, settings, config/effective, doctor, tasks/<id>` · `POST detect, preview, runs, jobs/<id>/{resume,retry,auto-resume,open-output}, channels, tts/onboard, pools/sync, cleanup, doctor/run, samples, pick` · `PUT channels/<id>, channels/<id>/asset, pools/<n>, settings` · `DELETE pools/<n>`.
+Channel Run (D-101): `POST sources/inspect, sources/youtube/discover, batches, batches/<B…>/{pause,resume,retry-failed,cancel-queued,cancel,rescan,pipeline-revisions}` · `GET batches, batches/<B…>?status&limit&offset`.
+
 `jobs?since=<version>` trả `{changed:false}` rất nhẹ khi không có gì mới (version = số job + `updated_at` lớn nhất; tiến độ cũng cập nhật `updated_at`).
 
 ## 6. Chống thao tác trùng

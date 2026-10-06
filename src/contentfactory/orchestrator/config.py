@@ -34,6 +34,8 @@ DEFAULTS: dict = {
     "auto": {"tts_profile_selection": True, "pool_selection": True},
     # Prosody (D-100): nhịp đọc cho job MỚI (natural | fast | dramatic); None/"" = tắt, dùng planner cũ. Job đã tạo trước đó không bị đổi (params.prosody chốt lúc tạo job).
     "prosody": {"default_profile": "natural"},
+    # Channel Run / Batch (D-101): trần an toàn để không tạo nhầm hàng nghìn job. max_scan = số video tối đa quét từ một kênh/playlist; vượt confirm_above thì phải xác nhận rõ.
+    "batch": {"default_n": 10, "max_scan": 300, "confirm_above": 100, "hard_max": 500},
     # Auto Cleanup: dọn trung gian của job đã đăng, cache quá cỡ, workspace cũ. KHÔNG BAO GIỜ đụng output/ (của người dùng)
     "cleanup": {"enabled": True, "interval_s": 600, "intermediates_after_publish": True, "artifact_keep_days": 14, "failed_keep_days": 30,
                 "cache_gb": {"tts": 20, "source": 5}},

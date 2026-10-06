@@ -182,6 +182,7 @@ Mỗi bước có bản **giả** để thử miễn phí trong vài giây: `.\c
 |---|---|
 | `cf ui` | Mở giao diện **và** chạy xử lý nền |
 | `cf go "<url>" --channel K [--title "…"] [--open]` | Chạy hết pipeline cho một link, ra gói output |
+| `cf inspect <link>` · `cf batch create "<kênh/playlist>" --channel K [--newest 10]` | Nhận dạng link; tạo Channel Run (mỗi video một job con độc lập; `cf batch discover/status/pause/resume/retry-failed/…`) |
 | `cf samples` | Tạo dữ liệu mẫu (truyện, phụ đề, audio, video nền) để thử |
 | `cf status` · `cf open [job]` | Xem các job · mở thư mục output gần nhất |
 | `cf resume <job>` · `cf retry <job>` | Tiếp tục job đang bị giữ · chạy lại đúng bước lỗi |

@@ -79,7 +79,15 @@ class Orchestrator:
         self._guard_logged: dict[str, float] = {}
         self._tokens: dict[str, JobCancelToken] = {}                 # token của các job đang chạy stage (để Pause/Cancel phản hồi tức thì)
         self.pool_sync = PoolSyncService(self)
+        self._batches = None
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
+
+    def batch_service(self):
+        """Channel Run (D-101); tạo lười để import không vòng. Dùng chung một thể hiện (giữ discovery tiêm cho test)."""
+        if self._batches is None:
+            from .batches import BatchService
+            self._batches = BatchService(self)
+        return self._batches
 
     # -- dựng mặc định --------------------------------------------------------------------------
     def _default_monitor(self) -> ResourceMonitor:
@@ -131,7 +139,7 @@ class Orchestrator:
     # -- tạo job ------------------------------------------------------------------------------
     def submit(self, params: dict, priority: int = 0, *, mode: str | None = None, start_stage: str | None = None,
                target_stage: str | None = None, inputs: dict | None = None, from_job: str | dict | None = None,
-               auto_resume: bool | None = None, pipeline: dict | None = None) -> str:
+               auto_resume: bool | None = None, pipeline: dict | None = None, batch_id: str | None = None, source_key: str | None = None) -> str:
         """Tạo job. `mode` ∈ P.MODES (FULL, SUBTITLE_ONLY, STORY_ONLY, THROUGH_TTS, TTS_ONLY, VIDEO_ONLY) hoặc đặt trực tiếp
         `start_stage`/`target_stage`, hoặc `pipeline` = pipeline spec v2 {requested_stages: [...]} (chọn stage tùy ý; dependency tự suy ra,
         không dùng chung với mode/start/target). `inputs` = artifact đưa từ ngoài vào (kind -> đường dẫn | [đường dẫn] | dict cho metadata);
@@ -142,6 +150,10 @@ class Orchestrator:
         preset, decisions = AU.preset_params(self.cfg, channel, params, self.adapters)
         merged = _merge(_merge(copy.deepcopy(self.cfg["job_defaults"]), copy.deepcopy(preset)), copy.deepcopy(params))
         decisions += AU.select_pools(self.cfg, merged, channel, self.adapters)
+        src = self._youtube_source(merged)                                               # nguồn chuẩn của job (không gọi mạng): link xem video + id dùng chống xử lý trùng
+        if src and "source" not in merged:
+            merged["source"] = src
+        source_key = source_key or (f"youtube:{src['video_id']}" if src else None)
         if merged.get("prosody"):
             PRO.resolve_prosody(merged["prosody"])                                    # sai thì từ chối ngay lúc tạo job (không để lỗi nửa chừng ở stage TTS)
         items = self._prepare_imports(inputs or {}, from_job, merged)
@@ -164,7 +176,8 @@ class Orchestrator:
             merged["watermark"] = channel["watermark"]                                  # watermark là channel asset (HANDOFF §10)
         job_id = self.store.create_job(merged, priority, state=P.STAGES[plan.start_idx].queue_state,
                                        start_stage=plan.start_stage, target_stage=plan.target_stage,
-                                       auto_resume=resolved, snapshot=snap, config_hash=config_hash(snap["semantic"]), pipeline=spec)
+                                       auto_resume=resolved, snapshot=snap, config_hash=config_hash(snap["semantic"]), pipeline=spec,
+                                       batch_id=batch_id, source_key=source_key, channel_id=chan_id)
         try:
             jd = ensure_job_dirs(self.cfg.path("workspace"), job_id)
             self._register_imports(job_id, jd, items)
@@ -178,6 +191,18 @@ class Orchestrator:
                       auto_resume=resolved, imports=sorted({i["kind"] for i in items}), plan_run=plan.run, plan_skip=plan.skip)
         self._manifest(job_id)
         return job_id
+
+    @staticmethod
+    def _youtube_source(params: dict) -> dict | None:
+        inp = params.get("input") or {}
+        if inp.get("kind") != "youtube_url":
+            return None
+        try:
+            from ..source.youtube import parse_video_id
+            vid = parse_video_id(str(inp.get("value") or ""))
+        except StageError:
+            return None
+        return {"provider": "youtube", "video_id": vid, "video_url": f"https://www.youtube.com/watch?v={vid}"}
 
     def plan(self, params: dict | None = None, *, mode: str | None = None, start_stage: str | None = None,
              target_stage: str | None = None, inputs: dict | None = None, from_job: str | dict | None = None,
@@ -529,6 +554,7 @@ class Orchestrator:
         for j in self.store.list_jobs():            # manifest là dẫn xuất: dựng lại nếu crash giữa commit và ghi file
             if j["state"] not in P.TERMINAL:
                 self._manifest(j["id"])
+        self._guarded(self.recover_batches)                  # item batch chưa có job (crash giữa lúc tạo) được hoàn tất trước khi chạy
         hb_stop = threading.Event()
         threading.Thread(target=self._heartbeat, args=(hb_stop,), daemon=True).start()
         self.pool_sync.start()                      # Source Sync nền, dùng chung: không chiếm slot của stage nào
@@ -561,6 +587,11 @@ class Orchestrator:
     def cleanup(self, dry_run: bool = False) -> dict:
         """Auto Cleanup (D-83): dọn trung gian/cache/workspace cũ; không bao giờ đụng output/ của người dùng."""
         return CL.run(self, dry_run=dry_run)
+
+    def recover_batches(self) -> None:
+        n = self.batch_service().ensure_created()
+        if n:
+            self.log.emit("batch_recovered", items=n)
 
     def _cleanup_tick(self) -> None:
         cfg = self.cfg.data.get("cleanup", {})

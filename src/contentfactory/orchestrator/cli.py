@@ -68,6 +68,62 @@ def _print_status(orc: Orchestrator, job_id: str) -> None:
             print("      " + " ".join(f"{k}={v['state']}" + (f"({v['error']})" if v.get("error") else "") for k, v in sub.items()))
 
 
+def _batch_cmd(orc: Orchestrator, a: argparse.Namespace) -> int:
+    bs = orc.batch_service()
+    if a.action in ("create", "discover"):
+        if a.range:
+            lo, hi = a.range.split(":")
+            sel = {"mode": "range", "from": int(lo), "to": int(hi)}
+        elif a.dates:
+            lo, hi = a.dates.split(":")
+            sel = {"mode": "dates", "date_from": lo or None, "date_to": hi or None}
+        elif a.ids:
+            sel = {"mode": "manual", "ids": [x.strip() for x in a.ids.split(",") if x.strip()]}
+        elif a.oldest:
+            sel = {"mode": "oldest", "n": a.oldest}
+        else:
+            sel = {"mode": "newest", "n": a.newest or 10}
+        body = {"url": a.target, "output_channel": a.channel, "selection": sel, "skip_policy": "rerun" if a.rerun else None, "confirm_large": a.confirm_large,
+                "filters": {"include_shorts": a.include_shorts, "skip_live": not a.include_live, "skip_upcoming": not a.include_upcoming}, "request_id": a.request_id}
+        if a.kids:
+            body["kids"] = a.kids == "yes"
+        if a.stages:
+            body["pipeline"] = {"mode": "custom", "requested_stages": [x.strip() for x in a.stages.split(",") if x.strip()]}
+        else:
+            body["run"] = a.run
+        if a.action == "discover":
+            r = bs.discover(body)
+            print(f"{r['source']['kind']} “{r['source'].get('title')}” — quét {r['total']} video, chọn {r['selected']}; bỏ qua: {r['skipped'] or 'không'}")
+            for e in r["entries"]:
+                print(f"  {'[x]' if e['selected'] else '[ ]'} {e['video_id']} {e['published'] or '          '} {e['skip_reason'] or '':11} {e['title'] or ''}")
+            for w in r["warnings"]:
+                print("  ! " + w)
+            return 0
+        d = bs.create(body)
+        print(f"{d['id']}{' (đã có từ trước)' if d['deduped'] else ''}: {d['counts']['total']} job con; chạy `cf run` hoặc `cf start`")
+        return 0
+    if a.action == "list":
+        for b in bs.list()["batches"]:
+            c = b["counts"]
+            print(f"{b['id']} {b['status']:22} {c['completed']}/{c['total']} xong · lỗi {c['failed']} · {b['title']}")
+        return 0
+    if not a.target:
+        print("cần mã batch (vd B000001)")
+        return 2
+    if a.action == "status":
+        d = bs.detail(a.target)
+        c = d["counts"]
+        print(f"{d['id']} {d['status']} — {d['title']} → kênh {d['output_channel']['name']} ({d['progress'] * 100:.0f}%)")
+        print("  " + " · ".join(f"{k}={c[k]}" for k in ("total", "completed", "running", "queued", "paused", "waiting", "attention", "failed", "cancelled", "pending_creation") if c[k]))
+        for r in d["items"]:
+            j = r["job"] or {}
+            print(f"  {r['position']:3} {r['status']:10} {r['video_id']} {j.get('stage_label') or '':16} {r['title'] or ''}")
+        return 0
+    res = getattr(bs, a.action.replace("-", "_"))(a.target)
+    print(json.dumps({k: v for k, v in res.items() if k != "batch"}, ensure_ascii=False))
+    return 0
+
+
 def _print_diagnosis(orc: Orchestrator, job_id: str) -> None:
     """Job lỗi/giữ: in nguyên nhân, provider, số lần thử, checkpoint và đường đi tiếp (không cần đọc log thô)."""
     from .diagnose import explain, format_lines
@@ -121,7 +177,7 @@ Lệnh cơ bản:
 Lệnh nâng cao: cf --advanced -h   (submit, plan, run, config, pools, retry-part, sequences, cleanup, resources...)
 """
 
-BASIC = {"ui", "samples", "go", "status", "open", "resume", "retry", "doctor", "channels", "channel-init", "templates", "setup", "update", "start", "demo"}
+BASIC = {"ui", "samples", "inspect", "batch", "go", "status", "open", "resume", "retry", "doctor", "channels", "channel-init", "templates", "setup", "update", "start", "demo"}
 
 
 def build_parser(advanced: bool) -> argparse.ArgumentParser:
@@ -159,6 +215,28 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     rs.add_argument("--now", action="store_true")
     rt = add("retry", "retry job FAILED tại đúng stage lỗi")
     rt.add_argument("job_id")
+    ins = add("inspect", "nhận dạng link YouTube (video/kênh/playlist); kênh/playlist có thêm tiêu đề + kênh nguồn (chỉ metadata, không tải media)")
+    ins.add_argument("url")
+    ins.add_argument("--offline", action="store_true", help="chỉ nhận dạng theo URL, không gọi yt-dlp")
+    bt = add("batch", "Channel Run: create | list | status | pause | resume | retry-failed | cancel-queued | cancel | rescan | discover")
+    bt.add_argument("action", choices=["create", "list", "status", "pause", "resume", "retry-failed", "cancel-queued", "cancel", "rescan", "discover"])
+    bt.add_argument("target", nargs="?", help="create/discover: link kênh/playlist (hoặc @tên); còn lại: mã batch (B000001)")
+    bt.add_argument("--channel", help="kênh xuất bản (mặc định theo cấu hình)")
+    bt.add_argument("--run", default="full", help="kiểu chạy như màn Chạy: full | through_tts | story | subtitle (mặc định full)")
+    bt.add_argument("--stages", help="pipeline tùy chọn thay --run (các stage muốn có kết quả, cách nhau dấu phẩy)")
+    g2 = bt.add_mutually_exclusive_group()
+    g2.add_argument("--newest", type=int, metavar="N", help="N video mới nhất chưa xử lý (mặc định 10)")
+    g2.add_argument("--oldest", type=int, metavar="N")
+    g2.add_argument("--range", metavar="A:B", help="vị trí A..B trong danh sách đã lọc")
+    g2.add_argument("--dates", metavar="TỪ:ĐẾN", help="YYYY-MM-DD:YYYY-MM-DD (một đầu có thể để trống)")
+    g2.add_argument("--ids", help="mã video cách nhau dấu phẩy")
+    bt.add_argument("--rerun", action="store_true", help="không bỏ qua video đã xử lý cho kênh này")
+    bt.add_argument("--include-shorts", action="store_true")
+    bt.add_argument("--include-live", action="store_true")
+    bt.add_argument("--include-upcoming", action="store_true")
+    bt.add_argument("--confirm-large", action="store_true", help="xác nhận tạo hơn 100 job")
+    bt.add_argument("--kids", choices=["yes", "no"], help="made_for_kids (cần khi chạy tới publish và kênh chưa khai)")
+    bt.add_argument("--request-id", help="chống tạo trùng khi chạy lại cùng lệnh")
     spn = add("speech-plan", "xem nhịp đọc (speech plan) của job: nhóm tổng hợp, khoảng nghỉ, cảnh báo QC; sửa bằng `update --params`")
     spn.add_argument("job_id")
     spn.add_argument("--all", action="store_true", help="gồm cả ranh giới nằm trong nhóm (do engine tự xử lý)")
@@ -399,6 +477,10 @@ def main(argv: list[str] | None = None) -> int:
                           "locked": [s for s, i in pl.states.items() if i["state"] == "locked"],
                           "provided": [s for s, i in pl.states.items() if i["state"] == "provided"], "errors": pl.errors}, ensure_ascii=False))
         return 1 if pl.errors else 0
+    elif a.cmd == "inspect":
+        print(json.dumps(orc.batch_service().discovery.inspect(a.url, resolve=not a.offline), ensure_ascii=False, indent=2))
+    elif a.cmd == "batch":
+        return _batch_cmd(orc, a)
     elif a.cmd == "speech-plan":
         from .service import Service
         sp = Service(orc).speech_plan(a.job_id, "all" if a.all else "external")
