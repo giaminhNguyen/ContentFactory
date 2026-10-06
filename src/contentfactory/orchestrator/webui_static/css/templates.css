@@ -96,6 +96,12 @@
 .tpl-adv-row { border: 1px solid var(--border); border-radius: var(--r-1); padding: var(--s-3); display: flex; flex-direction: column; gap: var(--s-2); background: var(--surface-2); }
 .tpl-adv-row h4 { margin: 0; font-size: var(--fs-sm); }
 
+.st-prevbar { margin-bottom: var(--s-4); padding: var(--s-3) var(--s-4); gap: var(--s-3); }
+.st-prevbar .h3 { margin: 0; font-size: var(--fs-md); }
+.st-chip { cursor: pointer; font: inherit; font-size: var(--fs-sm); min-height: 32px; color: var(--text); }
+.st-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.st-prevbar .field { min-width: 200px; }
+.st-pv-status { min-height: 24px; }
 @media (max-width: 1180px) {
   .st-grid { grid-template-columns: minmax(0, 1fr); }
   .st-center { order: 1; }

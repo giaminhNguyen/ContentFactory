@@ -219,6 +219,89 @@ class TemplateLifecycleUxTest(_Http):
         self.assertEqual((snap["id"], snap["version"]), ("arch_t", 1))
 
 
+class TemplatePreviewSamplesTest(_Http):
+    """Phase 7: nguồn mẫu do backend mô tả; `sample` từ client chỉ là {id,image,channel} (không nhận đường dẫn); render thử tách khỏi xem trước và nói rõ khi bị tắt."""
+
+    def capture(self):
+        calls = []
+        d = Path(tempfile.mkdtemp(prefix="cf-pv-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / "previews").mkdir()
+        (d / "previews" / "x.png").write_bytes(PNG_MAGIC)
+
+        def fake(**kw):
+            calls.append(kw)
+            return {"path": str(d / "previews" / "x.png"), "canvas": [10, 10], "warnings": []}
+        api = self.app.templates.ops.api
+        api.preview = fake
+        api.test_render = fake
+        return calls
+
+    def test_sources_describe_samples_images_channels_and_test_render(self):
+        c, s = self.call("GET", "/api/templates/preview-sources?type=thumbnail")
+        self.assertEqual(c, 200)
+        self.assertEqual([x["id"] for x in s["samples"]], ["s1", "s2", "s3"])
+        self.assertTrue(all(x["title"] and x["sequence"] for x in s["samples"]))                            # dữ liệu thực tế, không phải "TITLE"
+        self.assertEqual(s["images"][0]["id"], "builtin")
+        self.assertIn("kenh", [x["id"] for x in s["channels"]])
+        self.assertTrue(s["test_render"]["enabled"])
+        self.assertIsNone(s["note"])
+        c, v = self.call("GET", "/api/templates/preview-sources?type=video")
+        self.assertEqual(v["images"], [{"id": "builtin", "label": "Ảnh mẫu có sẵn"}])                      # video: ảnh nền không áp dụng
+        self.assertIn("SOURCE VIDEO", v["note"])
+        self.assertEqual(self.call("GET", "/api/templates/preview-sources?type=nope")[0], 400)
+
+    def test_client_sample_is_a_descriptor_never_a_path(self):
+        calls = self.capture()
+        self.call("POST", "/api/templates", {"type": "thumbnail", "id": "thumb_x", "name": "Thumb X"})
+        c, r = self.call("POST", "/api/templates/thumb_x/preview", {"sample": {"id": "s2", "channel": "kenh"}})
+        self.assertEqual(c, 200, r)
+        self.assertEqual(calls[-1]["sample"]["title"], "Đêm mưa đó, anh ấy đã không quay lại")
+        self.assertNotIn("image", calls[-1]["sample"])
+        self.assertNotEqual(calls[-1]["sample"]["channel"], "Truyện Đêm Khuya")                          # lấy tên kênh thật
+        for bad in ("C:/Windows/win.ini", "../../etc/passwd", "frame:../x:0", "frame:p:9", "frame:nope:0"):
+            c, e = self.call("POST", "/api/templates/thumb_x/preview", {"sample": {"image": bad}})
+            self.assertEqual(c, 400, bad)
+            self.assertIn(e["error"]["code"], ("BAD_SAMPLE", "NO_SAMPLE_MEDIA"), bad)
+        self.assertEqual(len(calls), 1)                                                                     # không lần nào chạm tới renderer
+        c, e = self.call("POST", "/api/templates/thumb_x/preview", {"sample": {"channel": "khong_co"}})
+        self.assertEqual((c, e["error"]["code"]), (404, "CHANNEL_NOT_FOUND"))
+        c, r = self.call("POST", "/api/templates/thumb_x/preview", {"sample": {"id": "khong-co-mau"}})      # id lạ: dùng mẫu đầu, không lỗi
+        self.assertEqual((c, calls[-1]["sample"]["title"]), (200, "Cô gái trở về năm 1998 và phát hiện bí mật của cả dòng họ"))
+
+    def test_preview_accepts_unsaved_document_and_keeps_draft_untouched(self):
+        calls = self.capture()
+        self.call("POST", "/api/templates", {"type": "thumbnail", "id": "thumb_y", "name": "Thumb Y"})
+        doc = self.call("GET", "/api/templates/thumb_y")[1]["template"]
+        doc["description"] = "chưa lưu"
+        c, r = self.call("POST", "/api/templates/thumb_y/preview", {"template": doc})
+        self.assertEqual(c, 200)
+        self.assertEqual(calls[-1]["template"]["description"], "chưa lưu")                                  # xem trước chính bản đang sửa
+        self.assertIsNone(calls[-1]["id"])
+        self.assertEqual(self.call("GET", "/api/templates/thumb_y")[1]["template"]["description"], "")      # nhưng không tự lưu
+
+    def test_test_render_is_separate_and_disabled_with_reason_when_ffmpeg_is_missing(self):
+        calls = self.capture()
+        self.call("POST", "/api/templates", {"type": "video", "id": "vid_x", "name": "Vid X"})
+        self.app.templates.samples.ffmpeg = lambda: None
+        s = self.call("GET", "/api/templates/preview-sources?type=video")[1]
+        self.assertFalse(s["test_render"]["enabled"])
+        self.assertIn("ffmpeg", s["test_render"]["reason"])
+        c, e = self.call("POST", "/api/templates/vid_x/test-render", {})
+        self.assertEqual((c, e["error"]["code"]), (400, "TEST_RENDER_UNAVAILABLE"))
+        self.assertIn("ffmpeg", e["error"]["hint"])
+        self.assertEqual(calls, [])
+        c, r = self.call("POST", "/api/templates/vid_x/preview", {})                                       # xem trước vẫn dùng được (không cần ffmpeg)
+        self.assertEqual(c, 200)
+        self.assertTrue(self.call("GET", "/api/templates/preview-sources?type=thumbnail")[1]["test_render"]["enabled"])      # thumbnail không cần ffmpeg
+
+    def test_publish_validates_the_final_draft(self):
+        self.call("POST", "/api/templates", {"type": "video", "id": "vid_pub", "name": "Vid Pub"})
+        c, r = self.call("POST", "/api/templates/vid_pub/1/publish")
+        self.assertEqual(c, 200)
+        self.assertEqual(r["status"], "published")
+
+
 @unittest.skipUnless(HAVE_REAL, "cần ContentFlow thật")
 class RealTemplateApiTest(_Http):
     def orc(self):                                                                                                 # UiCase.setUp dùng self.orc(): dựng bằng ContentFlow thật + user_root tạm
@@ -228,6 +311,33 @@ class RealTemplateApiTest(_Http):
                      tools={"contentflow": {"root": str(REPO / "modules" / "ContentFlow"), "python": REAL_PY, "user_root": str(self.user_root),
                                             "base_dir": str(self.root / "cfbase")}})
         return Orchestrator(load_config(self.root))
+
+    def test_real_preview_with_pool_frame_samples_and_invalid_template(self):
+        import subprocess
+        ff = shutil.which("ffmpeg")
+        pool = Path(tempfile.mkdtemp(prefix="cf-pool-"))
+        self.addCleanup(shutil.rmtree, pool, True)
+        subprocess.run([ff, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10:duration=3", "-pix_fmt", "yuv420p", str(pool / "a.mp4")], check=True, timeout=60)
+        self.o.cfg.data.setdefault("render", {})["pools"] = {"demo": {"raw_dir": str(pool)}}
+        s = self.call("GET", "/api/templates/preview-sources?type=thumbnail")[1]
+        self.assertIn("frame:demo:0", [i["id"] for i in s["images"]])
+        self.call("POST", "/api/templates", {"type": "thumbnail", "id": "real_pv", "name": "Real PV"})
+        doc = self.call("GET", "/api/templates/real_pv")[1]["template"]
+        outs = {}
+        for key, sample in (("builtin", {"id": "s1"}), ("title2", {"id": "s2"}), ("frame", {"id": "s1", "image": "frame:demo:0"})):
+            c, pv = self.call("POST", "/api/templates/real_pv/preview", {"template": doc, "sample": sample})
+            self.assertEqual(c, 200, pv)
+            outs[key] = self.call("GET", pv["url"])[1]
+            self.assertEqual(outs[key][:8], PNG_MAGIC)
+        self.assertNotEqual(outs["builtin"], outs["title2"])                                               # đổi mẫu chữ thì ảnh đổi
+        self.assertNotEqual(outs["builtin"], outs["frame"])                                                # đổi ảnh nền thì ảnh đổi
+        bad = json.loads(json.dumps(doc))
+        bad["elements"][0]["width"] = -1
+        c, e = self.call("POST", "/api/templates/real_pv/preview", {"template": bad})
+        self.assertEqual(c, 400)
+        self.assertTrue(e["error"]["message"])                                                              # lỗi rõ ràng, không 500
+        c, e = self.call("POST", "/api/templates/real_pv/preview", {"template": doc, "sample": {"image": "frame:demo:7"}})
+        self.assertEqual((c, e["error"]["code"]), (400, "BAD_SAMPLE"))
 
     def test_lifecycle_actions_and_deletion_with_real_contentflow(self):
         def row(tid):

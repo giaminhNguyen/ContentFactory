@@ -13,6 +13,7 @@ from pathlib import Path
 from ..contracts import ErrorClass, StageError
 from . import channels as CH
 from .template_ops import TemplateOps
+from .template_samples import TemplateSamples
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][\w\-.]{0,120}$")
 PREVIEW_KINDS = ("previews", "test_render")
@@ -74,6 +75,7 @@ class TemplateService:
         self.ops = TemplateOps(orc.cfg, api=getattr(orc.adapters.get("render"), "templates", None)) if getattr(orc.adapters.get("render"), "supports_templates", False) else None
         self._lock = threading.RLock()
         self._locks: dict[str, threading.Lock] = {}
+        self.samples = TemplateSamples(orc.cfg, lambda: Path(self.api.info()["roots"]["cache"]))
 
     @property
     def api(self):
@@ -202,12 +204,32 @@ class TemplateService:
         out["url"] = f"/api/templates/files/{kind}/{rel}"
         return out
 
+    def _type_of(self, template_id: str, template: dict | None, version) -> str:
+        if isinstance(template, dict) and template.get("type") in ("thumbnail", "video"):
+            return template["type"]
+        return self.api.get_template(id=template_id, version=version if version is not None else "latest", validate=False)["template"]["type"]
+
+    def preview_sources(self, type: str) -> dict:
+        """Mẫu chọn được cho xem trước/render thử + render thử có dùng được không (kèm lý do). Không dựng ảnh: nhanh."""
+        if type not in ("thumbnail", "video"):
+            raise _err("BAD_TYPE", "Loại template phải là thumbnail hoặc video.")
+        _ = self.api                                                             # ném TEMPLATES_UNSUPPORTED nếu adapter không có hệ thống template
+        return self.samples.describe(type)
+
     def preview(self, template_id: str, template: dict | None = None, version=None, sample: dict | None = None) -> dict:
-        return self._artifact(self.api.preview(id=template_id if template is None else None, version=version, template=template, sample=sample))
+        """Xem trước NHANH (không ffmpeg, không video dài): tài liệu có thể là bản chưa lưu. `sample` là mô tả {id, image, channel}, dựng thành mẫu ở backend."""
+        s = self.samples.resolve(sample, self._type_of(template_id, template, version))
+        return self._artifact(self.api.preview(id=template_id if template is None else None, version=version, template=template, sample=s))
 
     def test_render(self, template_id: str, template: dict | None = None, version=None, sample: dict | None = None) -> dict:
+        """Render THẬT bằng ContentFlow (khác xem trước): thumbnail → ảnh, video → clip ngắn. Cùng mẫu với xem trước để so được."""
+        typ = self._type_of(template_id, template, version)
+        te = self.samples.describe(typ)["test_render"]
+        if not te["enabled"]:
+            raise _err("TEST_RENDER_UNAVAILABLE", "Chưa render thử được.", te["reason"])
+        s = self.samples.resolve(sample, typ)
         with self._busy("render:" + template_id):
-            return self._artifact(self.api.test_render(id=template_id if template is None else None, version=version, template=template, sample=sample))
+            return self._artifact(self.api.test_render(id=template_id if template is None else None, version=version, template=template, sample=s))
 
     def file(self, kind: str, rel: str) -> Raw:
         if kind not in PREVIEW_KINDS or not all(SAFE_NAME.match(x) for x in rel.split("/")) or rel.count("/") > 1:

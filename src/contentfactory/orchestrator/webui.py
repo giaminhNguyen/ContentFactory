@@ -257,6 +257,10 @@ class Api:
     def templates(app, m, q, b):
         return app.templates.overview(q.get("type", [None])[0], q.get("archived", ["0"])[0] == "1")
 
+    @route("GET", "/api/templates/preview-sources")
+    def template_preview_sources(app, m, q, b):
+        return app.templates.preview_sources(q.get("type", ["thumbnail"])[0])
+
     @route("GET", "/api/templates/options")
     def template_options(app, m, q, b):
         return app.templates.options()

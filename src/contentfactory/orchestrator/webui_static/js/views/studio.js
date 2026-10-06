@@ -24,6 +24,11 @@ export async function mount(root, ctx) {
   const tid = params[0];
   let doc = null, base = null, meta = null, alive = true, selected = null, zoom = "fit", scale = 1, saving = false;
   let validation = null, issueIds = new Map(), previewUrl = null, previewKey = null, showPreview = false, testResult = null, testRunning = false;
+  // Xem trước nhanh (Phase 7): nguồn mẫu do backend mô tả; tự cập nhật có debounce; chỉ yêu cầu mới nhất được dùng; Render thử là hành động riêng.
+  let src = null, srcError = null, sel = { id: "s1", image: "builtin", channel: "" }, pv = { state: "idle" }, hidByUser = false, timer = null, ctrl = null;
+  let autoPrev = (() => { try { return localStorage.getItem("cf.studio.autoPreview") !== "0"; } catch { return true; } })();
+  const gate = new L.LatestGate();
+  const strip = (d) => (({ scope, ...r }) => r)(d);
   const history = new L.History(100, 700);
   const stageNodes = new Map(), binders = [];
   const urlsToForget = new Set();
@@ -37,13 +42,14 @@ export async function mount(root, ctx) {
   const toolbar = h("div", { class: "st-toolbar", role: "toolbar", "aria-label": "Công cụ Template Studio" });
   const banner = h("div", { "aria-live": "polite" });
   const layersHost = h("section", { class: "st-panel st-layers", "aria-label": "Lớp" });
-  const stageWrap = h("div", { class: "st-stage-wrap" });
+  const stageWrap = h("div", { class: "st-stage-wrap", tabindex: "0", role: "region", "aria-label": "Vùng canvas (cuộn được khi thu phóng lớn)" });
   const stageNote = h("p", { class: "muted small st-hint" }, "Kéo lớp để di chuyển, kéo chốt để đổi cỡ. Chọn lớp rồi dùng phím mũi tên (Shift = 10 px). Ctrl+Z hoàn tác, Ctrl+Shift+Z làm lại.");
   const propsHost = h("section", { class: "st-panel st-props", "aria-label": "Thuộc tính" });
   const resultsHost = h("div", { class: "stack", "aria-live": "polite" });
   const body = h("div", { class: "st-grid" }, layersHost, h("div", { class: "st-center" }, stageWrap, stageNote), propsHost);
   const live = h("div", { class: "sr-only", role: "status", "aria-live": "polite" });
-  root.append(titleHost, toolbar, banner, body, resultsHost, live);
+  const prevBar = h("section", { class: "card stack st-prevbar", "aria-label": "Nguồn xem trước", "aria-live": "polite" });
+  root.append(titleHost, toolbar, banner, prevBar, body, resultsHost, live);
   titleHost.append(skeleton(3));
 
   // ---- chặn rời trang khi còn thay đổi chưa lưu ----
@@ -69,7 +75,8 @@ export async function mount(root, ctx) {
       base = L.clone(r.template);
       meta = { scope: r.scope, versions: r.versions || [], used_by: r.used_by || [], checksum: r.checksum };
       validation = r.validation || null;
-      testResult = null; previewUrl = null; previewKey = null; showPreview = false;
+      testResult = null; previewUrl = null; previewKey = null; showPreview = false; hidByUser = false; pv = { state: "idle" };
+      clearTimeout(timer); ctrl?.abort(); gate.next();
       history.reset(JSON.stringify(doc));
       if (!keepSelection || !L.byId(doc, selected)) selected = null;
       const want = `#/templates/${tid}?v=${doc.version}`;
@@ -77,6 +84,7 @@ export async function mount(root, ctx) {
       document.title = `${doc.name || tid} · Template Studio · ContentFactory`;
       renderAll();
       collectIssues();
+      loadSources().then(() => { if (alive && autoPrev) runPreview({ auto: true }); });
     } catch (e) {
       if (!alive) return;
       clear(titleHost); clear(toolbar); clear(body); clear(banner);
@@ -94,6 +102,7 @@ export async function mount(root, ctx) {
     refreshBinders();
     updateToolbar();
     markStale();
+    schedulePreview();
   }
   const el = () => (selected && selected !== "__canvas" ? L.byId(doc, selected) : null);
   function applyBox(e, box, key) { Object.assign(e, box); commit(key); }
@@ -130,7 +139,7 @@ export async function mount(root, ctx) {
     pubB = btn({ icon: "upload", label: "Publish", kind: "primary", onClick: () => publish() });
     zoomSel = select({ options: [["fit", "Vừa khung"], ["0.5", "50%"], ["1", "100%"], ["2", "200%"]], value: zoom, onChange: (v) => { zoom = v; layoutStage(); } });
     zoomSel.setAttribute("aria-label", "Thu phóng canvas (chỉ là hiển thị, không đổi kích thước thật)");
-    prevSw = switchCtl({ label: "Hiện ảnh xem trước", checked: showPreview, onChange: (v) => { showPreview = v; renderStage(); } });
+    prevSw = switchCtl({ label: "Hiện ảnh xem trước", checked: showPreview, onChange: (v) => { showPreview = v; hidByUser = !v; renderStage(); } });
     prevSw.input.disabled = true;
     moreB = btn({ icon: "dot", label: "Thêm", onClick: () => openMore() });
     delB = meta.scope === "user" && doc.status === "draft" ? btn({ icon: "trash", label: "Xoá bản nháp", kind: "danger", onClick: () => deleteDraft(), title: "Xoá bản nháp này (có xác nhận); bản đã publish không bị ảnh hưởng" }) : null;
@@ -146,6 +155,9 @@ export async function mount(root, ctx) {
     undoB.disabled = ro || !history.canUndo();
     redoB.disabled = ro || !history.canRedo();
     pubB.disabled = ro || saving;
+    const te = src?.test_render;
+    testB.disabled = testRunning || (!!te && !te.enabled);
+    testB.title = te && !te.enabled ? te.reason : "Render thật bằng ContentFlow: thumbnail → ảnh, video → clip ~2 giây. Khác “Xem trước” (nhanh, chỉ dựng ảnh).";
     prevSw.input.disabled = !previewUrl;
     prevSw.input.checked = showPreview && !!previewUrl;
     const d = dirty() && !ro;
@@ -559,20 +571,84 @@ export async function mount(root, ctx) {
     });
   }
 
-  async function runPreview() {
-    await busy(prevB, async () => {
-      try {
-        const key = L.canonStr(L.content(doc));
-        const r = await api.post(`/api/templates/${tid}/preview`, { template: (({ scope, ...rr }) => rr)(doc) });
-        previewUrl = await api.blobUrl(r.url);
-        urlsToForget.add(r.url);
-        previewKey = key;
-        showPreview = true;
-        testResult = null;
-        renderStage(); updateToolbar(); markStale();
-        if (r.warnings?.length) toast({ title: "Xem trước có cảnh báo", message: r.warnings[0], tone: "wait" });
-      } catch (e) { toastError(e, "Chưa xem trước được"); }
-    });
+  // ---- nguồn mẫu + xem trước nhanh ----
+  async function loadSources() {
+    try { src = await api.get("/api/templates/preview-sources", { query: { type: doc.type } }); srcError = null; if (!alive) return; fixSel(); }
+    catch (e) { src = null; srcError = e; }
+    renderPrevBar(); updateToolbar();
+  }
+  function fixSel() {                                                                 // lựa chọn đã lưu có thể không còn (pool bị xoá, kênh đổi tên…)
+    if (!src.samples.some((s) => s.id === sel.id)) sel.id = src.samples[0].id;
+    if (!src.images.some((i) => i.id === sel.image)) sel.image = "builtin";
+    if (sel.channel && !src.channels.some((c) => c.id === sel.channel)) sel.channel = "";
+  }
+  function schedulePreview() {
+    if (!autoPrev || !src || !alive || !doc) return;
+    clearTimeout(timer);
+    pv = { ...pv, pending: true };
+    renderPrevStatus();
+    timer = setTimeout(() => runPreview({ auto: true }), 700);                        // gom các thao tác kéo/gõ liên tiếp
+  }
+  async function silentValidate() {
+    try { validation = await api.post(`/api/templates/${tid}/validate`, { template: strip(doc) }); collectIssues(); } catch { /* lỗi kiểm tra không che lỗi xem trước */ }
+  }
+  async function runPreview({ auto = false } = {}) {
+    clearTimeout(timer);
+    ctrl?.abort();
+    const token = gate.next(), mine = (ctrl = new AbortController());
+    const key = L.canonStr(L.content(doc)), t0 = performance.now();
+    pv = { state: "loading" };
+    renderPrevStatus();
+    try {
+      const r = await api.post(`/api/templates/${tid}/preview`, { template: strip(doc), sample: { ...sel } }, { signal: mine.signal });
+      const url = await api.blobUrl(r.url);
+      if (!alive || !gate.isLatest(token)) return;                                     // bản sửa mới hơn đã gửi: bỏ kết quả cũ
+      previewUrl = url; urlsToForget.add(r.url); previewKey = key;
+      if (!hidByUser) showPreview = true;
+      pv = { state: "ok", ms: Math.round(performance.now() - t0), at: new Date(), warnings: r.warnings || [] };
+      renderStage(); updateToolbar(); markStale(); renderPrevStatus();
+    } catch (e) {
+      if (e.name === "AbortError" || !alive || !gate.isLatest(token)) return;
+      pv = { state: "error", error: e };
+      renderPrevStatus();
+      if (!auto) toastError(e, "Chưa xem trước được");
+      if (!e.network && !["TEMPLATES_UNSUPPORTED", "NO_SAMPLE_MEDIA", "BAD_SAMPLE", "CHANNEL_NOT_FOUND", "PREVIEW_UNAVAILABLE"].includes(e.code)) silentValidate();   // chỉ đúng lớp/thuộc tính hỏng
+    }
+  }
+  function pickSample(patch) {
+    sel = { ...sel, ...patch };
+    renderPrevBar();
+    runPreview({ auto: true });
+  }
+  function renderPrevStatus() {
+    const host = prevBar.querySelector(".st-pv-status");
+    if (!host) return;
+    clear(host);
+    if (pv.state === "loading" || pv.pending) host.append(h("span", { class: "row small muted" }, icon("spinner", { size: 16, cls: "spin" }), pv.state === "loading" ? "Đang dựng ảnh xem trước…" : "Có thay đổi — sắp cập nhật xem trước…"));
+    else if (pv.state === "ok") host.append(h("span", { class: "small muted" }, `Đã cập nhật ${pv.at.toLocaleTimeString("vi-VN")} · ${pv.ms} ms`, pv.warnings?.length ? ` · ${pv.warnings[0]}` : ""));
+    else if (pv.state === "error") {
+      const e = pv.error, media = e.code === "NO_SAMPLE_MEDIA";
+      host.append(alertBox({ tone: "fail", title: e.message, body: e.hint || (!e.network && e.code !== "TEMPLATES_UNSUPPORTED" ? "Xem mục “Kiểm tra bố cục” bên dưới: bấm tên lớp để chọn đúng chỗ cần sửa." : null),
+        actions: media ? [btn({ label: "Mở Nguồn Media", href: "#/pools", size: "sm" }), btn({ label: "Dùng ảnh mẫu có sẵn", size: "sm", onClick: () => pickSample({ image: "builtin" }) })] : [btn({ label: "Thử lại", size: "sm", onClick: () => runPreview() })] }));
+    }
+  }
+  function renderPrevBar() {
+    clear(prevBar);
+    if (srcError) { prevBar.append(h("div", { class: "row spread" }, h("h2", { class: "h3" }, "Xem trước"), btn({ label: "Tải lại nguồn mẫu", size: "sm", onClick: () => loadSources() })), alertBox({ tone: "wait", title: srcError.message, body: srcError.hint || "Xem trước chưa dùng được; bạn vẫn sửa và lưu template bình thường." })); return; }
+    if (!src) { prevBar.append(skeleton(1)); return; }
+    const isThumb = doc.type === "thumbnail";
+    const chips = src.samples.map((s) => h("button", { type: "button", class: "chip st-chip", "aria-pressed": String(sel.id === s.id), onClick: () => pickSample({ id: s.id }) }, s.label));
+    const imgSel = isThumb ? select({ options: src.images.map((i) => [i.id, i.label]), value: sel.image, onChange: (v) => pickSample({ image: v }) }) : null;
+    const chSel = select({ options: [["", "Tên mẫu (Truyện Đêm Khuya)"], ...src.channels.map((c) => [c.id, c.name])], value: sel.channel, onChange: (v) => pickSample({ channel: v }) });
+    const auto = switchCtl({ label: "Tự cập nhật khi sửa", checked: autoPrev, onChange: (v) => { autoPrev = v; try { localStorage.setItem("cf.studio.autoPreview", v ? "1" : "0"); } catch { /* không lưu được thì thôi */ } if (v) runPreview({ auto: true }); else { clearTimeout(timer); pv = { ...pv, pending: false }; renderPrevStatus(); } } });
+    prevBar.append(
+      h("div", { class: "row spread" }, h("h2", { class: "h3" }, "Xem trước nhanh"), h("span", { class: "small muted" }, isThumb ? `Nguồn: ${src.images.find((i) => i.id === sel.image)?.label || "Ảnh mẫu có sẵn"}` : "Video mẫu giả lập")),
+      h("div", { class: "row wrap", role: "group", "aria-label": "Mẫu nội dung" }, ...chips, btn({ label: "Đổi mẫu", icon: "refresh", size: "sm", onClick: () => { sel = L.nextSample(sel, src.samples, isThumb ? src.images : []); renderPrevBar(); runPreview({ auto: true }); } })),
+      h("div", { class: "row wrap" }, imgSel ? field({ label: "Ảnh nền", control: imgSel }) : null, field({ label: "Tên kênh", control: chSel }), auto),
+      src.note ? h("p", { class: "small muted" }, src.note) : null,
+      src.test_render.enabled ? null : h("p", { class: "small", role: "note" }, `Render thử đang tắt: ${src.test_render.reason}`),
+      h("div", { class: "st-pv-status", role: "status" }));
+    renderPrevStatus();
   }
 
   async function runTestRender() {
@@ -580,9 +656,10 @@ export async function mount(root, ctx) {
     testRunning = true;
     testResult = { running: true };
     renderResults();
+    updateToolbar();
     await busy(testB, async () => {
       try {
-        const r = await api.post(`/api/templates/${tid}/test-render`, { template: (({ scope, ...rr }) => rr)(doc) });
+        const r = await api.post(`/api/templates/${tid}/test-render`, { template: strip(doc), sample: { ...sel } });
         const url = await api.blobUrl(r.url);
         urlsToForget.add(r.url);
         testResult = { ...r, blob: url, key: L.canonStr(L.content(doc)) };
@@ -590,6 +667,7 @@ export async function mount(root, ctx) {
     });
     testRunning = false;
     renderResults();
+    updateToolbar();
   }
 
   function renderResults() {
@@ -719,14 +797,14 @@ export async function mount(root, ctx) {
 
   // ================================================================================ dựng
   function renderAll() {
-    renderTitle(); buildToolbar(); renderBanner(); renderLayers(); renderStage(); renderProps(); renderResults(); updateToolbar();
+    renderTitle(); buildToolbar(); renderBanner(); renderLayers(); renderStage(); renderProps(); renderResults(); updateToolbar(); renderPrevBar();
     scope.add(() => motion.itemsEnter([layersHost, propsHost]));
   }
 
   await load(query.get("v") || undefined);
   return {
     destroy() {
-      alive = false; ro.disconnect();
+      alive = false; ro.disconnect(); clearTimeout(timer); ctrl?.abort();
       document.removeEventListener("click", guardClick, true); document.removeEventListener("keydown", onKey);
       window.removeEventListener("beforeunload", guardUnload); window.removeEventListener("pointermove", onMove);
       for (const u of urlsToForget) forgetBlob(u);

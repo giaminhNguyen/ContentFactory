@@ -155,4 +155,18 @@ export function parseIssuePath(path) {
 }
 
 // Hộp giới hạn tối thiểu của template để hiển thị (kích thước canvas hợp lệ).
+// Chỉ kết quả của yêu cầu MỚI NHẤT được dùng: mỗi lần gửi lấy một vé; kết quả cũ về muộn (hoặc đã bị huỷ) bị bỏ, không ghi đè bản mới (Phase 7).
+export class LatestGate {
+  constructor() { this.n = 0; }
+  next() { return ++this.n; }
+  isLatest(token) { return token === this.n; }
+}
+
+// Chọn nguồn mẫu kế tiếp khi bấm “Đổi mẫu”: đi hết các ảnh của một mẫu chữ rồi sang mẫu chữ kế (ví dụ 3 mẫu × 4 ảnh = 12 tổ hợp).
+export function nextSample(sel, samples, images) {
+  const si = Math.max(0, samples.findIndex((s) => s.id === sel.id)), ii = Math.max(0, images.findIndex((i) => i.id === sel.image));
+  if (images.length > 1 && ii + 1 < images.length) return { ...sel, image: images[ii + 1].id };
+  return { ...sel, id: samples[(si + 1) % samples.length].id, image: images[0]?.id || "builtin" };
+}
+
 export const canvasOk = (c) => c && Number.isInteger(c.width) && Number.isInteger(c.height) && c.width > 0 && c.height > 0;

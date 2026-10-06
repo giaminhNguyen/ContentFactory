@@ -319,6 +319,8 @@ if (wanted("tpllife")) {
   await page.waitForURL(/#\/templates\/nhap_thu_xoa/);
   await page.waitForSelector("button:has-text('Xoá bản nháp')");
   check("Studio: nút Xoá bản nháp hiện ngay trên thanh công cụ (không giấu trong menu)", true);
+  await page.waitForSelector(".st-pv-status .alert");                                              // adapter giả lập không có xem trước: báo rõ, không treo
+  page.problems.splice(0);                                                                         // ...và 400 đó là hành vi mong đợi của fixture giả lập
   await go(page, "/templates");
   await page.waitForSelector(".tpl-card:has-text('Nháp thử xoá')");
   const card = page.locator(".tpl-card:has-text('Nháp thử xoá')");
@@ -332,6 +334,86 @@ if (wanted("tpllife")) {
   await page.waitForFunction((n) => document.querySelectorAll(".tpl-card").length === n, builtin, { timeout: 10000 });
   check("xoá xong danh sách làm mới ngay, các template có sẵn còn nguyên", (await page.locator(".tpl-card:has-text('Nháp thử xoá')").count()) === 0);
   check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+}
+
+// ===================================================================== 3g. Xem trước nhanh trong Studio: tự cập nhật có debounce, bỏ kết quả cũ, đổi mẫu, lỗi dễ hiểu, Render thử tách riêng
+if (wanted("tplprev")) {
+  console.log("\n# Xem trước nhanh (Studio)");
+  const tok = async (p) => p.locator("meta[name=cf-token]").getAttribute("content");
+  const page = await newPage({ width: 1440, height: 900 });
+  await go(page, "/templates");
+  await page.request.fetch(base + "/api/templates", { method: "POST", headers: { "X-CF-Token": await tok(page), "Content-Type": "application/json" }, data: JSON.stringify({ type: "thumbnail", id: "qa_pv", name: "QA Preview" }) });
+  const reqs = [];
+  page.on("request", (r) => { if (r.method() === "POST" && /\/api\/templates\/qa_pv\/preview$/.test(r.url())) reqs.push(r.postDataJSON()); });
+  await go(page, "/templates/qa_pv");
+  await page.waitForSelector(".st-pv-status:has-text('Đã cập nhật')", { timeout: 40000 }).catch(async (e) => { console.log("DEBUG prevbar:", await page.locator(".st-prevbar").innerText().catch(() => "(none)"), "| problems:", page.problems.join(" | ")); throw e; });
+  check("mở Studio là tự có ảnh xem trước (không cần bấm)", (await page.locator(".st-preview-img").count()) === 1 && reqs.length === 1);
+  check("3 mẫu nội dung + đổi mẫu + chọn ảnh/tên kênh", (await page.locator(".st-chip").count()) === 3 && (await page.getByRole("button", { name: "Đổi mẫu" }).count()) === 1 && (await page.getByLabel("Ảnh nền").count()) === 1 && (await page.getByLabel("Tên kênh", { exact: true }).count()) === 1);
+  await axe(page, "Studio có thanh xem trước");
+
+  // đổi mẫu -> gửi mô tả mẫu (không phải đường dẫn)
+  await page.locator(".st-chip", { hasText: "Mẫu 2" }).click();
+  await page.waitForFunction(() => document.querySelector(".st-pv-status")?.textContent.includes("Đã cập nhật"));
+  check("chọn Mẫu 2 gửi sample.id = s2, ảnh = builtin", reqs.at(-1)?.sample?.id === "s2" && reqs.at(-1)?.sample?.image === "builtin" && reqs.length === 2, JSON.stringify(reqs.at(-1)?.sample));
+  check("chip đang chọn có aria-pressed", (await page.locator(".st-chip[aria-pressed=true]").innerText()).includes("Mẫu 2"));
+
+  // kết quả cũ về muộn không ghi đè bản mới
+  await page.route("**/api/templates/qa_pv/preview", async (route) => {
+    if (route.request().postDataJSON()?.sample?.id === "s1") await new Promise((r) => setTimeout(r, 3000));
+    await route.continue().catch(() => {});
+  });
+  await page.locator(".st-chip", { hasText: "Mẫu 1" }).click();
+  await page.waitForTimeout(150);
+  await page.locator(".st-chip", { hasText: "Mẫu 3" }).click();
+  await page.waitForFunction(() => document.querySelector(".st-pv-status")?.textContent.includes("Đã cập nhật"));
+  const imgNow = await page.locator(".st-preview-img").getAttribute("src");
+  await page.waitForTimeout(3600);
+  check("kết quả cũ (Mẫu 1) về muộn KHÔNG ghi đè ảnh của Mẫu 3", (await page.locator(".st-preview-img").getAttribute("src")) === imgNow && (await page.locator(".st-pv-status").innerText()).includes("Đã cập nhật"));
+  await page.unroute("**/api/templates/qa_pv/preview");
+
+  // debounce: nhiều lần sửa liên tiếp -> một yêu cầu
+  const before = reqs.length;
+  await page.locator(".st-el").first().focus();
+  for (let i = 0; i < 6; i++) await page.keyboard.press("Shift+ArrowRight");
+  await page.waitForTimeout(250);
+  check("đang sửa: hiện 'sắp cập nhật' và chip ảnh đã cũ", (await page.locator(".st-pv-status").innerText()).includes("sắp cập nhật") && (await page.locator(".st-stale").count()) === 1);
+  await page.waitForFunction(() => document.querySelector(".st-pv-status")?.textContent.includes("Đã cập nhật"), null, { timeout: 30000 });
+  check("6 lần sửa liên tiếp chỉ gửi 1 yêu cầu xem trước", reqs.length === before + 1, `${reqs.length - before}`);
+  check("xong thì hết chip 'ảnh đã cũ'", (await page.locator(".st-stale").count()) === 0);
+
+  // tắt tự cập nhật
+  await page.getByText("Tự cập nhật khi sửa", { exact: true }).click();
+  const b2 = reqs.length;
+  await page.locator(".st-el").first().focus();
+  await page.keyboard.press("Shift+ArrowRight");
+  await page.waitForTimeout(1500);
+  check("tắt tự cập nhật: sửa không gửi yêu cầu, chip 'đã cũ' hiện", reqs.length === b2 && (await page.locator(".st-stale").count()) === 1);
+  await page.getByRole("button", { name: "Xem trước", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".st-stale"), null, { timeout: 30000 });
+  check("nút Xem trước vẫn cập nhật thủ công", reqs.length === b2 + 1);
+  await page.getByText("Tự cập nhật khi sửa", { exact: true }).click();
+
+  // lỗi dễ hiểu + thử lại
+  await page.route("**/api/templates/qa_pv/preview", (route) => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: { code: "TEMPLATE_INVALID", message: "Lớp 'photo' có chiều rộng âm.", hint: "Sửa Rộng của lớp này rồi xem trước lại." } }) }));
+  await page.locator(".st-chip", { hasText: "Mẫu 1" }).click();
+  await page.waitForSelector(".st-pv-status .alert");
+  check("lỗi nói rõ lớp/thuộc tính + cách sửa, có nút Thử lại", (await page.locator(".st-pv-status .alert").innerText()).includes("chiều rộng âm") && (await page.locator(".st-pv-status .alert").innerText()).includes("Sửa Rộng") && (await page.getByRole("button", { name: "Thử lại" }).count()) === 1);
+  check("ảnh xem trước cũ vẫn còn (không mất khi lỗi)", (await page.locator(".st-preview-img").count()) === 1);
+  await page.unroute("**/api/templates/qa_pv/preview");
+  page.problems.splice(0);                                                                       // 400 ở trên là lỗi giả lập có chủ ý
+  await page.getByRole("button", { name: "Thử lại" }).click();
+  await page.waitForFunction(() => !document.querySelector(".st-pv-status .alert") && document.querySelector(".st-pv-status")?.textContent.includes("Đã cập nhật"), null, { timeout: 30000 });
+  check("Thử lại thành công thì lỗi biến mất", true);
+
+  // Render thử tách riêng
+  const b3 = reqs.length;
+  await page.getByRole("button", { name: "Render thử" }).click();
+  await page.waitForSelector("#st-test-h", { timeout: 60000 });
+  await page.waitForSelector(".st-test-media", { timeout: 60000 });
+  check("Render thử là hành động riêng (không gửi thêm yêu cầu xem trước), có ảnh kết quả", reqs.length === b3 && (await page.locator(".st-test-media").count()) === 1);
+  check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.request.fetch(base + "/api/templates/qa_pv/1", { method: "DELETE", headers: { "X-CF-Token": await tok(page) } });         // dọn: phần "templates" sau đó đếm đúng 6 template có sẵn
   await page.context().close();
 }
 

@@ -121,3 +121,21 @@ test("parseIssuePath: nối lỗi validator với phần tử", () => {
   assert.deepEqual(L.parseIssuePath("canvas.width"), { canvas: true, field: "width" });
   assert.deepEqual(L.parseIssuePath("elements"), { other: true });
 });
+
+test("LatestGate: chỉ yêu cầu mới nhất được dùng, kết quả cũ về muộn bị bỏ", () => {
+  const g = new L.LatestGate();
+  const a = g.next(), b = g.next();
+  assert.equal(g.isLatest(a), false);
+  assert.equal(g.isLatest(b), true);
+  g.next();                                   // đổi version / rời trang cũng vô hiệu hoá yêu cầu đang bay
+  assert.equal(g.isLatest(b), false);
+});
+
+test("nextSample: đi hết ảnh của một mẫu chữ rồi sang mẫu chữ kế, quay vòng", () => {
+  const samples = [{ id: "s1" }, { id: "s2" }, { id: "s3" }], images = [{ id: "builtin" }, { id: "frame:p:0" }];
+  let s = { id: "s1", image: "builtin", channel: "k" };
+  s = L.nextSample(s, samples, images); assert.deepEqual([s.id, s.image, s.channel], ["s1", "frame:p:0", "k"]);
+  s = L.nextSample(s, samples, images); assert.deepEqual([s.id, s.image], ["s2", "builtin"]);
+  assert.deepEqual(L.nextSample({ id: "s3", image: "frame:p:0" }, samples, images), { id: "s1", image: "builtin" });
+  assert.equal(L.nextSample({ id: "s3", image: "builtin" }, samples, []).id, "s1");                // template video: không có ảnh, chỉ xoay mẫu chữ
+});

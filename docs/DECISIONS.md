@@ -555,6 +555,14 @@
 - **Lỗi dễ hiểu:** lỗi vòng đời tiếng Anh của ContentFlow được dịch ở `_Vi` (mã giữ nguyên, bản gốc ở `detail.original`) kèm “việc nên làm”.
 - **Giao diện:** nút theo `row.actions`, nút bị tắt luôn kèm lý do nhìn thấy được + nút “Đổi template của kênh X”; danh sách làm mới ngay sau mỗi thao tác (kể cả khi thất bại); Studio có “Xoá bản nháp” trên thanh công cụ. QA: `qa.mjs --only tpllife`.
 
+### D-104 ✅ Xem trước nhanh có mẫu thật trong Template Studio (Agent Plan, Phase 7)
+- **Hai hành động tách bạch:** *Xem trước* (nhanh, chỉ dựng ảnh, không ffmpeg, dùng được bản CHƯA LƯU) và *Render thử* (render thật bằng ContentFlow: thumbnail → ảnh, video → clip ~2 giây). Không gộp một nút; Render thử cùng nguồn mẫu với Xem trước để so được và không làm Xem trước chạy lại.
+- **Nguồn mẫu do backend sở hữu** (`orchestrator/template_samples.py`, `GET /api/templates/preview-sources?type=`): 3 mẫu nội dung thực tế (tên kênh + tiêu đề dài/vừa/ngắn + số tập; không dùng chuỗi “TITLE”), tên kênh có thể lấy từ một kênh thật, ảnh nền = ảnh có sẵn của ContentFlow hoặc **khung hình trích từ video trong pool** (cache theo size+mtime, tối đa 3/pool). Pool ảnh thumbnail của Phase 8 cắm vào đúng chỗ `describe()/_frame()` mà không đổi API.
+- **Bảo mật:** client chỉ gửi *mô tả* mẫu `{id, image, channel}`; đường dẫn ảnh luôn do backend dựng (`frame:<pool>:<n>` đã kiểm tra, n < 3). Trước đây `sample` đi thẳng vào ContentFlow, nay không còn nhận đường dẫn tuỳ ý.
+- **Tự cập nhật (mặc định bật, tắt được, nhớ trong trình duyệt):** debounce 700 ms, mỗi yêu cầu mới huỷ yêu cầu cũ (AbortController) và `LatestGate` loại kết quả cũ về muộn nên không bao giờ ghi đè bản mới; ảnh xem trước cũ vẫn giữ khi lỗi; chip “Ảnh xem trước đã cũ” khi chưa kịp cập nhật. Chạy trên luồng HTTP riêng + tiến trình con ContentFlow nên không chặn runner.
+- **Lỗi dễ hiểu:** thông báo + gợi ý của ContentFlow hiện trong thanh xem trước kèm “Thử lại”; lỗi bố cục tự chạy Kiểm tra để chỉ đúng lớp/thuộc tính; thiếu ảnh/pool (`NO_SAMPLE_MEDIA`) có nút “Mở Nguồn Media” và “Dùng ảnh mẫu có sẵn”; thiếu ffmpeg ⇒ Render thử video tắt kèm lý do (`TEST_RENDER_UNAVAILABLE`), Xem trước vẫn dùng được.
+- **Khác biệt so với plan (ghi nhận):** ContentFlow chỉ nhận ảnh nền cho thumbnail; xem trước/render thử template **video** dựng bằng hình giả lập “SOURCE VIDEO” (vùng hiển thị, khung/overlay, chữ, vùng an toàn là thật) — chưa lấy khung hình/clip thật từ pool vì cần đổi ContentFlow (repo riêng, ngoài phạm vi commit này); giao diện nói rõ điều đó. Số tập (`sequence`) có trong mô tả mẫu nhưng ContentFlow chưa có nguồn chữ tương ứng. Không có schema thứ hai ở frontend: Studio vẫn sửa đúng tài liệu ContentFlow.
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:
