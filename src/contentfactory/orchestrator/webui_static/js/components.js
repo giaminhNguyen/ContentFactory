@@ -169,7 +169,7 @@ export function openDialog({ title, content, actions, wide = false, describe }) 
     const dlg = h("dialog", { class: "dlg" + (wide ? " wide" : ""), "aria-labelledby": titleId });
     const bar = h("div", { class: "actions" });
     const close = (value) => { dlg.close(); resolve(value); };
-    for (const a of actions) bar.append(btn({ label: a.label, kind: a.kind || "", onClick: async () => { if (a.onClick) { const r = await a.onClick(); if (r === false) return; } close(a.value); } }));
+    for (const a of actions) bar.append(btn({ label: a.label, kind: a.kind || "", disabled: a.disabled, onClick: async () => { if (a.onClick) { const r = await a.onClick(); if (r === false) return; } close(a.value); } }));
     dlg.append(h("h2", { id: titleId }, title), describe ? h("p", { class: "muted small" }, describe) : null, content || null, bar);
     dlg.addEventListener("cancel", (ev) => { ev.preventDefault(); close(undefined); });
     dlg.addEventListener("close", () => { dlg.remove(); if (opener && opener.isConnected) opener.focus(); });

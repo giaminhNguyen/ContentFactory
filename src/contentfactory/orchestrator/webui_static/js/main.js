@@ -11,7 +11,7 @@ const NAV = [
   ["jobs", "/jobs", "Job", "list"],
   ["channels", "/channels", "Kênh", "tv"],
   ["tts", "/tts", "Giọng đọc", "mic"],
-  ["pools", "/pools", "Video nguồn", "film"],
+  ["pools", "/pools", "Nguồn Media", "film"],
   ["templates", "/templates", "Template", "layout"],
   ["settings", "/settings", "Cài đặt & Doctor", "settings"],
 ];

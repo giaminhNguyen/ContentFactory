@@ -654,9 +654,9 @@ class SourceLinksAndMigrationTest(BatchCase):
         c.close()
         st2 = JobStore(db)
         j = st2.get_job(jid)
-        self.assertEqual((st2.schema_version(), j["channel_id"], j["batch_id"]), (5, "kenh_x", None))        # job cũ: kênh lấy từ params, vẫn là Single Job
+        self.assertEqual((st2.schema_version(), j["channel_id"], j["batch_id"]), (6, "kenh_x", None))        # job cũ: kênh lấy từ params, vẫn là Single Job
         self.assertEqual(st2.list_batches(), [])
-        self.assertEqual(JobStore(db).schema_version(), 5)                                                  # idempotent
+        self.assertEqual(JobStore(db).schema_version(), 6)                                                  # idempotent
 
 
 if __name__ == "__main__":

@@ -199,7 +199,7 @@ export async function mount(root, ctx) {
   function linkCards() {
     const mk = (href, ic, t, s) => h("a", { class: "link-card", href }, icon(ic, { size: 22 }), h("span", null, t, h("small", null, s)));
     return h("section", { class: "card", "aria-labelledby": "go-h" }, h("h2", { id: "go-h" }, "Các khu vực liên quan"), h("div", { class: "link-cards" },
-      mk("#/channels", "tv", "Kênh", "Tên, watermark, giọng, video nền, đăng"), mk("#/tts", "mic", "Giọng đọc", "Engine và profile TTS"), mk("#/pools", "film", "Video nguồn", "Thư mục video nền, đồng bộ")));
+      mk("#/channels", "tv", "Kênh", "Tên, watermark, giọng, video nền, đăng"), mk("#/tts", "mic", "Giọng đọc", "Engine và profile TTS"), mk("#/pools", "film", "Nguồn Media", "Video nền, ảnh thumbnail")));
   }
 
   function storageCard() {

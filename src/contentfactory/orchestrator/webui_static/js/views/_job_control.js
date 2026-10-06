@@ -68,6 +68,23 @@ export async function openPipelineDialog(job, { after } = {}) {
   ] });
 }
 
+// “Đổi ảnh thumbnail”: backend nói trước việc gì sẽ chạy lại (cùng impact planner), người dùng xác nhận rồi mới rút ảnh khác từ pool.
+export async function openRerollThumbnail(job, { after } = {}) {
+  let impact;
+  try { impact = await api.post(`/api/jobs/${job.id}/reroll-thumbnail/impact`, {}); }
+  catch (e) { toastError(e, "Chưa đổi ảnh được"); return false; }
+  const todo = impact.ok ? impact.stages.filter((s) => ["RUN", "RERUN"].includes(s.action)) : [];
+  const content = h("div", { class: "stack", "aria-live": "polite" },
+    h("p", null, "Hệ thống chọn một ảnh KHÁC từ pool rồi dựng lại thumbnail. Chỉ phần bị ảnh hưởng chạy lại; giọng đọc, audio và TikTok giữ nguyên."),
+    impact.ok ? (todo.length ? h("ul", { class: "autolist" }, ...todo.map((s) => h("li", null, h("strong", null, s.label + ": "), s.action_label, s.reason ? ` — ${s.reason}` : ""))) : h("p", { class: "muted small" }, "Chưa có bước nào phải chạy lại."))
+      : alertBox({ tone: "wait", title: impact.errors[0] || "Không đổi được ảnh lúc này", body: impact.clone_suggested ? "Dùng “Chạy lại với thay đổi” để tạo job mới với ảnh khác." : null }));
+  const r = await openDialog({ title: "Đổi ảnh thumbnail?", content, actions: [{ label: "Không đổi", value: null }, { label: "Đổi ảnh", kind: "primary", value: "ok", disabled: !impact.ok, onClick: async () => {
+    try { const x = await api.post(`/api/jobs/${job.id}/reroll-thumbnail`, {}); toast({ title: x.message, tone: x.status === "applied" ? "done" : "wait" }); after?.(); return true; }
+    catch (e) { toastError(e, "Chưa đổi ảnh được"); return false; }
+  } }] });
+  return r === "ok";
+}
+
 export async function confirmCancel(job, { after } = {}) {
   const r = await openDialog({ title: "Hủy job này?", describe: "Kết quả đã có được giữ lại, nhưng job sẽ không tự chạy lại. Muốn thử lại với thay đổi, dùng “Chạy lại với thay đổi”.",
     content: h("p", null, `Job #${job.id}: ${job.title}`), actions: [{ label: "Không hủy", value: null }, { label: "Hủy job", kind: "danger solid", value: "ok", onClick: async () => {

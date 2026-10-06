@@ -12,7 +12,7 @@ const ROUTES = [
   [/^\/batches\/(B\d+)$/, "batch", "Channel Run"],
   [/^\/channels(?:\/([\w-]+))?$/, "channels", "Kênh"],
   [/^\/tts$/, "tts", "Giọng đọc (TTS)"],
-  [/^\/pools$/, "pools", "Video nguồn"],
+  [/^\/pools(?:\/(images))?$/, "pools", "Nguồn Media"],
   [/^\/templates$/, "templates", "Template"],
   [/^\/templates\/([a-z0-9_]+)$/, "studio", "Template Studio"],
   [/^\/settings(?:\/(\w+))?$/, "settings", "Cài đặt & Doctor"],

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ..contracts import ArtifactRef, ErrorClass, StageContext, StageError, StageResult, project_of
 from ..fsutil import atomic_write_json
+from ..media import image_pool as IP
 from . import profile as PF
 
 
@@ -128,14 +129,16 @@ class RenderManager:
         tsnap = self._snap(ctx, "thumbnail")
         if tsnap:
             th = {**th, "config_overrides": {}}                       # template quyết định bố cục thumbnail; override kiểu cũ không còn tác dụng
-        tkey = _h("thumb", proj["title"], proj["channel_name"], th, ver, PF.template_ref(tsnap))
+        tsrc = ctx.params.get("thumbnail_source")                                                    # ảnh đã chốt từ Image Pool (bản sao trong workspace, kiểm sha256)
+        timg = IP.resolve_source(ctx.workspace, tsrc) if tsrc else None
+        tkey = _h("thumb", proj["title"], proj["channel_name"], th, ver, PF.template_ref(tsnap), tsrc["sha256"] if tsrc else None)
         if self._valid(thumb, tkey):
             states["thumbnail"] = {"state": "reused", "attempts": 0}
         else:
             self._invalidate(thumb)
             states["thumbnail"]["state"] = "rendering"
             note()
-            treq = {"title": proj["title"], "channel_name": proj["channel_name"], "output": thumb, "image": th.get("image"),
+            treq = {"title": proj["title"], "channel_name": proj["channel_name"], "output": thumb, "image": str(timg) if timg else th.get("image"),
                     "highlight": th.get("highlight", "auto"), "highlight_text": th.get("highlight_text", ""),
                     "config_overrides": th.get("config_overrides") or {}, "template": tsnap, "key": tkey}
             _, n, errs = self._attempt(ctx, "thumbnail", prof["retry"], lambda: self.render.render_thumbnail(treq, ctx))

@@ -4,3 +4,14 @@
 .pool-problems td { padding-top: 0; background: var(--st-fail-bg); color: var(--st-fail-fg); }
 .pool-problems .autolist { margin: var(--s-2) 0; }
 .pool-path { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+/* Ảnh thumbnail (Image Pool) */
+.ip-card .h3 { margin: 0; font-size: var(--fs-md); }
+.ip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--s-3); }
+.ip-grid:empty { display: none; }
+.ip-fig { margin: 0; display: grid; gap: var(--s-1); }
+.ip-img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: var(--r-2); border: 1px solid var(--border); background: var(--surface-2, var(--surface)); }
+.ip-broken { display: grid; place-items: center; font-size: var(--fs-sm); color: var(--muted); }
+.ip-invalid { grid-column: 1 / -1; }
+.job-thumb { display: grid; grid-template-columns: minmax(160px, 260px) 1fr; gap: var(--s-4); align-items: start; }
+.job-thumb img { width: 100%; border-radius: var(--r-2); border: 1px solid var(--border); }
+@media (max-width: 640px) { .job-thumb { grid-template-columns: minmax(0, 1fr); } }

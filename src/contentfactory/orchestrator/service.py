@@ -21,6 +21,7 @@ from ..fsutil import atomic_write_json
 from ..jobs import pipeline as P
 from ..jobs.plan import spec_for_mode
 from ..jobs.workspace import job_dir
+from ..media import image_pool as IPOOL
 from ..source import discovery as DISC
 from ..output import metadata as MD
 from ..tts import prosody as PRO
@@ -30,6 +31,7 @@ from . import diagnose as DG
 from . import ops
 from . import revisions as REV
 from . import templates as TPL
+from .service_templates import Raw
 
 AUDIO_EXT = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
 SUBTITLE_EXT = {".srt", ".vtt", ".json"}
@@ -543,8 +545,9 @@ class Service:
                                     "summary": self._impact_summary(pend["impact"] or {})} if pend else None),
                  actions={"pause": j["control_state"] == "RUNNING" and status not in ("completed", "failed", "cancelled"), "unpause": j["control_state"] == "PAUSED",
                           "cancel": j["control_state"] != "CANCELLED" and status != "completed", "update": status not in ("completed", "cancelled"),
-                          "clone": status in ("completed", "cancelled", "failed"),
+                          "clone": status in ("completed", "cancelled", "failed"), "reroll_thumbnail": bool((j["params"].get("thumbnail_source")) and status not in ("completed", "cancelled")),
                           "prosody": any(a["kind"] == "speech_plan" for a in self.orc.store.artifacts(job_id))})
+        s["thumbnail"] = self.thumbnail_info(j)
         s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=self._pipeline(j, runs), decisions=j["params"].get("auto", []),
                  mode={"start": j.get("start_stage"), "target": j.get("target_stage")}, params_public=self._public_params(j["params"]),
                  output=(lambda o: o if o.get("project_dir") else None)(self.output_info(job_id)),
@@ -787,6 +790,41 @@ class Service:
     def _impact_view(self, impact: dict) -> dict:
         return {**impact, "stages": [{**s, "action_label": ACTION_VI[s["action"]]} for s in impact["stages"]], "summary_text": self._impact_summary(impact)}
 
+    # ------------------------------------------------------------------------------------------ Image Pool (Phase 8)
+    _REROLL_PROBE = {"thumbnail_source": {"sha256": "reroll"}}
+
+    def thumbnail_info(self, j: dict) -> dict | None:
+        """Ảnh thumbnail đã chốt từ pool (chỉ phần công khai) + việc “Đổi ảnh” làm được không và vì sao."""
+        t = j["params"].get("thumbnail_source")
+        if not t:
+            return None
+        why = None
+        if j["control_state"] == "CANCELLED" or self.summary(j)["status"] in ("completed", "cancelled"):
+            why = "Job đã kết thúc nên không sửa tại chỗ (bản đã dựng/đăng được giữ nguyên). Dùng “Chạy lại với thay đổi” để làm job mới với ảnh khác."
+        return {"pool": t["pool"], "selection_mode": t["selection_mode"], "source_relpath": t["source_relpath"], "width": t.get("width"), "height": t.get("height"),
+                "sha": t["sha256"][:12], "rerolls": t.get("rerolls", 0), "image_url": f"/api/jobs/{j['id']}/thumbnail-source",
+                "can_reroll": why is None, "reroll_blocked": why}
+
+    def reroll_preview(self, job_id: str) -> dict:
+        self._job_or_error(job_id)
+        return self._impact_view(self.orc.preview_update(job_id, params_patch=self._REROLL_PROBE))
+
+    def reroll_thumbnail(self, job_id: str) -> dict:
+        self._job_or_error(job_id)
+        r = self.orc.reroll_thumbnail(job_id)
+        pending = r["status"] == "pending"
+        return {**{k: v for k, v in r.items() if k != "impact"}, "impact": self._impact_view(r["impact"]) if r.get("impact") else None,
+                "message": ("Đã chọn ảnh khác; sẽ áp dụng ở điểm an toàn kế tiếp (không làm hỏng đơn vị đang chạy)." if pending else
+                            "Đã đổi ảnh thumbnail. Chỉ thumbnail và gói output được dựng lại.")}
+
+    def thumbnail_source_file(self, job_id: str) -> Raw:
+        j = self._job_or_error(job_id)
+        t = j["params"].get("thumbnail_source")
+        if not t:
+            raise _err("NO_THUMBNAIL_SOURCE", "Job này không dùng pool ảnh thumbnail.")
+        p = IPOOL.resolve_source(job_dir(self.cfg.path("workspace"), job_id), t)
+        return Raw(p.read_bytes(), {"jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}[t["format"]])
+
     def preview_update(self, job_id: str, payload: dict) -> dict:
         self._job_or_error(job_id)
         return self._impact_view(self.orc.preview_update(job_id, **self._update_args(payload)))
@@ -836,7 +874,8 @@ class Service:
         pools = sorted(((self.cfg.data.get("render") or {}).get("pools") or {}).keys())
         files = sorted(x.name for x in d.iterdir() if x.is_file() and x.name != "channel.json") if d.is_dir() else []
         return {"id": channel_id, "raw": raw, "channel": {k: v for k, v in ch.items() if k != "loaded_from"}, "assets": files,
-                "options": {"tts_profiles": profiles, "pools": pools, "privacy": ["private", "unlisted", "public"], "prosody": PRO.describe()}}
+                "options": {"tts_profiles": profiles, "pools": pools, "privacy": ["private", "unlisted", "public"], "prosody": PRO.describe(),
+                            "image_pools": sorted(self.orc.image_pools.specs()), "image_modes": list(IPOOL.MODES)}}
 
     def save_channel(self, channel_id: str, raw: dict, create: bool = False) -> dict:
         d = CH.channel_dir(self.cfg, channel_id)

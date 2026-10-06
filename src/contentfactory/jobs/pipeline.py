@@ -98,7 +98,7 @@ STAGES: tuple[Stage, ...] = (
           optional=("audio_timeline",)),
     Stage("render_youtube", YOUTUBE_RENDER_READY, YOUTUBE_RENDERING, TIKTOK_RENDER_READY,
           ("audio_youtube", "metadata"), ("video_youtube", "thumbnail", "youtube_render_report"), "render/youtube", ("render",), "gpu",
-          checkpoint="video, thumbnail (trạng thái từng output trong checkpoint)", params_deps=("render", "channel", "project", "templates.youtube", "templates.thumbnail", "fake"),
+          checkpoint="video, thumbnail (trạng thái từng output trong checkpoint)", params_deps=("render", "channel", "project", "templates.youtube", "templates.thumbnail", "thumbnail_source.sha256", "fake"),
           config_deps=("render", "adapter_config", "channel_config", "publishing"), deliverable=True),
     Stage("render_tiktok", TIKTOK_RENDER_READY, TIKTOK_RENDERING, OUTPUT_READY,
           ("audio_tiktok",), ("video_tiktok", "tiktok_render_report"), "render/tiktok", ("render",), "gpu",

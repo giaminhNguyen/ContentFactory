@@ -1,5 +1,5 @@
 // Chi tiết job: pipeline trực quan từng stage, vì sao đang dừng và hệ thống sẽ làm gì tiếp, nút hành động đúng ngữ cảnh, output, chi tiết kỹ thuật thu gọn.
-import { api } from "../api.js";
+import { api, forgetBlob } from "../api.js";
 import { h, clear, patchList } from "../dom.js";
 import { icon } from "../icons.js";
 import { btn, alertBox, badge, jobBadge, updateBadge, stageBadge, progress, updateProgress, errorState, skeleton, switchCtl, disclosure, kv, toast, toastError, busy } from "../components.js";
@@ -7,7 +7,7 @@ import { createPoller } from "../poller.js";
 import { jobStatus, stageState, ACTION_LABEL, PART_STATE } from "../status.js";
 import { relTime, duration } from "../format.js";
 import { openOutput, pauseJob, resumeJob, retryJob, setAutoResume } from "../actions.js";
-import { openPipelineDialog, openClone, confirmCancel } from "./_job_control.js";
+import { openPipelineDialog, openClone, confirmCancel, openRerollThumbnail } from "./_job_control.js";
 import { openProsodyDialog } from "./_prosody.js";
 import { externalLink } from "./_batch_ui.js";
 import * as motion from "../motion.js";
@@ -23,11 +23,13 @@ export async function mount(root, ctx) {
   const alertHost = h("div", { "aria-live": "polite" });
   const autoHost = h("div", null);
   const controlHost = h("div", null);
+  const thumbHost = h("div", null);
+  let thumbUrl = null;
   const stagesList = h("ul", { class: "stages", "aria-label": "Các bước của pipeline" });
   const stagesCard = h("section", { class: "card", "aria-labelledby": "pipe-h" }, h("div", { class: "card-title" }, h("h2", { id: "pipe-h" }, "Pipeline")), stagesList);
   const outputHost = h("div", null);
   const techHost = h("div", null);
-  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, controlHost, stagesCard, outputHost, techHost));
+  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, controlHost, thumbHost, stagesCard, outputHost, techHost));
   head.append(skeleton(2));
 
   // ---------- tải ----------
@@ -55,6 +57,7 @@ export async function mount(root, ctx) {
     sig("alert", [d.status, JSON.stringify(d.diagnosis.hold), d.diagnosis.human, d.diagnosis.resume.actions.join(), d.diagnosis.attempts, d.diagnosis.resume.text], () => paintAlert(d));
     sig("auto", [d.auto_resume, d.status], () => paintAuto(d));
     sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
+    sig("thumb", [JSON.stringify(d.thumbnail), d.pending_revision?.revision], () => paintThumb(d));
     paintStages(d);
     sig("output", [JSON.stringify(d.output)], () => paintOutput(d));
     sig("tech", [d.decisions.length, d.attempts.length, d.mode.start, d.mode.target], () => paintTech(d));
@@ -83,6 +86,25 @@ export async function mount(root, ctx) {
       return b;
     }
     return null;
+  }
+
+  // Ảnh thumbnail đã chốt từ Image Pool (nếu kênh dùng pool): ảnh + nguồn + lý do + “Đổi ảnh” (tắt kèm lý do khi job đã kết thúc).
+  function paintThumb(d) {
+    clear(thumbHost);
+    if (thumbUrl) { forgetBlob(thumbUrl); thumbUrl = null; }
+    const t = d.thumbnail;
+    if (!t) return;
+    const why = (d.decisions || []).find((x) => x.what === "thumbnail.image");
+    const img = h("div", { class: "ip-img skeleton", style: "aspect-ratio:16/10" });
+    thumbUrl = t.image_url;
+    api.blobUrl(t.image_url, { fresh: true }).then((u) => img.replaceWith(h("img", { src: u, alt: `Ảnh thumbnail đã chốt: ${t.source_relpath}` }))).catch(() => img.replaceWith(h("p", { class: "muted small" }, "Không tải được ảnh (file trong workspace đã mất?).")));
+    const reroll = btn({ label: "Đổi ảnh thumbnail…", icon: "refresh", size: "sm", disabled: !t.can_reroll, onClick: () => openRerollThumbnail(d, { after }).catch((e) => toastError(e)) });
+    thumbHost.append(h("section", { class: "card stack", "aria-labelledby": "thumb-h" }, h("div", { class: "card-title" }, h("h2", { id: "thumb-h" }, "Ảnh thumbnail"), reroll),
+      h("div", { class: "job-thumb" }, img, h("div", { class: "stack" },
+        kv([["Pool", t.pool], ["File", t.source_relpath], ["Kích thước", t.width ? `${t.width}×${t.height}` : "—"], ["Cách chọn", t.selection_mode], ["Đã đổi", `${t.rerolls} lần`]]),
+        why ? h("p", { class: "small muted" }, why.why) : null,
+        t.can_reroll ? null : h("p", { class: "small", role: "note" }, t.reroll_blocked),
+        d.pending_revision ? h("p", { class: "small muted" }, "Có thay đổi đang chờ áp dụng ở điểm an toàn.") : null))));
   }
 
   function paintControl(d) {
@@ -238,5 +260,5 @@ export async function mount(root, ctx) {
   }
 
   poller.start();
-  return { destroy() { poller.stop(); } };
+  return { destroy() { poller.stop(); if (thumbUrl) forgetBlob(thumbUrl); } };
 }

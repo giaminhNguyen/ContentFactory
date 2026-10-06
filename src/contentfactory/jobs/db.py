@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS transitions(
   from_state TEXT, to_state TEXT NOT NULL, stage TEXT, attempt INTEGER, note TEXT);
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # v1 (Phase 2.9): điều khiển job (start/target stage), hold + auto resume, checkpoint, config snapshot, resource monitor
 V1_JOB_COLUMNS = (
     ("start_stage", "TEXT"), ("target_stage", "TEXT"), ("target_idx", "INTEGER"),
@@ -109,6 +109,11 @@ V5_SQL = (
          published_at TEXT, duration REAL, job_id TEXT, status TEXT NOT NULL DEFAULT 'pending', skip_reason TEXT, error TEXT, metadata TEXT,
          PRIMARY KEY(batch_id, source_video_id))""",
     "CREATE INDEX IF NOT EXISTS batch_items_status ON batch_items(status)",
+)
+
+V6_SQL = (
+    # trạng thái túi chọn ảnh của từng Image Pool (Phase 8): bền qua restart, cập nhật nguyên tử giữa các job/batch
+    """CREATE TABLE IF NOT EXISTS image_pool_state(pool TEXT PRIMARY KEY, state TEXT NOT NULL, updated_at REAL NOT NULL)""",
 )
 
 _RUNNING_STATES = tuple(s.running_state for s in P.STAGES)
@@ -225,6 +230,9 @@ class JobStore:
                     for sql in V5_SQL:
                         c.execute(sql)
                     c.execute("UPDATE jobs SET channel_id=json_extract(params,'$.channel') WHERE channel_id IS NULL")        # job cũ: kênh xuất bản lấy từ params
+                if ver < 6:
+                    for sql in V6_SQL:
+                        c.execute(sql)
                 if ver < SCHEMA_VERSION:
                     c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
@@ -822,6 +830,20 @@ class JobStore:
             j = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
             c.execute("UPDATE jobs SET params=?, updated_at=? WHERE id=?", (json.dumps(params, ensure_ascii=False), now, job_id))
             self._note(c, job_id, j["state"], now, note)
+
+    def image_pool_update(self, pool: str, fn):
+        """Đọc trạng thái túi chọn ảnh của `pool`, gọi `fn(state|None) -> (kết_quả, trạng_thái_mới)` và ghi lại — tất cả trong MỘT transaction (BEGIN IMMEDIATE),
+        nên hai job/batch rút ảnh cùng lúc không bao giờ nhận cùng một ảnh trong cùng một vòng."""
+        with self._tx() as c:
+            row = c.execute("SELECT state FROM image_pool_state WHERE pool=?", (pool,)).fetchone()
+            result, new = fn(json.loads(row["state"]) if row else None)
+            c.execute("INSERT INTO image_pool_state(pool,state,updated_at) VALUES(?,?,?) ON CONFLICT(pool) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at",
+                      (pool, json.dumps(new, ensure_ascii=False), time.time()))
+            return result
+
+    def image_pool_forget(self, pool: str) -> None:
+        with self._tx() as c:
+            c.execute("DELETE FROM image_pool_state WHERE pool=?", (pool,))
 
     def set_auto_resume(self, job_id: str, value: bool, now: float | None = None) -> None:
         now = now or time.time()

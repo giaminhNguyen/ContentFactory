@@ -1,7 +1,7 @@
 // Video nguồn (source pool): thư mục video thô, trạng thái đồng bộ, đồng bộ nền dùng chung. Frontend chỉ hiển thị/ra lệnh; không có logic ContentFlow.
 import { api } from "../api.js";
 import { h, clear, loadCss } from "../dom.js";
-import { btn, busy, field, input, select, alertBox, emptyState, errorState, skeleton, pageHead, toast, toastError, confirmDialog, openDialog, badge } from "../components.js";
+import { btn, busy, field, input, select, alertBox, emptyState, errorState, skeleton, pageHead, toast, toastError, confirmDialog, openDialog, badge, tabs } from "../components.js";
 import { createPoller } from "../poller.js";
 import { createSamples } from "../samples.js";
 import { relTime, shortPath } from "../format.js";
@@ -17,8 +17,29 @@ const STATE = {
 const ORIENT = { landscape: "Ngang", portrait: "Dọc" };
 const USED = { youtube: "YouTube", tiktok: "TikTok" };
 
+// Nguồn Media: hai nguồn tách bạch — Video (nền cho render) và Ảnh thumbnail (Image Pool, Phase 8). Mỗi tab là một view riêng; đường dẫn #/pools và #/pools/images.
 export async function mount(root, ctx) {
   loadCss("/css/pools.css");
+  let tab = ctx.params[0] === "images" ? "images" : "video", sub = null, seq = 0;
+  const tabHost = h("div"), panel = h("div", { role: "tabpanel" });
+  root.append(pageHead("Nguồn Media", "Nơi hệ thống lấy video nền và ảnh thumbnail cho job."), tabHost, panel);
+  tabHost.append(tabs({ items: [["video", "Video"], ["images", "Ảnh thumbnail"]], active: tab, label: "Loại nguồn media", onSelect: (id) => { tab = id; history.replaceState(null, "", id === "images" ? "#/pools/images" : "#/pools"); show(); } }));
+  async function show() {
+    const my = ++seq;
+    sub?.destroy();
+    sub = null;
+    clear(panel);
+    panel.id = `panel-${tab}`;
+    panel.setAttribute("aria-labelledby", `tab-${tab}`);
+    const s = await (tab === "images" ? (await import("./_image_pools.js")).mount(panel, ctx) : mountVideo(panel, ctx));
+    if (my !== seq) { s.destroy(); return; }
+    sub = s;
+  }
+  await show();
+  return { destroy() { seq++; sub?.destroy(); } };
+}
+
+async function mountVideo(root, ctx) {
   const { scope } = ctx;
   let data = null, sig = "", task = null, firstPaint = true, failedOnce = false;
 
@@ -27,7 +48,7 @@ export async function mount(root, ctx) {
   const body = h("div", null);
   const addBtn = btn({ label: "Thêm pool", icon: "plus", onClick: () => poolDialog() });
   const syncAll = btn({ label: "Đồng bộ tất cả", icon: "refresh", onClick: (e) => startSync(null, e.currentTarget) });
-  root.append(pageHead("Video nguồn", "Hệ thống chuẩn hoá video nguồn một lần và dùng chung cho mọi job; việc đồng bộ chạy nền.", [syncAll, addBtn]),
+  root.append(h("div", { class: "row spread" }, h("p", { class: "muted" }, "Hệ thống chuẩn hoá video nguồn một lần và dùng chung cho mọi job; việc đồng bộ chạy nền."), h("div", { class: "row" }, syncAll, addBtn)),
     h("div", { class: "stack" }, notice, status, h("div", { class: "card flush" }, body)));
   body.append(skeleton(3));
 

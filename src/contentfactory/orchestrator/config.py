@@ -25,6 +25,9 @@ DEFAULTS: dict = {
     "templates": {"defaults": {"thumbnail": "thumb_default", "youtube_video": "youtube_default", "tiktok_video": "tiktok_default"}},
     # Render (Phase 5): profile YouTube/TikTok và source pool (cấu hình NGỮ NGHĨA: vào snapshot). Ví dụ pool:
     #   "pools": {"gameplay": {"raw_dir": "D:/videos/gameplay", "sync": {"quality": "balanced"}}}  (size/fps mặc định theo profile)
+    # Image Pool cho thumbnail (Phase 8): {"anime_female": {"folder": "D:/anh/nu", "selection_mode": "shuffle"}}. Cố ý KHÔNG nằm trong `render`/snapshot:
+    # đổi pool không đụng job đã chốt ảnh (job chụp ảnh vào workspace lúc tạo).
+    "image_pools": {},
     "render": {"profiles": {}, "pools": {}, "pools_dir": "runtime/pools", "pool_sync_background": True, "pool_sync_interval_s": 300},
     "limits": {"default": 2, "gpu": 1},
     # Publishing (Phase 6; D-76…): channels/<id>/channel.json = Channel Config; title_policy: warn (mặc định: cảnh báo khi dùng tiêu đề nguồn) | require

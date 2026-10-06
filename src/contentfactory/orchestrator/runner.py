@@ -36,6 +36,7 @@ from .handlers import HANDLERS
 from .log import EventLog
 from .monitor import DiskProbe, NetworkProbe, ResourceMonitor
 from ..jobs.sequences import SequenceManager
+from ..media import image_pool as IP
 from . import auto as AU
 from . import cleanup as CL
 from . import channels as CH
@@ -79,6 +80,7 @@ class Orchestrator:
         self._guard_logged: dict[str, float] = {}
         self._tokens: dict[str, JobCancelToken] = {}                 # token của các job đang chạy stage (để Pause/Cancel phản hồi tức thì)
         self.pool_sync = PoolSyncService(self)
+        self.image_pools = IP.ImagePools(cfg, self.store)
         self._batches = None
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
 
@@ -181,6 +183,7 @@ class Orchestrator:
         try:
             jd = ensure_job_dirs(self.cfg.path("workspace"), job_id)
             self._register_imports(job_id, jd, items)
+            self._chot_thumbnail_source(job_id, merged, channel, plan.run, from_job)
         except BaseException:
             self.store.discard_job(job_id)
             shutil.rmtree(job_dir(self.cfg.path("workspace"), job_id), ignore_errors=True)
@@ -191,6 +194,67 @@ class Orchestrator:
                       auto_resume=resolved, imports=sorted({i["kind"] for i in items}), plan_run=plan.run, plan_skip=plan.skip)
         self._manifest(job_id)
         return job_id
+
+    # -- Image Pool: chốt ảnh thumbnail cho job (Phase 8, D-105) ----------------------------------------------------------
+    @staticmethod
+    def _thumbnail_pool(channel: dict) -> tuple[str, str | None] | None:
+        th = channel.get("thumbnail") or {}
+        return (th["image_pool"], th.get("selection_mode")) if th.get("image_pool") else None
+
+    def _thumbnail_params(self, job_id: str, params: dict, channel: dict, run, carry_from: str | None = None) -> dict | None:
+        """Params mới có `thumbnail_source` nếu job có nhánh thumbnail + kênh cấu hình pool ảnh + chưa chốt; None nếu không cần đổi.
+        Chốt MỘT lần: rút từ túi bền, sao chép vào workspace + sha256. Job nhân bản (`carry_from`) mang theo đúng ảnh của job gốc nếu bản sao còn."""
+        if "render_youtube" not in run:
+            return None
+        ws = self.cfg.path("workspace")
+        old = params.get("thumbnail_source")
+        jd = job_dir(ws, job_id)
+        if old:                                                                           # params nhân bản từ job khác: chép ảnh sang workspace của job mới
+            if (jd / old["file"]).is_file():
+                return None
+            src = job_dir(ws, carry_from) / old["file"] if carry_from else None
+            if src and src.is_file() and IP.sha256_file(src) == old["sha256"]:
+                dst = jd / old["file"]
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                return None
+        pool = self._thumbnail_pool(channel)
+        if not pool:
+            return None
+        snap = self.image_pools.assign(pool[0], jd, mode=pool[1])
+        dec = {"what": "thumbnail.image", "value": f"{snap['pool']}/{snap['source_relpath']}",
+               "why": f"Ảnh thumbnail lấy từ pool ảnh '{snap['pool']}' của kênh (chế độ {snap['selection_mode']}); đã sao chép vào job nên retry dùng đúng ảnh này."}
+        return {**params, "thumbnail_source": snap, "auto": list(params.get("auto") or []) + [dec]}
+
+    def _chot_thumbnail_source(self, job_id: str, merged: dict, channel: dict, run, from_job) -> None:
+        carry = from_job["job_id"] if isinstance(from_job, dict) else (from_job if isinstance(from_job, str) else None)
+        params = self._thumbnail_params(job_id, merged, channel, run, carry)
+        if params is not None:
+            self.store.set_params(job_id, params, f"thumbnail source: {params['thumbnail_source']['pool']}/{params['thumbnail_source']['source_relpath']}")
+            merged.update(params)
+
+    def reroll_thumbnail(self, job_id: str, *, apply_policy: str = "after_current_safe_point") -> dict:
+        """Hành động EXPLICIT “Đổi ảnh thumbnail”: rút ảnh KHÁC từ pool của job rồi cập nhật bằng revision (cùng impact/invalidation như mọi cập nhật):
+        chỉ render_youtube (ảnh) và output đóng gói lại; Source/Story/TTS/Audio/TikTok giữ nguyên. Job đã hoàn tất/đã đăng KHÔNG bị đổi tại chỗ
+        (impact chặn và gợi ý nhân bản) — không bao giờ âm thầm sửa bản đã đăng. Bấm đúp khi đang chờ áp dụng chỉ giữ MỘT thay đổi."""
+        job = self.store.get_job(job_id)
+        if job is None:
+            raise ValueError(f"không có job {job_id}")
+        old = job["params"].get("thumbnail_source")
+        if not old:
+            raise _spec_error("job này không dùng pool ảnh thumbnail (kênh chưa chọn pool lúc tạo job)", errors=["no_thumbnail_source"])
+        pend = self.store.pending_revision(job_id)
+        if pend and (pend["change"].get("params_patch") or {}).get("thumbnail_source"):
+            return {"revision": pend["revision"], "status": "pending", "already": True, "thumbnail_source": pend["change"]["params_patch"]["thumbnail_source"],
+                    "impact": pend.get("impact")}
+        probe = self.preview_update(job_id, params_patch={"thumbnail_source": {"sha256": "reroll"}})        # chặn TRƯỚC khi rút ảnh (không lãng phí lượt túi)
+        if not probe["ok"]:
+            raise _spec_error("; ".join(probe["errors"]), errors=probe["errors"], blocked=probe.get("blocked"), clone_suggested=probe.get("clone_suggested"))
+        new = self.image_pools.assign(old["pool"], job_dir(self.cfg.path("workspace"), job_id), mode=old.get("selection_mode"),
+                                      avoid_sha=old["sha256"], rerolls=int(old.get("rerolls", 0)) + 1)
+        res = self.request_update(job_id, params_patch={"thumbnail_source": new}, apply_policy=apply_policy)
+        self.log.emit("thumbnail_rerolled", job_id=job_id, pool=new["pool"], source=new["source_relpath"], rerolls=new["rerolls"])
+        return {**res, "thumbnail_source": new}
 
     @staticmethod
     def _youtube_source(params: dict) -> dict | None:
@@ -398,6 +462,10 @@ class Orchestrator:
 
     def _select_templates_for(self, job: dict) -> None:
         channel = (job.get("config_snapshot") or {}).get("semantic", {}).get("channel_config") or CH.load_channel(self.cfg, str(job["params"].get("channel") or "default"))
+        tp = self._thumbnail_params(job["id"], job["params"], channel, ["render_youtube"])                  # mở rộng đích tới render: chốt luôn ảnh thumbnail
+        if tp is not None:
+            self.store.set_params(job["id"], tp, "thumbnail source chốt khi mở rộng đích")
+            job = {**job, "params": tp}
         tpls, tdec = TPL.select_templates(self.cfg, job["params"], channel, self.adapters)
         if tpls:
             params = {**job["params"], "templates": tpls, "auto": list(job["params"].get("auto") or []) + tdec}
@@ -515,8 +583,11 @@ class Orchestrator:
         Trả params mới nếu có thay đổi, None nếu không đổi gì (và `changed` False)."""
         need = ({"youtube", "thumbnail"} if "render_youtube" in run else set()) | ({"tiktok"} if "render_tiktok" in run else set())
         missing = need - set(params.get("templates") or {})
+        channel = (job.get("config_snapshot") or {}).get("semantic", {}).get("channel_config") or CH.load_channel(self.cfg, str(params.get("channel") or "default"))
+        tp = self._thumbnail_params(job["id"], params, channel, run)
+        if tp is not None:
+            params, changed = tp, True
         if missing:
-            channel = (job.get("config_snapshot") or {}).get("semantic", {}).get("channel_config") or CH.load_channel(self.cfg, str(params.get("channel") or "default"))
             tpls, tdec = TPL.select_templates(self.cfg, params, channel, self.adapters, missing)
             if tpls:
                 params = {**params, "templates": {**(params.get("templates") or {}), **tpls}, "auto": list(params.get("auto") or []) + tdec}

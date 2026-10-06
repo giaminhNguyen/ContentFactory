@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from ..contracts import ErrorClass, StageError
+from ..media import image_pool as IP
 from . import channels as CH
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
@@ -46,6 +47,12 @@ class TemplateSamples:
         images = [{"id": "builtin", "label": "Ảnh mẫu có sẵn"}]
         pools = []
         if type == "thumbnail":
+            for name in sorted(self.cfg.data.get("image_pools") or {}):                    # pool ảnh thumbnail (Phase 8): ảnh thật mà kênh sẽ dùng
+                try:
+                    rels = IP.valid_rels(IP.scan(self.cfg.data["image_pools"][name].get("folder", "")))
+                except Exception:                                                         # noqa: BLE001 — pool hỏng không được làm hỏng danh sách mẫu
+                    rels = []
+                images += [{"id": f"pool:{name}:{i}", "label": f"Pool ảnh “{name}” · {rels[i]}"} for i in range(min(FRAMES_PER_POOL, len(rels)))]
             for name in ((self.cfg.data.get("render") or {}).get("pools") or {}):
                 n = len(self.pool_videos(name))
                 if n:
@@ -78,8 +85,19 @@ class TemplateSamples:
                 raise _err("CHANNEL_NOT_FOUND", f"Không có kênh '{cid}' để lấy tên mẫu.", "Chọn “Tên mẫu” hoặc một kênh có thật.") from None
         img = spec.get("image") or "builtin"
         if type == "thumbnail" and img != "builtin":
-            out["image"] = str(self._frame(img))
+            out["image"] = str(self._pool_image(img) if str(img).startswith("pool:") else self._frame(img))
         return out
+
+    def _pool_image(self, ref: str) -> Path:
+        parts = str(ref).split(":")
+        specs = self.cfg.data.get("image_pools") or {}
+        if len(parts) != 3 or not parts[2].isdigit() or int(parts[2]) >= FRAMES_PER_POOL or parts[1] not in specs:
+            raise _err("BAD_SAMPLE", "Nguồn ảnh mẫu không hợp lệ.", "Chọn lại ảnh mẫu trong danh sách.")
+        folder = Path(specs[parts[1]].get("folder", ""))
+        rels = IP.valid_rels(IP.scan(folder))
+        if int(parts[2]) >= len(rels):
+            raise _err("NO_SAMPLE_MEDIA", f"Pool ảnh “{parts[1]}” không còn ảnh này.", "Quét lại pool ở Nguồn Media, hoặc chọn “Ảnh mẫu có sẵn”.")
+        return folder / rels[int(parts[2])]
 
     def _frame(self, ref: str) -> Path:
         parts = str(ref).split(":")

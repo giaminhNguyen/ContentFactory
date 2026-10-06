@@ -48,6 +48,11 @@ def normalize_channel(raw: dict | None, channel_id: str) -> dict:
                 errs.append(f"{k} phải là object")
             else:
                 out[k] = {**out[k], **raw[k]}
+    th = out.get("thumbnail") or {}                                                    # Image Pool của kênh (Phase 8): template vẫn giữ bố cục, pool chỉ cấp ảnh
+    if th.get("image_pool") is not None and (not isinstance(th["image_pool"], str) or not th["image_pool"].strip()):
+        errs.append("thumbnail.image_pool phải là tên pool (chuỗi không rỗng) hoặc bỏ trống")
+    if th.get("selection_mode") is not None and th["selection_mode"] not in ("shuffle", "random", "sequential"):
+        errs.append("thumbnail.selection_mode phải là shuffle | random | sequential")
     for k, typ in PUBLISHING_KEYS.items():
         if k in out["publishing"] and not isinstance(out["publishing"][k], typ):
             errs.append(f"publishing.{k} sai kiểu")

@@ -386,6 +386,8 @@ class FakeRender:
     def render_thumbnail(self, req, ctx: StageContext) -> Path:
         t = req.get("template")
         tpl = f"|template={t['id']}@v{t['version']}" if t else ""
+        if req.get("image"):                                                       # ảnh nguồn đã chốt từ Image Pool: dấu vân tay vào output để test kiểm "đúng ảnh"
+            tpl += "|img=" + hashlib.sha256(Path(req["image"]).read_bytes()).hexdigest()[:12]
         record_call(ctx, "thumbnail")
         atomic_write_bytes(req["output"], f"FAKE-JPG|{req['title']}|{req['channel_name']}{tpl}\n".encode())
         return req["output"]

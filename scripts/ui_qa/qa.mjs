@@ -417,6 +417,95 @@ if (wanted("tplprev")) {
   await page.context().close();
 }
 
+// ===================================================================== 3h. Nguồn Media → Ảnh thumbnail (Image Pool): tạo pool, quét, chọn cho kênh, ảnh đã chốt trên job, đổi ảnh
+if (wanted("imgpools")) {
+  console.log("\n# Pool ảnh thumbnail");
+  const zlib = await import("node:zlib");
+  const os = await import("node:os");
+  const png = (w, h, [r, g, b]) => {
+    const chunk = (t, d) => { const len = Buffer.alloc(4); len.writeUInt32BE(d.length); const td = Buffer.concat([Buffer.from(t), d]); const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(td) >>> 0); return Buffer.concat([len, td, crc]); };
+    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2;
+    const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: w }, () => [r, g, b]).flat())]);
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(Buffer.concat(Array.from({ length: h }, () => row)))), chunk("IEND", Buffer.alloc(0))]);
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cf-qa-img-"));
+  [[200, 80, 80], [80, 200, 80], [80, 80, 200]].forEach((c, i) => fs.writeFileSync(path.join(dir, `anh_${i + 1}.png`), png(800, 500, c)));
+  fs.writeFileSync(path.join(dir, "hong.jpg"), "đây không phải ảnh ".repeat(8));
+  const tok = async (p) => p.locator("meta[name=cf-token]").getAttribute("content");
+  const send = async (p, m, u, data) => p.request.fetch(base + u, { method: m, headers: { "X-CF-Token": await tok(p), "Content-Type": "application/json" }, data: JSON.stringify(data ?? {}) });
+  const page = await newPage({ width: 1280, height: 900 });
+  await go(page, "/pools/images");
+  await page.waitForSelector("h2:has-text('Chưa có pool ảnh thumbnail nào')");
+  check("tab Ảnh thumbnail: trạng thái trống giải thích cách dùng", (await page.locator("[role=tab][aria-selected=true]").innerText()).includes("Ảnh thumbnail") && (await page.locator("body").innerText()).includes("cấu hình Kênh"));
+  await axe(page, "Nguồn Media / Ảnh thumbnail (trống)");
+
+  // tạo pool qua dialog
+  await page.getByRole("button", { name: "Thêm pool ảnh" }).first().click();
+  await page.waitForSelector("dialog[open]");
+  await page.locator("dialog[open]").getByLabel("Tên pool").fill("anime nu");
+  await page.locator("dialog[open]").getByLabel("Thư mục ảnh").fill(dir);
+  await page.getByRole("button", { name: "Lưu pool" }).click();
+  check("tên pool sai được báo ngay trong dialog (không đóng)", (await page.locator("dialog[open]").innerText()).includes("chỉ gồm chữ không dấu"));
+  await page.locator("dialog[open]").getByLabel("Tên pool").fill("anime_nu");
+  await page.getByRole("button", { name: "Lưu pool" }).click();
+  await page.waitForSelector("section[aria-label='Pool ảnh anime_nu']");
+  const card = page.locator("section[aria-label='Pool ảnh anime_nu']");
+  check("pool hiện số ảnh hợp lệ + file không hợp lệ + chưa kênh nào dùng", (await card.innerText()).includes("3 ảnh hợp lệ") && (await card.innerText()).includes("1 file không hợp lệ") && (await card.innerText()).includes("Chưa kênh nào dùng"));
+  await page.waitForTimeout(900);                                                                  // toast "Đã lưu" đang mờ dần làm axe đo sai độ tương phản
+  await axe(page, "Nguồn Media / Ảnh thumbnail (có pool)");
+  await card.getByRole("button", { name: "Quét & xem ảnh" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".ip-grid img").length === 3 && [...document.querySelectorAll(".ip-grid img")].every((i) => i.naturalWidth > 0), null, { timeout: 15000 });
+  check("quét: 3 ảnh xem thử tải được (qua chỉ số, không lộ đường dẫn) + liệt kê file hỏng", (await card.locator("details.ip-invalid").textContent()).includes("hong.jpg"));
+  check("không có đường dẫn máy trong HTML ảnh", !(await page.locator(".ip-grid").innerHTML()).includes(dir.replace(/\\/g, "/")) && !(await page.locator(".ip-grid").innerHTML()).includes("cf-qa-img"));
+  await page.getByLabel("Cách chọn ảnh cho mỗi job").selectOption("sequential");
+  await page.waitForSelector(".toast:has-text('Đã đổi cách chọn ảnh')");
+  check("đổi cách chọn ảnh lưu ngay", true);
+
+  // chọn cho kênh -> xoá pool bị khoá, có giải thích
+  await go(page, "/channels/kenh_a");
+  await page.getByLabel("Pool ảnh thumbnail").selectOption("anime_nu");
+  await page.getByRole("button", { name: "Lưu thay đổi" }).click();
+  await page.waitForSelector(".toast:has-text('Đã lưu')", { timeout: 15000 }).catch(() => {});
+  const ch = await (await page.request.get(base + "/api/channels/kenh_a", { headers: { "X-CF-Token": await tok(page) } })).json();
+  check("cấu hình kênh lưu thumbnail.image_pool", ch.raw?.thumbnail?.image_pool === "anime_nu", JSON.stringify(ch.raw?.thumbnail));
+  await go(page, "/pools/images");
+  await page.waitForSelector("section[aria-label='Pool ảnh anime_nu']");
+  check("pool đang được kênh dùng: nút Xoá bị khoá kèm lý do", (await page.locator("button[aria-label='Xoá pool anime_nu']").isDisabled()) && (await page.locator("body").innerText()).includes("Xoá bị khoá"));
+
+  // job: ảnh đã chốt + đổi ảnh
+  const r = await (await send(page, "POST", "/api/runs", { input: { value: fx.youtube }, channel: "kenh_a", run: "full" })).json();
+  await send(page, "POST", `/api/jobs/${r.job_id}/pause`);
+  await go(page, `/jobs/${r.job_id}`);
+  await page.waitForSelector("section[aria-labelledby=thumb-h] img", { timeout: 15000 });
+  check("trang job hiện ảnh thumbnail đã chốt + pool + cách chọn", (await page.locator("section[aria-labelledby=thumb-h]").innerText()).includes("anime_nu") && (await page.locator("section[aria-labelledby=thumb-h] img").evaluate((i) => i.complete)));
+  await axe(page, "Job có ảnh thumbnail từ pool");
+  const before = (await page.locator("section[aria-labelledby=thumb-h] dd").nth(1).innerText());
+  await page.getByRole("button", { name: "Đổi ảnh thumbnail…" }).click();
+  await page.waitForSelector("dialog[open]:has-text('Đổi ảnh thumbnail?')");
+  check("hộp thoại nói trước việc gì sẽ chạy lại", (await page.locator("dialog[open]").innerText()).includes("giữ nguyên"));
+  await page.getByRole("button", { name: "Đổi ảnh", exact: true }).click();
+  await page.waitForFunction((b) => document.querySelector("section[aria-labelledby=thumb-h] dd:nth-of-type(2)")?.textContent !== b || document.body.innerText.includes("Có thay đổi đang chờ"), before, { timeout: 15000 });
+  check("đổi ảnh: ảnh khác được chốt (hoặc đang chờ điểm an toàn, có báo)", true);
+
+  // job đã kết thúc: không đổi tại chỗ, nói rõ vì sao
+  await go(page, "/jobs");
+  const fin = await (await send(page, "POST", "/api/runs", { input: { value: "https://www.youtube.com/watch?v=qqqqqqqqqqq" }, channel: "kenh_a", run: "full" })).json();       // video khác: cùng video + kênh sẽ trả lại job cũ
+  for (let k = 0; k < 120; k++) {                                                                  // chờ job chạy xong (adapter giả: vài giây)
+    const st = await (await page.request.get(base + `/api/jobs/${fin.job_id}`, { headers: { "X-CF-Token": await tok(page) } })).json();
+    if (st.status === "completed") break;
+    await page.waitForTimeout(1000);
+  }
+  await go(page, `/jobs/${fin.job_id}`);
+  await page.waitForSelector("section[aria-labelledby=thumb-h]");
+  const fb = page.getByRole("button", { name: "Đổi ảnh thumbnail…" });
+  const fj = await (await page.request.get(base + `/api/jobs/${fin.job_id}`, { headers: { "X-CF-Token": await tok(page) } })).json();
+  check("job đã xong: Đổi ảnh bị tắt và lý do hiện rõ (không chỉ tooltip)", (await fb.isDisabled()) && (await page.locator("section[aria-labelledby=thumb-h]").innerText()).includes("Chạy lại với thay đổi"), `status=${fj.status} thumb=${JSON.stringify(fj.thumbnail)}`);
+  await noOverflow(page, "trang job có ảnh thumbnail");
+  check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await send(page, "PUT", "/api/channels/kenh_a", { raw: { ...(ch.raw || {}), thumbnail: {} } });         // trả kênh về như cũ cho các phần QA khác
+  await page.context().close();
+}
+
 // ===================================================================== 4. job bị giữ / lỗi / cần xử lý
 if (wanted("paused")) {
   console.log("\n# Trạng thái giữ / lỗi");

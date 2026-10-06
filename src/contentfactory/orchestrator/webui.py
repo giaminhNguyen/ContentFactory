@@ -24,6 +24,7 @@ from .config import load_config
 from .runner import Orchestrator
 from .service import Service
 from .service_admin import AdminService
+from .service_image_pools import ImagePoolService
 from .service_templates import Raw, TemplateService
 
 STATIC = Path(__file__).resolve().parent / "webui_static"
@@ -42,6 +43,7 @@ class App:
         self.orc, self.cfg = orc, orc.cfg
         self.service, self.admin = Service(orc), AdminService(orc)
         self.templates = TemplateService(orc)
+        self.image_pools = ImagePoolService(orc, self.admin)
         self.token = token or secrets.token_urlsafe(24)
         self.opener = opener
         self.run_loop = run_loop
@@ -216,6 +218,18 @@ class Api:
     def clone(app, m, q, b):
         return app.service.clone(m["id"], b)
 
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/reroll-thumbnail/impact")
+    def reroll_impact(app, m, q, b):
+        return app.service.reroll_preview(m["id"])
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/reroll-thumbnail")
+    def reroll_thumbnail(app, m, q, b):
+        return app.service.reroll_thumbnail(m["id"])
+
+    @route("GET", r"/api/jobs/(?P<id>[\w\-]+)/thumbnail-source")
+    def thumbnail_source(app, m, q, b):
+        return app.service.thumbnail_source_file(m["id"])
+
     @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/retry")
     def retry(app, m, q, b):
         return app.service.retry(m["id"])
@@ -376,6 +390,26 @@ class Api:
         if t is None:
             raise StageError(ErrorClass.POLICY, "TASK_NOT_FOUND", "Tác vụ không còn (đã quá cũ).")
         return t
+
+    @route("GET", "/api/image-pools")
+    def image_pools(app, m, q, b):
+        return app.image_pools.overview()
+
+    @route("PUT", r"/api/image-pools/(?P<name>[\w\-]+)")
+    def image_pool_put(app, m, q, b):
+        return app.image_pools.upsert(m["name"], b.get("folder", ""), b.get("selection_mode"))
+
+    @route("DELETE", r"/api/image-pools/(?P<name>[\w\-]+)")
+    def image_pool_del(app, m, q, b):
+        return app.image_pools.delete(m["name"])
+
+    @route("POST", r"/api/image-pools/(?P<name>[\w\-]+)/scan")
+    def image_pool_scan(app, m, q, b):
+        return app.image_pools.scan(m["name"])
+
+    @route("GET", r"/api/image-pools/(?P<name>[\w\-]+)/images/(?P<i>\d+)")
+    def image_pool_image(app, m, q, b):
+        return app.image_pools.image(m["name"], int(m["i"]))
 
     @route("GET", "/api/pools")
     def pools(app, m, q, b):
