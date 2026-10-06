@@ -49,11 +49,31 @@ class StageContract:
         missing = [k for k in self.stage.requires if k not in available]
         return not missing, missing
 
+    # -- nhánh đóng gói (stage có `packages`) ------------------------------------------------
+    def active_packages(self, inputs: dict[str, list[ArtifactRef]], pipeline: dict | None) -> list[str]:
+        """Stage sản sinh của các nhánh được đóng gói. Job kiểu cũ (không có pipeline spec): mọi nhánh (như trước, thiếu thì lỗi).
+        Job có spec: nhánh có stage sản sinh nằm trong kế hoạch, hoặc kind được cung cấp (import/from_job) — file còn sót từ lần chạy
+        trước của một nhánh đã bị bỏ KHÔNG được đóng gói."""
+        out = []
+        for producer, kinds in self.stage.packages:
+            if pipeline is None or producer in pipeline["run"] or all(any("imported" in a["meta"] for a in inputs.get(k, [])) for k in kinds):
+                out.append(producer)
+        return out
+
+    def scope_inputs(self, inputs: dict[str, list[ArtifactRef]], pipeline: dict | None) -> tuple[dict[str, list[ArtifactRef]], tuple[str, ...]]:
+        """(inputs đã bỏ kind của nhánh không đóng gói, kind của các nhánh đang đóng gói — bắt buộc phải có)."""
+        if not self.stage.packages:
+            return inputs, ()
+        active = set(self.active_packages(inputs, pipeline))
+        drop = {k for producer, kinds in self.stage.packages if producer not in active for k in kinds}
+        keep = tuple(k for producer, kinds in self.stage.packages if producer in active for k in kinds)
+        return {k: v for k, v in inputs.items() if k not in drop}, keep
+
     # -- validate_inputs --------------------------------------------------------------------
-    def validate_inputs(self, inputs: dict[str, list[ArtifactRef]], workspace: Path) -> None:
+    def validate_inputs(self, inputs: dict[str, list[ArtifactRef]], workspace: Path, also: tuple[str, ...] = ()) -> None:
         """Raise StageError: thiếu/mất file => lỗi TÀI NGUYÊN (resource=input, job bị giữ chờ người cung cấp lại);
-        file còn nhưng nội dung không qua validator => POLICY vĩnh viễn."""
-        for kind in self.stage.requires:
+        file còn nhưng nội dung không qua validator => POLICY vĩnh viễn. `also` = kind bắt buộc thêm (nhánh đóng gói đang dùng)."""
+        for kind in self.stage.requires + tuple(k for k in also if k not in self.stage.requires):
             if not inputs.get(kind):
                 raise StageError(ErrorClass.POLICY, "MISSING_INPUT", f"thiếu artifact '{kind}' cho stage {self.stage.name}",
                                  {"kind": kind}, resource="input")
@@ -86,10 +106,15 @@ class StageContract:
         return hashlib.sha256(json.dumps(blob, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
     # -- skip -------------------------------------------------------------------------------
-    def consumed_outputs(self, target_idx: int | None) -> tuple[str, ...]:
-        """Output mà job THỰC SỰ cần từ stage này trong khoảng [stage, target]: tất cả nếu là target hoặc deliverable,
-        ngược lại chỉ kind mà một stage sau (tới target) tiêu thụ."""
+    def consumed_outputs(self, target_idx: int | None, pipeline: dict | None = None) -> tuple[str, ...]:
+        """Output mà job THỰC SỰ cần từ stage này: tất cả nếu là stage được yêu cầu (gốc), ngược lại chỉ kind mà một stage SAU nằm trong
+        kế hoạch tiêu thụ. Job kiểu cũ: tất cả nếu là target hoặc deliverable, ngược lại kind mà stage sau (tới target) tiêu thụ."""
         i = P.INDEX[self.stage.name]
+        if pipeline is not None:
+            if self.stage.name in pipeline["requested_stages"]:
+                return self.stage.produces
+            needed = {k for s in P.STAGES if s.name in pipeline["run"] and P.INDEX[s.name] > i for k in s.requires}
+            return tuple(k for k in self.stage.produces if k in needed)
         t = len(P.STAGES) - 1 if target_idx is None else target_idx
         if self.stage.deliverable or i == t:
             return self.stage.produces
@@ -97,10 +122,10 @@ class StageContract:
         return tuple(k for k in self.stage.produces if k in needed)
 
     def skip_reason(self, store: JobStore, job_id: str, workspace: Path, key: str | None,
-                    target_idx: int | None) -> str | None:
+                    target_idx: int | None, pipeline: dict | None = None) -> str | None:
         """'valid' (output do chính stage này sinh, còn nguyên và stage_key khớp), 'provided' (output được import/from_job)
         hoặc None (phải chạy). Kiểm file thật: tồn tại, size, sha256 và validator theo kind."""
-        kinds = self.consumed_outputs(target_idx)
+        kinds = self.consumed_outputs(target_idx, pipeline)
         if not kinds:
             return None
         rows = store.artifacts(job_id)

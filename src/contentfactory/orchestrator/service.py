@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from ..contracts import ErrorClass, StageError, clean_title
 from ..fsutil import atomic_write_json
 from ..jobs import pipeline as P
+from ..jobs.plan import spec_for_mode
 from ..jobs.workspace import job_dir
 from ..output import metadata as MD
 from . import auto as AU
@@ -55,6 +56,15 @@ KIND_MODES = {
 }
 KIND_LABEL = {"youtube_url": "Link YouTube", "transcript_file": "Phụ đề / transcript", "story_text": "Truyện (story.txt)", "audio": "Audio có sẵn",
               "project": "Project đã có", "unknown": "Không nhận dạng được"}
+# Loại đầu vào -> (artifact đã có sẵn, có params.input để stage source chạy). Dùng cho plan của pipeline tùy chỉnh.
+INPUT_PROVIDES = {"youtube_url": (set(), True), "transcript_file": (set(), True), "story_text": ({"story_text", "metadata"}, False),
+                  "audio": ({"audio_master", "metadata"}, False)}
+KIND_VI = {"subtitle_raw": "phụ đề thô", "transcript_structured": "phụ đề đã dựng câu", "transcript": "phụ đề đã làm sạch", "metadata": "thông tin video",
+           "story_text": "truyện", "story_report": "báo cáo truyện", "audio_master": "audio giọng đọc", "tts_manifest": "bản kê giọng đọc",
+           "audio_timeline": "mốc thời gian audio", "narration_master": "audio chuẩn hóa", "audio_youtube": "audio cho YouTube", "audio_tiktok": "audio cho TikTok",
+           "audio_report": "báo cáo audio", "video_youtube": "video YouTube", "thumbnail": "thumbnail", "youtube_render_report": "báo cáo render YouTube",
+           "video_tiktok": "video TikTok", "tiktok_render_report": "báo cáo render TikTok", "output_package": "gói output", "publish_metadata": "tiêu đề/mô tả đăng",
+           "publish_result": "kết quả đăng"}
 NEEDS_TITLE = {"story_text", "audio"}                 # không có nguồn tiêu đề nào khác ⇒ người dùng phải đặt tên truyện
 MAX_LOG_BYTES = 256 * 1024
 
@@ -132,16 +142,31 @@ class Service:
         return out
 
     # ================================================================================== kế hoạch / chạy
-    def _spec(self, det: dict, run: str, title: str | None, channel: str, kids: bool | None, auto_resume: bool | None) -> tuple[dict, dict]:
+    @staticmethod
+    def _custom(payload: dict) -> dict | None:
+        """Pipeline tùy chỉnh từ payload {"pipeline": {"mode": "custom", "requested_stages": [...]}}; mode khác/không có = chế độ chạy theo loại đầu vào."""
+        p = payload.get("pipeline")
+        if isinstance(p, dict) and p.get("mode") == "custom":
+            return {"version": 2, "requested_stages": p.get("requested_stages"), "options": {}}
+        return None
+
+    def _spec(self, det: dict, run: str | None, title: str | None, channel: str, kids: bool | None, auto_resume: bool | None,
+              custom: dict | None = None) -> tuple[dict, dict]:
         """(params, submit_kwargs) từ đầu vào đã nhận dạng. Thiếu gì thì báo bằng StageError dễ hiểu."""
         if not det["ok"]:
             raise _err("INVALID_INPUT", det.get("problem") or "Đầu vào không hợp lệ", "Dán link YouTube hoặc chọn file phụ đề/truyện/audio.")
-        if run not in {m["id"] for m in det["modes"]}:
-            raise _err("INVALID_RUN_MODE", f"Chế độ '{run}' không dùng được với {det['label']}.", "Chọn một trong các chế độ được đề xuất.")
-        label, _, spec = RUN_MODES[run]
+        if custom is not None:
+            if det["kind"] not in INPUT_PROVIDES:
+                raise _err("INVALID_RUN_MODE", f"Pipeline tùy chỉnh không dùng được với {det['label']}.", "Chọn link YouTube, phụ đề, truyện hoặc audio.")
+            spec: dict = {}
+            kw: dict = {"pipeline": custom}
+        else:
+            if run not in {m["id"] for m in det["modes"]}:
+                raise _err("INVALID_RUN_MODE", f"Chế độ '{run}' không dùng được với {det['label']}.", "Chọn một trong các chế độ được đề xuất.")
+            label, _, spec = RUN_MODES[run]
+            kw = {k: v for k, v in spec.items() if k in ("mode", "target_stage", "start_stage")}
         kind, value = det["kind"], det["value"]
         params: dict = {"channel": channel}
-        kw: dict = {k: v for k, v in spec.items() if k in ("mode", "target_stage", "start_stage")}
         inputs: dict = {}
         title = (title or "").strip()
         if kind == "youtube_url":
@@ -187,16 +212,17 @@ class Service:
             return res
         res["channel_name"] = ch["name"]
         res["sequence_next"] = int(ch["sequence"].get("last_used", 0)) + 1
-        run = payload.get("run") or (det["modes"][0]["id"] if det["modes"] else None)
+        custom = self._custom(payload)
+        run = None if custom else payload.get("run") or (det["modes"][0]["id"] if det["modes"] else None)
         res["run"] = run
         if not det["ok"]:
             if det.get("problem"):
                 res["problems"].append({"code": "INVALID_INPUT", "message": det["problem"]})
             return res
-        if not run:
+        if not run and custom is None:
             return res
         try:
-            params, kw = self._spec(det, run, payload.get("title"), channel_id, payload.get("kids"), None)
+            params, kw = self._spec(det, run, payload.get("title"), channel_id, payload.get("kids"), None, custom)
         except StageError as e:
             res["problems"].append({"code": e.code, "message": e.message, "hint": (e.detail or {}).get("hint"), "field": "title" if e.code == "MISSING_TITLE" else None})
             return res
@@ -206,27 +232,35 @@ class Service:
         res["auto"] = decisions
         extend = kw.pop("_extend", None)
         kw.pop("auto_resume", None)
+        plan = None
         try:
-            plan = self.orc.plan(params, **{k: v for k, v in kw.items() if k in ("mode", "target_stage", "start_stage", "inputs")})
+            plan = self.orc.plan(params, **{k: v for k, v in kw.items() if k in ("mode", "target_stage", "start_stage", "inputs", "pipeline")})
             target = plan.target_stage
             if extend:
                 target = extend
             lo, hi = P.INDEX[plan.start_stage], P.INDEX[target or "publish"]
-            res["plan"] = {"start": plan.start_stage, "target": target, "run": plan.run, "skip": plan.skip,
-                           "stages": [{"name": st.name, "label": DG.STAGE_LABEL[st.name],
-                                       "state": ("skip" if st.name in plan.skip else "run") if lo <= k <= hi else "off"} for k, st in enumerate(P.STAGES)]}
+            if custom is not None:
+                infos = {st.name: plan.states.get(st.name) or {"state": "not_requested", "by": [], "kinds": []} for st in P.STAGES}
+                stages = [{"name": st.name, "label": DG.STAGE_LABEL[st.name], "role": infos[st.name]["state"], "by": infos[st.name]["by"],
+                           "reason": self._stage_reason(infos[st.name]) if plan.states else "",
+                           "state": {"selected": "run", "locked": "run", "provided": "skip"}.get(infos[st.name]["state"], "off")} for st in P.STAGES]
+            else:
+                stages = [{"name": st.name, "label": DG.STAGE_LABEL[st.name],
+                           "state": ("skip" if st.name in plan.skip else "run") if lo <= k <= hi else "off"} for k, st in enumerate(P.STAGES)]
+            res["plan"] = {"start": plan.start_stage, "target": target, "run": plan.run, "skip": plan.skip, "stages": stages}
             for e in plan.errors:
                 res["problems"].append({"code": "INVALID_JOBSPEC", "message": e})
         except StageError as e:
             res["problems"].append({"code": e.code, "message": e.message})
-        if res["plan"] and P.INDEX[res["plan"]["target"] or "publish"] >= P.INDEX["render_youtube"]:        # template của kênh dùng được không (báo sớm, trước khi bấm RUN)
+        tkinds = None if plan is None else self.orc._template_kinds(plan, {"run": plan.run} if custom is not None else None)
+        if res["plan"] and (tkinds is None or tkinds) and not (plan and plan.errors):                       # template của kênh dùng được không (báo sớm, trước khi bấm RUN)
             try:
-                tpls, tdec = TPL.select_templates(self.cfg, merged, ch, self.orc.adapters)
+                tpls, tdec = TPL.select_templates(self.cfg, merged, ch, self.orc.adapters, tkinds)
                 res["auto"] = res["auto"] + tdec
                 res["templates"] = {k: {"id": v["id"], "version": v["version"], "name": v["name"]} for k, v in tpls.items()}
             except StageError as e:
                 res["problems"].append({"code": e.code, "message": e.message, "hint": "Mở Kênh → Template và chọn template đã publish."})
-        reaches_publish = self._target_reaches(run) >= P.INDEX["publish"]
+        reaches_publish = ("publish" in plan.run) if (custom is not None and plan is not None) else (custom is None and self._target_reaches(run) >= P.INDEX["publish"])
         declared = (ch.get("publishing") or {}).get("made_for_kids")
         res["needs_kids"] = bool(reaches_publish and not isinstance(declared, bool) and payload.get("kids") is None)
         if res["needs_kids"]:
@@ -248,13 +282,19 @@ class Service:
             inp = payload.get("input") or {}
             det = self.detect_input(inp.get("value", ""), inp.get("kind"))
             channel_id = str(payload.get("channel") or self.cfg.data["job_defaults"].get("channel") or "default")
-            run = payload.get("run") or (det["modes"][0]["id"] if det["modes"] else "")
-            params, kw = self._spec(det, run, payload.get("title"), channel_id, payload.get("kids"), payload.get("auto_resume"))
+            custom = self._custom(payload)
+            run = None if custom else payload.get("run") or (det["modes"][0]["id"] if det["modes"] else "")
+            params, kw = self._spec(det, run, payload.get("title"), channel_id, payload.get("kids"), payload.get("auto_resume"), custom)
             ch = self._channel_or_error(channel_id)
-            reaches_publish = self._target_reaches(run) >= P.INDEX["publish"]
+            if custom is not None:
+                cplan = self.orc.plan(params, pipeline=custom, inputs=kw.get("inputs"))
+                reaches_publish = "publish" in cplan.run
+            else:
+                reaches_publish = self._target_reaches(run) >= P.INDEX["publish"]
             if reaches_publish and not isinstance((ch.get("publishing") or {}).get("made_for_kids"), bool) and "made_for_kids" not in params:
                 raise _err("MISSING_MADE_FOR_KIDS", "Kênh chưa khai báo video có dành cho trẻ em hay không.", "Chọn Có/Không rồi chạy lại.")
-            sig = hashlib.sha1(json.dumps([det["value"], det["kind"], channel_id, run, (payload.get("title") or "").strip()], ensure_ascii=False).encode()).hexdigest()[:16]
+            sig = hashlib.sha1(json.dumps([det["value"], det["kind"], channel_id, run, (payload.get("title") or "").strip()]
+                                          + ([custom["requested_stages"]] if custom else []), ensure_ascii=False).encode()).hexdigest()[:16]
             now = time.time()
             for j in self.orc.store.job_index()[:200]:
                 if DG.ui_status({**j, "target_idx": j["target_idx"]}) in ("completed", "failed") or now - j["updated_at"] > DEDUPE_WINDOW_S * 6:
@@ -298,6 +338,47 @@ class Service:
             atomic_write_json(self._req_file, self._requests)
         except OSError:
             pass
+
+    # ================================================================================== pipeline (descriptor + plan)
+    def pipeline_descriptor(self) -> dict:
+        """Nguồn sự thật cho bộ chọn stage của UI: thứ tự/phụ thuộc lấy thẳng từ `P.STAGES` (frontend không có đồ thị riêng)."""
+        stages = [{"id": s.name, "label": DG.STAGE_LABEL[s.name], "order": (i + 1) * 10, "requires": list(s.requires), "produces": list(s.produces),
+                   "optional": list(s.optional), "resource": P.resource_of(s), "deliverable": s.deliverable,
+                   "packages": [{"stage": p, "kinds": list(k)} for p, k in s.packages]} for i, s in enumerate(P.STAGES)]
+        return {"version": 2, "stages": stages, "modes": {m: spec_for_mode(m) for m in P.MODES}}
+
+    @staticmethod
+    def _kinds_vi(kinds: list[str]) -> str:
+        return ", ".join(KIND_VI.get(k, k) for k in kinds)
+
+    def _stage_reason(self, info: dict) -> str:
+        by = ", ".join(DG.STAGE_LABEL[b] for b in info["by"])
+        if info["state"] == "selected":
+            return "Bạn đã chọn bước này." + (f" {by} cũng cần nó." if by else "")
+        if info["state"] == "locked":
+            return f"Bắt buộc: {by} cần {self._kinds_vi(info['kinds'])}."
+        if info["state"] == "provided":
+            return f"Dùng lại {self._kinds_vi(info['kinds'])} đã có, bước này không chạy."
+        return "Không chạy."
+
+    def plan_pipeline(self, payload: dict) -> dict:
+        """Xem trước kế hoạch của một pipeline spec (không tạo job): bước nào chạy / bắt buộc / dùng lại / bỏ qua, lỗi, và adapter cần chuẩn bị."""
+        from ..jobs.plan import plan_spec
+        kind = payload.get("input_kind") or "youtube_url"
+        provided, has_input = INPUT_PROVIDES.get(kind, (set(), True))
+        extra = {str(k) for k in (payload.get("provided_artifacts") or [])}
+        known = {k for s in P.STAGES for k in s.produces}
+        bad = sorted(extra - known)
+        plan = plan_spec(payload.get("pipeline_spec"), set(provided) | (extra & known), has_input)
+        errors = list(plan.errors) + ([f"artifact không hợp lệ: {bad}"] if bad else [])
+        stages = []
+        for i, s in enumerate(P.STAGES):
+            info = plan.states.get(s.name) or {"state": "not_requested", "by": [], "kinds": []}
+            stages.append({"id": s.name, "label": DG.STAGE_LABEL[s.name], "order": (i + 1) * 10, "state": info["state"], "by": info["by"],
+                           "kinds": info["kinds"], "reason": self._stage_reason(info) if plan.states else ""})
+        run = [s for s in P.STAGES if s.name in plan.run]
+        return {"ok": not errors, "errors": errors, "requested": plan.requested, "run": plan.run, "reuse": plan.reuse, "stages": stages,
+                "requirements": {"adapters": sorted({a for s in run for a in s.adapters}), "resources": sorted({P.resource_of(s) for s in run})}}
 
     # ================================================================================== danh sách / chi tiết job
     def title_of(self, j: dict) -> str:
@@ -408,7 +489,9 @@ class Service:
         for i, st in enumerate(P.STAGES):
             mine = [r for r in runs if r["stage"] == st.name]
             last = mine[-1] if mine else None
-            if i < start:
+            if j.get("pipeline") is not None and st.name not in j["pipeline"]["run"]:             # pipeline tùy chỉnh: bước không được yêu cầu chỉ đi qua máy trạng thái
+                state = "provided" if imported & set(st.produces) else "not_planned"
+            elif i < start:
                 state = "provided" if imported & set(st.produces) else "not_planned"
             elif i > target:
                 state = "not_planned"

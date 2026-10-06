@@ -320,7 +320,7 @@ output/<yyyymmdd>_<slug>/
   3. **Không sửa âm thầm:** nội dung y hệt gói đã có ⇒ không đụng tới (`reused`); nội dung khác ⇒ gói mới `<tên>-v2`/`-v3` (`version`, `supersedes`), gói cũ giữ nguyên. Tên đụng thư mục của job khác ⇒ hậu tố `-2`.
   4. `project.json` ghi cho từng file: đường dẫn, sha256, kích thước, artifact nguồn (đường dẫn workspace + sha256); manifest nội bộ (version/commit/profile hash) ở lại `workspace/job_x/manifest.json`.
   5. `story.txt` từ artifact đã qua validator bất biến (§2); không chứa cache, chunk, sync, temp.
-- **Stage `output`:** `requires story_text, metadata, video_youtube, thumbnail, video_tiktok` (+ `tiktok_render_report` tùy chọn để ghi độ dài part); adapters `output`, `sequence`; `produces output_package, publish_metadata`. Metadata Builder + reserve sequence chạy ở đầu stage này (D-78, D-80).
+- **Stage `output`:** `requires metadata`; tùy chọn `story_text`, `tiktok_render_report` (độ dài part) và các nhánh đóng gói `video_youtube + thumbnail` / `video_tiktok` (D-98: nhánh nào nằm trong kế hoạch thì phải có và được đóng gói, nhánh bị bỏ thì không); adapters `output`, `sequence`; `produces output_package, publish_metadata`. Metadata Builder + reserve sequence chạy ở đầu stage này (D-78, D-80).
 - **Tên `<project>`** = `<yyyymmdd>_<slug ASCII không dấu của project.title>` (D-07), cấu hình `output.name_template`.
 
 ---
@@ -358,7 +358,7 @@ Mỗi stage = `queue_state → running_state → done_state`; `done_state` là `
 | audio | AUDIO_READY → AUDIO_PROCESSING* → YOUTUBE_RENDER_READY | AudioProcessor | audio_master (+ audio_timeline tùy chọn) → narration_master, audio_youtube, audio_tiktok, audio_report |
 | render_youtube | YOUTUBE_RENDER_READY → YOUTUBE_RENDERING → TIKTOK_RENDER_READY | Render Manager + RenderAdapter (lane gpu) | audio_youtube, metadata → video_youtube, thumbnail, youtube_render_report |
 | render_tiktok | TIKTOK_RENDER_READY → TIKTOK_RENDERING → OUTPUT_READY | Render Manager + RenderAdapter (lane gpu) | audio_tiktok → video_tiktok (từng part), tiktok_render_report |
-| output | OUTPUT_READY → OUTPUT_PUBLISHING* → UPLOAD_READY | Metadata Builder + OutputPublisher + SequenceManager | story_text, metadata, video_youtube, thumbnail, video_tiktok → output_package, publish_metadata |
+| output | OUTPUT_READY → OUTPUT_PUBLISHING* → UPLOAD_READY | Metadata Builder + OutputPublisher + SequenceManager | metadata (+ story_text tùy chọn; + nhánh video_youtube/thumbnail, video_tiktok theo kế hoạch) → output_package, publish_metadata |
 | publish | UPLOAD_READY → UPLOADING* → PUBLISHED | PublishAdapter (**YouTube**, yt_uploader) + SequenceManager | video_youtube, thumbnail, publish_metadata → publish_result |
 
 `*` = state thêm so với danh sách tối thiểu của Phase 1 (cần để mỗi stage có một running state). Terminal: `PUBLISHED`, `FAILED`.
@@ -413,6 +413,7 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 |---|---|---|
 | Stage có `requires`/`produces`, `params_deps`/`config_deps`, `deliverable`, `checkpoint` | ✅ `jobs/pipeline.py` | `Stage.required_inputs/produced_outputs` là bí danh |
 | `start_stage`/`target_stage`, `MODES`, planner | ✅ `jobs/plan.py`, `Orchestrator.submit/plan/set_target` | lỗi spec bị từ chối lúc submit |
+| Pipeline spec v2 (`requested_stages`, đóng kín phụ thuộc, output theo nhánh) | ✅ `jobs/plan.py` (`plan_spec`), `jobs/db.py` (v3 `pipeline_spec`), D-98 | `submit(pipeline=...)`, `cf submit --stages`; `mode/start/target` cũ giữ nguyên |
 | Import artifact (`inputs`) và `from_job` | ✅ `Orchestrator._prepare_imports/_register_imports` | validator theo kind, copy vào `import/` |
 | Skip khi hợp lệ, `stage_key` theo khai báo | ✅ `orchestrator/stages.py` (`StageContract`) | cache liên job: chưa |
 | Hold / `PAUSED_*` / Auto Resume / `resume [--now]` | ✅ `jobs/db.py`, `jobs/policy.py`, `Orchestrator._monitor_tick/resume` | `FAILED` ≡ `FAILED_PERMANENT` |
@@ -437,6 +438,8 @@ class JobSpec(TypedDict, total=False):
     inputs: dict[str, ImportSpec]   # kind -> nguồn
     auto_resume: bool | None        # None = thừa kế auto_resume_default tại thời điểm tạo job
 ```
+
+Thay cho cặp `start_stage/target_stage`, job có thể mang **pipeline spec** `{"version": 2, "requested_stages": [...]}` (không dùng chung với `mode/start/target`); dependency tự suy ra (D-98).
 
 Ràng buộc kiểm lúc tạo job: `start_stage` ≤ `target_stage`; mọi kind trong `requires` của `start_stage` phải được thỏa bởi `inputs` hoặc artifact hợp lệ đã có; mỗi import phải qua validator của kind. Vi phạm ⇒ từ chối (POLICY), không tạo job.
 

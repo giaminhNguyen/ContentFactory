@@ -491,6 +491,15 @@ class HttpTest(UiCase):
             raw_body = e.read()
             return e.code, (json.loads(raw_body) if raw_body else {}), e.headers
 
+    def test_pipeline_descriptor_and_plan_endpoints(self):
+        code, d, _ = self.call("GET", "/api/pipeline")
+        self.assertEqual((code, [s["id"] for s in d["stages"]]), (200, [s.name for s in P.STAGES]))
+        code, r, _ = self.call("POST", "/api/pipeline/plan", {"pipeline_spec": {"version": 2, "requested_stages": ["render_tiktok"]}, "input_kind": "youtube_url"})
+        self.assertEqual((code, r["ok"], "render_youtube" in r["run"]), (200, True, False))
+        code, r, _ = self.call("POST", "/api/pipeline/plan", {"pipeline_spec": {"version": 2, "requested_stages": ["nope"]}})
+        self.assertEqual((code, r["ok"]), (200, False))
+        self.assertEqual(self.call("POST", "/api/pipeline/plan", {"pipeline_spec": {}}, token=False)[0], 401)
+
     def test_token_host_and_origin_protection(self):
         self.assertEqual(self.call("GET", "/api/bootstrap", token=False)[0], 401)
         self.assertEqual(self.call("GET", "/api/bootstrap", headers={"X-CF-Token": "sai"}, token=False)[0], 401)

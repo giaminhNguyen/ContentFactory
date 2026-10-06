@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS transitions(
   from_state TEXT, to_state TEXT NOT NULL, stage TEXT, attempt INTEGER, note TEXT);
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # v1 (Phase 2.9): điều khiển job (start/target stage), hold + auto resume, checkpoint, config snapshot, resource monitor
 V1_JOB_COLUMNS = (
     ("start_stage", "TEXT"), ("target_stage", "TEXT"), ("target_idx", "INTEGER"),
@@ -73,6 +73,9 @@ V2_SQL = (
     "CREATE UNIQUE INDEX IF NOT EXISTS channel_sequences_project ON channel_sequences(project_id) WHERE status != 'released'",
 )
 
+# v3 (Agent Plan Phase 1): pipeline spec theo job (JSON {version, requested_stages, options, run}); NULL = job kiểu cũ (start/target_stage)
+V3_JOB_COLUMNS = (("pipeline_spec", "TEXT"),)
+
 _RUNNING_STATES = tuple(s.running_state for s in P.STAGES)
 
 
@@ -85,6 +88,7 @@ class Claim:
     params: dict
     snapshot: dict | None = None        # config snapshot của job (None với job tạo trước migration)
     target_idx: int | None = None
+    pipeline: dict | None = None        # pipeline spec của job (None: job kiểu start/target_stage cũ)
 
 
 class LostLease(Exception):
@@ -166,6 +170,11 @@ class JobStore:
                 if ver < 2:
                     for sql in V2_SQL:
                         c.execute(sql)
+                if ver < 3:
+                    have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+                    for name, decl in V3_JOB_COLUMNS:
+                        if name not in have:
+                            c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
                 if ver < SCHEMA_VERSION:
                     c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
@@ -197,17 +206,19 @@ class JobStore:
     # -- jobs -------------------------------------------------------------------------------
     def create_job(self, params: dict, priority: int = 0, now: float | None = None, *, state: str = P.NEW,
                    start_stage: str | None = None, target_stage: str | None = None,
-                   auto_resume: bool | None = None, snapshot: dict | None = None, config_hash: str | None = None) -> str:
+                   auto_resume: bool | None = None, snapshot: dict | None = None, config_hash: str | None = None,
+                   pipeline: dict | None = None) -> str:
         now = now or time.time()
         target_idx = P.INDEX[target_stage] if target_stage else None
         with self._tx() as c:
             seq = c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM jobs").fetchone()[0]
             job_id = f"{seq:06d}"
             c.execute("INSERT INTO jobs(id,seq,created_at,updated_at,state,params,priority,start_stage,target_stage,"
-                      "target_idx,auto_resume,config_snapshot,config_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      "target_idx,auto_resume,config_snapshot,config_hash,pipeline_spec) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (job_id, seq, now, now, state, json.dumps(params, ensure_ascii=False), priority, start_stage,
                        target_stage, target_idx, None if auto_resume is None else int(auto_resume),
-                       json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None, config_hash))
+                       json.dumps(snapshot, ensure_ascii=False) if snapshot is not None else None, config_hash,
+                       json.dumps(pipeline, ensure_ascii=False) if pipeline is not None else None))
             c.execute("INSERT INTO transitions(ts,job_id,from_state,to_state,note) VALUES(?,?,NULL,?,?)",
                       (now, job_id, state, "created"))
         return job_id
@@ -221,6 +232,7 @@ class JobStore:
         d["config_snapshot"] = json.loads(d["config_snapshot"]) if d.get("config_snapshot") else None
         d["auto_resume"] = None if d.get("auto_resume") is None else bool(d["auto_resume"])
         d["needs_user"] = bool(d.get("needs_user"))
+        d["pipeline"] = json.loads(d["pipeline_spec"]) if d.get("pipeline_spec") else None
         return d
 
     def get_job(self, job_id: str) -> dict | None:
@@ -282,7 +294,7 @@ class JobStore:
             if n <= 0:
                 return []
             rows = c.execute(
-                "SELECT id, params, config_snapshot, target_idx FROM jobs WHERE state=? AND hold_reason IS NULL "
+                "SELECT id, params, config_snapshot, target_idx, pipeline_spec FROM jobs WHERE state=? AND hold_reason IS NULL "
                 "AND (not_before IS NULL OR not_before<=?) AND (target_idx IS NULL OR target_idx>=?) "
                 "ORDER BY priority DESC, seq LIMIT ?", (stage.queue_state, now, P.INDEX[stage.name], n)).fetchall()
             for r in rows:
@@ -294,7 +306,8 @@ class JobStore:
                     "INSERT INTO stage_runs(job_id,stage,attempt,status,owner,started_at) VALUES(?,?,?,?,?,?)",
                     (r["id"], stage.name, attempt, "running", owner, now)).lastrowid
                 out.append(Claim(r["id"], stage, attempt, run_id, json.loads(r["params"]),
-                                 json.loads(r["config_snapshot"]) if r["config_snapshot"] else None, r["target_idx"]))
+                                 json.loads(r["config_snapshot"]) if r["config_snapshot"] else None, r["target_idx"],
+                                 json.loads(r["pipeline_spec"]) if r["pipeline_spec"] else None))
         return out
 
     def heartbeat(self, owner: str, lease_s: float, now: float | None = None) -> int:

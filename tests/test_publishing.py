@@ -18,7 +18,7 @@ from pathlib import Path
 
 from contentfactory.contracts import CancelToken, ErrorClass, StageError
 from contentfactory.jobs import pipeline as P
-from contentfactory.jobs.db import JobStore, SCHEMA
+from contentfactory.jobs.db import JobStore, SCHEMA, SCHEMA_VERSION
 from contentfactory.jobs.sequences import SequenceManager
 from contentfactory.orchestrator import channels as CH
 from contentfactory.orchestrator.config import load_config
@@ -87,10 +87,10 @@ class SequenceManagerTest(unittest.TestCase):
         c.commit()
         c.close()
         st = JobStore(db)
-        self.assertEqual(st.schema_version(), 2)
+        self.assertEqual(st.schema_version(), SCHEMA_VERSION)
         self.assertEqual(st.get_job("000001")["state"], "NEW")
         self.assertEqual(SequenceManager(st).reserve("k", "p"), 1)
-        self.assertEqual(JobStore(db).schema_version(), 2)
+        self.assertEqual(JobStore(db).schema_version(), SCHEMA_VERSION)
 
 
 # =============================================================================== Metadata Builder + Channel Config

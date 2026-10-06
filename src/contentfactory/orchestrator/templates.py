@@ -84,8 +84,8 @@ def _legacy(cfg: Config, merged: dict, kind: str) -> bool:
     return any(prof.get(k) for k in PF.LEGACY_LAYOUT_KEYS) or prof["resolution"] != PF.DEFAULTS[pid]["resolution"]   # đổi độ phân giải = chỉnh khung hình kiểu cũ
 
 
-def select_templates(cfg: Config, merged: dict, channel: dict, adapters: dict) -> tuple[dict, list[dict]]:
-    """(params.templates, decisions). Raise POLICY INVALID_CHANNEL_TEMPLATE khi template đã chọn không dùng được (không đổi âm thầm sang template khác)."""
+def select_templates(cfg: Config, merged: dict, channel: dict, adapters: dict, kinds: set[str] | None = None) -> tuple[dict, list[dict]]:
+    """(params.templates, decisions). `kinds` = chỉ chốt các kind này (job chỉ render một nhánh); None = tất cả. Raise POLICY INVALID_CHANNEL_TEMPLATE khi template đã chọn không dùng được (không đổi âm thầm sang template khác)."""
     api = _api(adapters)
     if api is None:
         return {}, []
@@ -97,6 +97,8 @@ def select_templates(cfg: Config, merged: dict, channel: dict, adapters: dict) -
     decisions: list[dict] = []
     refs: dict[str, tuple[dict, str]] = {}                     # kind -> (ref, nguồn)
     for ckey, (kind, ttype) in CHANNEL_KEYS.items():
+        if kinds is not None and kind not in kinds:
+            continue
         have = job_t.get(kind)
         if _is_snapshot(have):                                  # đã chốt (tạo lại từ job cũ / test): giữ nguyên, không resolve lại
             out[kind] = have

@@ -42,11 +42,12 @@ def run(ctx: StageContext, output: OutputPublisher, sequence) -> StageResult:
         ctx.log("publish_metadata_warning", "warning", message=w)
     dur = _durations(ctx)
     parts = [{**_ref_entry(ctx, r), "index": r["meta"]["index"], "duration_sec": dur.get(r["meta"]["index"])}
-             for r in sorted(ctx.inputs["video_tiktok"], key=lambda r: r["meta"]["index"])]
+             for r in sorted(ctx.inputs.get("video_tiktok") or [], key=lambda r: r["meta"]["index"])]     # nhánh nào không đóng gói thì runner đã bỏ kind đó khỏi inputs
+    yt_video, yt_thumb = ctx.inputs.get("video_youtube"), ctx.inputs.get("thumbnail")
     pkg = output.publish({
         "job_id": ctx.job_id, "project": project, "youtube_title": pm["youtube_title"], "description": pm["description"],
         "output_root": Path(ctx.config["output_dir"]), "story": _ref_entry(ctx, ctx.inputs["story_text"][0]) if ctx.inputs.get("story_text") else None,
-        "youtube_video": _ref_entry(ctx, ctx.inputs["video_youtube"][0]), "youtube_thumbnail": _ref_entry(ctx, ctx.inputs["thumbnail"][0]),
+        "youtube_video": _ref_entry(ctx, yt_video[0]) if yt_video else None, "youtube_thumbnail": _ref_entry(ctx, yt_thumb[0]) if yt_thumb else None,
         "tiktok_parts": parts, "warnings": pm["warnings"]}, ctx)
     receipt = ctx.stage_dir / "receipt.json"
     atomic_write_json(receipt, pkg)

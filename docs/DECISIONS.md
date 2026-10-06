@@ -248,7 +248,7 @@
 - **Vì sao hold là cột:** máy trạng thái, bảng chuyển hợp lệ và mọi test Phase 1–2.5 giữ nguyên; `state` luôn là *vị trí pipeline*, `hold_reason` chỉ ngăn `claim`. `FAILED_PERMANENT` ≡ `FAILED`.
 - `nonterminal_count()` nay đếm job **active** (chưa terminal, chưa đạt target, không bị giữ) → `run()` thoát khi chỉ còn job bị giữ/đã đạt target; `--forever` để theo dõi và auto resume.
 
-### D-51 ✅ Planner: `plan_job(start, target, provided, has_input)`
+### D-51 ✅ Planner: `plan_job(start, target, provided, has_input)` (từ D-98: chạy qua Planner v2, kết quả không đổi)
 - Duyệt ngược theo **kind** từ target: stage cần chạy nếu là `deliverable` (render_youtube, render_tiktok, output, publish) hoặc sinh ra kind còn thiếu cho stage sau. `start_stage` tường minh = cận dưới; không chỉ định = stage sớm nhất thực sự cần. Thiếu kind đầu vào cho đoạn chạy ⇒ lỗi **ngay lúc `submit`** (không tạo job nửa vời). `Orchestrator.plan()` / `contentfactory plan` xem trước (không tạo job).
 - `MODES`: `FULL, SUBTITLE_ONLY, STORY_ONLY, THROUGH_TTS, TTS_ONLY, VIDEO_ONLY` là tên gọi cho cặp (start, target). `VIDEO_ONLY` đích là `render_tiktok` (cả hai render đều `deliverable` nên cùng chạy).
 
@@ -509,6 +509,12 @@
 ### D-97 ✅ Template Studio và API giao diện
 - Studio sửa **đúng schema** ContentFlow render (không schema thứ hai). Backend: `service_templates.py` (facade mỏng, dịch lỗi, khóa ghi theo template, phục vụ ảnh/video xem trước **theo tên** từ cache ContentFlow, upload asset byte thô giới hạn 60 MB); frontend ES modules thuần như Phase 9, logic thuần (z, clamp/resize, undo/redo, slug) tách để test bằng node. Zoom canvas tách khỏi tọa độ thật; undo/redo chỉ trên bản nháp.
 - **Preview** dùng đúng compile + renderer thật (thumbnail thật; video = overlay chồng ảnh thử, không ffmpeg); **Test Render** chạy renderer thật (video: clip + tone tổng hợp ngắn) và kiểm kích thước bằng ffprobe.
+
+### D-98 ✅ Pipeline Planner v2: pipeline spec + đóng kín phụ thuộc (Agent Plan, Phase 1)
+- **Spec:** `{version: 2, requested_stages: [...], options: {}}`. Stage được yêu cầu là GỐC; planner đi ngược theo `requires → producer` (kind đã được cung cấp thì không cần producer), **không** kéo `deliverable` chỉ vì nó nằm trước đích. Kết quả tất định (không phụ thuộc thứ tự `requested_stages`), kèm trạng thái từng stage `selected|locked|provided|not_requested` + lý do (`Plan.states`). `plan_job(start,target)` giữ API cũ: quy về spec (`spec_from_range`: gốc = target + `deliverable` trong [start,target]) rồi chạy cùng planner — kết quả giống planner cũ (test so sánh từng `MODES`). `spec_for_mode(mode)` cho UI/descriptor.
+- **Output partial-aware:** `output.requires = (metadata,)`; `video_youtube/thumbnail/video_tiktok` là input tùy chọn khai báo theo nhánh (`Stage.packages`). Nhánh chỉ được đóng gói khi stage sản sinh nằm trong kế hoạch (hoặc kind được cung cấp); phải có ít nhất một nhánh (`output` đơn lẻ ⇒ lỗi plan). Runner bỏ kind của nhánh không đóng gói khỏi `ctx.inputs` (và khỏi `stage_key`), nên file còn sót của nhánh đã bỏ không lọt vào gói. Publisher/`project.json`/README chấp nhận gói chỉ-YouTube hoặc chỉ-TikTok. Publish YouTube không còn ép TikTok.
+- **Lưu theo job:** schema **v3** (cột `jobs.pipeline_spec`, migration cộng thêm, có sao lưu như v1/v2): `{version, requested_stages, options, run}` — `run` là kết quả plan lúc tạo job. NULL = job kiểu `mode/start/target` cũ chạy đúng như trước (không đổi hành vi). Stage ngoài `run` đi qua máy trạng thái tuyến tính nhưng được ghi `skipped` với lý do `not_requested` (hoặc `provided`); `set_target` từ chối job có pipeline spec (sẽ có pipeline revision ở phase sau). Template chỉ chốt cho nhánh render nằm trong `run`.
+- **Giao diện:** `GET /api/pipeline` (descriptor thứ tự/phụ thuộc lấy từ `P.STAGES`), `POST /api/pipeline/plan`, và `pipeline: {mode: "custom", requested_stages}` trong `/api/preview` + `/api/runs`. Frontend không có đồ thị phụ thuộc: ô chọn bước chỉ gửi phần người dùng chọn, trạng thái khóa/dùng lại/lý do do backend trả. CLI: `--stages a,b` cho `submit`/`plan`.
 
 ## 2. Câu hỏi còn mở
 

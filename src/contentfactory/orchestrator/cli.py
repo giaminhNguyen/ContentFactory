@@ -41,6 +41,8 @@ def _spec(args: argparse.Namespace) -> dict:
         inputs["metadata"] = {"title": kv}
     out = {"mode": args.mode, "start_stage": args.start, "target_stage": args.target, "inputs": inputs or None,
            "from_job": args.from_job}
+    if getattr(args, "stages", None):                                  # pipeline tùy chọn: dependency tự suy ra (không dùng chung với --mode/--start/--target)
+        out["pipeline"] = {"version": 2, "requested_stages": [x.strip() for x in args.stages.split(",") if x.strip()]}
     if getattr(args, "auto_resume", None) is not None:
         out["auto_resume"] = args.auto_resume == "on"
     return out
@@ -197,6 +199,8 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
         sp.add_argument("--mode", choices=sorted(P.MODES), help="; ".join(f"{k}={v[0] or '*'}→{v[1] or '*'}" for k, v in P.MODES.items()))
         sp.add_argument("--start", help="start_stage: " + ",".join(P.INDEX))
         sp.add_argument("--target", help="target_stage: " + ",".join(P.INDEX))
+        sp.add_argument("--stages", help="pipeline tùy chọn: các stage muốn chạy, cách nhau dấu phẩy (vd render_tiktok hoặc publish); "
+                                         "stage cần thiết tự được thêm. Không dùng chung với --mode/--start/--target")
         sp.add_argument("--artifact", action="append", help="kind=đường_dẫn (artifact có sẵn), lặp được")
         sp.add_argument("--metadata-title", help="tạo metadata thủ công chỉ từ tiêu đề")
         sp.add_argument("--from-job", help="dùng lại artifact của job khác")
@@ -373,7 +377,8 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "plan":
         pl = orc.plan(_params(a), **{k: v for k, v in _spec(a).items() if v is not None and k != "auto_resume"})
         print(json.dumps({"start": pl.start_stage, "target": pl.target_stage, "run": pl.run, "skip": pl.skip,
-                          "errors": pl.errors}, ensure_ascii=False))
+                          "locked": [s for s, i in pl.states.items() if i["state"] == "locked"],
+                          "provided": [s for s, i in pl.states.items() if i["state"] == "provided"], "errors": pl.errors}, ensure_ascii=False))
         return 1 if pl.errors else 0
     elif a.cmd == "resume":
         print(f"job {a.job_id}: {orc.resume(a.job_id, now=a.now)}")

@@ -16,7 +16,8 @@ export async function mount(root, ctx) {
   const { app, navigate, scope } = ctx;
   const boot = app.boot;
   const s = { value: "", kindOverride: null, title: "", channel: LS.get("cf-channel") || boot.default_channel, run: null, kids: null, remember: true,
-              autoResume: boot.auto_resume_default, rid: null, seq: 0, preview: null, running: false };
+              autoResume: boot.auto_resume_default, rid: null, seq: 0, preview: null, running: false,
+              custom: false, stages: new Set() };                       // custom: pipeline tùy chỉnh; stages = các bước người dùng CHỌN (phần bắt buộc do backend tính)
   if (!boot.channels.some((c) => c.id === s.channel)) s.channel = boot.channels[0]?.id || boot.default_channel;
   let timer = null;
 
@@ -41,6 +42,10 @@ export async function mount(root, ctx) {
   const modesBox = h("div", { class: "mode-list", role: "radiogroup", "aria-label": "Chạy đến đâu" });
   const modesField = h("div", { class: "field" }, h("div", { class: "label", id: "modes-label" }, "Chạy đến đâu"), modesBox);
   modesBox.setAttribute("aria-labelledby", "modes-label");
+  const customSw = switchCtl({ label: "Tùy chỉnh các bước", checked: false, onChange: (v) => onCustom(v) });
+  const stagesBox = h("div", { class: "stage-pick", role: "group", "aria-label": "Các bước muốn chạy", hidden: true });
+  const customField = h("div", { class: "field", hidden: true }, customSw,
+    h("p", { class: "muted small" }, "Chọn kết quả bạn muốn; bước cần thiết sẽ tự được thêm và khóa lại, bước đã có sẵn dùng lại."), stagesBox);
   const kidsBox = h("div", { class: "sub-card", hidden: true, role: "group", "aria-labelledby": "kids-label" });
   const autoSw = switchCtl({ label: "Auto Resume", checked: s.autoResume, onChange: (v) => { s.autoResume = v; } });
   const autoHint = h("p", { class: "muted small" }, "Khi mất mạng, hết quota… job tự chạy tiếp thay vì chờ bạn bấm Tiếp tục.");
@@ -58,7 +63,7 @@ export async function mount(root, ctx) {
 
   const card = h("div", { class: "card run-card stack" },
     h("div", { class: "field" }, h("label", { for: "run-input" }, "Đầu vào"), h("div", { class: "input-row" }, valueIn, pickBtn), detectLine),
-    titleField, channelField, modesField, kidsBox, previewBox, problems,
+    titleField, channelField, modesField, customField, kidsBox, previewBox, problems,
     h("div", { class: "stack" }, autoSw, autoHint),
     h("div", { class: "run-actions" }, runBtn, runNote));
   valueIn.id = "run-input";
@@ -110,7 +115,7 @@ export async function mount(root, ctx) {
     const my = ++s.seq;
     if (!s.value) { s.preview = null; paint(); return; }
     try {
-      const pv = await api.post("/api/preview", { input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids });
+      const pv = await api.post("/api/preview", { input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids, pipeline: pipelineBody() });
       if (my !== s.seq) return;                         // đã có lần nhập mới hơn
       s.preview = pv;
       if (!s.run) s.run = pv.run;
@@ -151,8 +156,11 @@ export async function mount(root, ctx) {
     titleIn.required = needs;
     titleIn.placeholder = needs ? "Bắt buộc: tên truyện của bạn" : "Không bắt buộc — để trống thì dùng tiêu đề video nguồn đã làm sạch";
     // chế độ
-    modesField.hidden = !(d && d.ok && d.modes.length);
+    const hasModes = !!(d && d.ok && d.modes.length);
+    modesField.hidden = !hasModes || s.custom;
+    customField.hidden = !hasModes;
     if (!modesField.hidden) patchModes(d.modes);
+    paintStages(pv);
     // kids
     paintKids(pv);
     // preview kế hoạch + tự chọn
@@ -182,6 +190,44 @@ export async function mount(root, ctx) {
       (el) => { /* nội dung chế độ không đổi */ });
     for (const el of modesBox.children) el._r.checked = el._r.value === s.run;
     scope.add(() => motion.itemsEnter(added));
+  }
+
+  function pipelineBody() { return s.custom ? { mode: "custom", requested_stages: [...s.stages] } : null; }
+
+  async function onCustom(on) {
+    s.custom = on;
+    s.rid = null;
+    if (on && !s.stages.size) {
+      try { s.stages = new Set((await api.get("/api/pipeline")).modes.FULL.requested_stages); }       // gợi ý ban đầu = Toàn bộ, lấy từ backend
+      catch (e) { toastError(e); }
+    }
+    schedule(0);
+  }
+
+  // Danh sách bước: trạng thái (chọn / bắt buộc / dùng lại / không chạy) và lý do đều do backend tính; ở đây chỉ vẽ và bật/tắt phần người dùng chọn.
+  function paintStages(pv) {
+    const stages = s.custom && pv?.plan ? pv.plan.stages : [];
+    stagesBox.hidden = !stages.length;
+    const apply = (el, st) => {
+      const role = st.role;
+      const fixed = role === "locked" || role === "provided" || (role === "selected" && st.by.length > 0);
+      el.dataset.role = role;
+      el._cb.checked = role === "selected" || role === "locked";
+      el._cb.disabled = fixed;
+      const tag = el.querySelector(".s-tag");
+      tag.replaceChildren(...({ locked: [icon("lock", { size: 14 }), "Bắt buộc"], provided: [icon("refresh", { size: 14 }), "Dùng lại"], selected: [icon("check", { size: 14 }), "Đã chọn"] }[role] || []));
+      el.querySelector(".s-why").textContent = role === "not_requested" ? "" : st.reason + (role === "selected" && st.by.length ? " Bỏ chọn bước phía sau trước nếu muốn bỏ bước này." : "");
+    };
+    patchList(stagesBox, stages, (st) => st.name,
+      (st) => {
+        const cb = h("input", { type: "checkbox", id: `stage-${st.name}` });
+        cb.addEventListener("change", () => { if (cb.checked) s.stages.add(st.name); else s.stages.delete(st.name); s.rid = null; schedule(0); });
+        const el = h("label", { class: "pick-row", for: cb.id }, cb, h("span", { class: "s-label" }, st.label), h("span", { class: "s-tag" }), h("span", { class: "s-why" }));
+        el._cb = cb;
+        apply(el, st);
+        return el;
+      },
+      apply);
   }
 
   function paintKids(pv) {
@@ -250,7 +296,7 @@ export async function mount(root, ctx) {
     await busy(runBtn, async () => {
       try {
         const r = await api.post("/api/runs", { request_id: s.rid, input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids,
-                                                remember_kids: s.remember, auto_resume: s.autoResume });
+                                                remember_kids: s.remember, auto_resume: s.autoResume, pipeline: pipelineBody() });
         toast(r.deduped ? { title: "Đã có job cùng nội dung đang chạy", message: "Chuyển tới job đó thay vì tạo thêm.", tone: "info" } : { title: `Đã xếp hàng job ${r.job_id}`, message: "Bạn có thể theo dõi tiến độ ở đây.", tone: "done" });
         navigate(`/jobs/${r.job_id}`);
       } catch (e) {

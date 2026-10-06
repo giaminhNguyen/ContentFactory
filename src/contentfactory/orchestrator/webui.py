@@ -130,6 +130,14 @@ class Api:
     def detect(app, m, q, b):
         return app.service.detect_input(b.get("value", ""), b.get("kind"))
 
+    @route("GET", "/api/pipeline")
+    def pipeline(app, m, q, b):
+        return app.service.pipeline_descriptor()
+
+    @route("POST", "/api/pipeline/plan")
+    def pipeline_plan(app, m, q, b):
+        return app.service.plan_pipeline(b)
+
     @route("POST", "/api/preview")
     def preview(app, m, q, b):
         return app.service.preview_run(b)

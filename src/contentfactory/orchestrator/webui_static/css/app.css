@@ -194,11 +194,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mode:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .mode input { margin-top: 3px; }
 .mode .m-label { font-weight: 650; } .mode .m-desc { color: var(--muted); font-size: var(--fs-sm); }
+.stage-pick { display: flex; flex-direction: column; gap: var(--s-1); }
+.pick-row { display: flex; gap: var(--s-3); align-items: center; flex-wrap: wrap; padding: var(--s-2) var(--s-3); min-height: 40px; border: 1px solid var(--border); border-radius: var(--r-1); background: var(--surface); cursor: pointer; }
+.pick-row[data-role="locked"], .pick-row[data-role="provided"] { background: var(--st-done-bg); border-color: transparent; cursor: default; }
+.pick-row:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pick-row .s-label { font-weight: 600; }
+.pick-row .s-tag { display: inline-flex; gap: var(--s-1); align-items: center; font-size: var(--fs-xs); font-weight: 600; }
+.pick-row .s-why { color: var(--muted); font-size: var(--fs-sm); }
 .plan { display: flex; flex-wrap: wrap; gap: var(--s-1); align-items: center; }
 .plan .step { padding: 2px var(--s-2); border-radius: var(--r-1); font-size: var(--fs-xs); font-weight: 600; border: 1px solid var(--border); }
 .plan .step[data-s="run"] { background: var(--st-running-bg); color: var(--st-running-fg); border-color: transparent; }
 .plan .step[data-s="skip"] { background: var(--st-done-bg); color: var(--st-done-fg); border-color: transparent; }
-.plan .step[data-s="off"] { color: var(--muted); text-decoration: line-through; opacity: 0.8; }
+.plan .step[data-s="off"] { color: var(--muted); text-decoration: line-through; }
 .autolist { margin: 0; padding-left: var(--s-5); font-size: var(--fs-sm); }
 .autolist li { margin: 2px 0; }
 .run-actions { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }

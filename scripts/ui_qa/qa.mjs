@@ -150,6 +150,38 @@ if (wanted("partial")) {
   await page.context().close();
 }
 
+// ===================================================================== 3b. pipeline tùy chỉnh: chọn bước, bước bắt buộc bị khóa, bỏ nhánh YouTube
+if (wanted("pipeline")) {
+  console.log("\n# Pipeline tùy chỉnh");
+  const page = await newPage();
+  await go(page, "/");
+  await page.fill("#run-input", fx.youtube);
+  await page.waitForSelector(".mode");
+  check("mặc định: không hiện danh sách bước", (await page.locator(".pick-row").count()) === 0);
+  await page.locator("label.switch:has-text('Tùy chỉnh các bước')").click();
+  await page.waitForSelector(".pick-row");
+  check("danh sách đủ 8 bước theo thứ tự backend", (await page.locator(".pick-row").count()) === 8);
+  check("ẩn danh sách chế độ cũ khi tùy chỉnh", await page.locator(".mode-list").isHidden());
+  check("bước phía trên bị khóa (Bắt buộc, có chữ không chỉ màu)", await page.locator("#stage-audio").isDisabled() && (await page.locator(".pick-row[data-role=locked]:has-text('Bắt buộc')").count()) >= 3);
+  await page.locator("#stage-publish").uncheck();
+  await page.waitForFunction(() => document.querySelector(".pick-row[data-role=not_requested] #stage-publish"), null, { timeout: 10000 });
+  await page.locator("#stage-render_youtube").uncheck();
+  await page.waitForFunction(() => document.querySelector(".pick-row[data-role=not_requested] #stage-render_youtube"), null, { timeout: 10000 });
+  check("bỏ YouTube: TikTok vẫn được chọn, audio vẫn bị khóa", await page.locator("#stage-render_tiktok").isChecked() && await page.locator("#stage-audio").isDisabled());
+  check("kế hoạch hiển thị YouTube là 'không chạy'", (await page.locator(".plan .step[data-s=off]:has-text('Video YouTube')").count()) === 1);
+  await axe(page, "pipeline tùy chỉnh");
+  await noOverflow(page, "pipeline tùy chỉnh");
+  await page.waitForFunction(() => !document.querySelector("button.btn.primary.lg")?.disabled, null, { timeout: 10000 });
+  await page.locator("button:has-text('RUN')").click();
+  await page.waitForURL(/#\/jobs\/\d+/);
+  await page.waitForSelector("text=Job đã hoàn tất", { timeout: 90000 });
+  const rows = await page.locator(".stage-row").evaluateAll((els) => Object.fromEntries(els.map((e) => [e.dataset.name || e.textContent.trim().slice(0, 12), e.dataset.state])));
+  const st = await page.locator(".stage-row").evaluateAll((els) => els.map((e) => e.dataset.state));
+  check("job: Video YouTube/Đăng YouTube 'không chạy', TikTok đã xong", st.filter((s) => s === "not_planned").length >= 2 && st.includes("done"), JSON.stringify(rows));
+  check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+}
+
 // ===================================================================== 4. job bị giữ / lỗi / cần xử lý
 if (wanted("paused")) {
   console.log("\n# Trạng thái giữ / lỗi");

@@ -28,7 +28,7 @@ from ..fsutil import atomic_write, atomic_write_json, sha256_file
 from ..jobs import manifest as M
 from ..jobs import pipeline as P
 from ..jobs.db import Claim, JobStore
-from ..jobs.plan import Plan, plan_job
+from ..jobs.plan import Plan, plan_job, plan_spec
 from ..jobs.policy import RetryPolicy
 from ..jobs.workspace import ensure_job_dirs, job_dir
 from .config import Config, _merge
@@ -128,9 +128,10 @@ class Orchestrator:
     # -- tạo job ------------------------------------------------------------------------------
     def submit(self, params: dict, priority: int = 0, *, mode: str | None = None, start_stage: str | None = None,
                target_stage: str | None = None, inputs: dict | None = None, from_job: str | dict | None = None,
-               auto_resume: bool | None = None) -> str:
+               auto_resume: bool | None = None, pipeline: dict | None = None) -> str:
         """Tạo job. `mode` ∈ P.MODES (FULL, SUBTITLE_ONLY, STORY_ONLY, THROUGH_TTS, TTS_ONLY, VIDEO_ONLY) hoặc đặt trực tiếp
-        `start_stage`/`target_stage`. `inputs` = artifact đưa từ ngoài vào (kind -> đường dẫn | [đường dẫn] | dict cho metadata);
+        `start_stage`/`target_stage`, hoặc `pipeline` = pipeline spec v2 {requested_stages: [...]} (chọn stage tùy ý; dependency tự suy ra,
+        không dùng chung với mode/start/target). `inputs` = artifact đưa từ ngoài vào (kind -> đường dẫn | [đường dẫn] | dict cho metadata);
         `from_job` = dùng lại artifact của job khác. Spec không hợp lệ bị từ chối NGAY (không tạo job nửa vời)."""
         # Channel preset (Auto Mode): job_defaults < preset của kênh/tự chọn < params người dùng nhập. Kênh đọc MỘT lần, chốt vào snapshot (D-41, D-46).
         chan_id = str(params.get("channel") or self.cfg["job_defaults"].get("channel") or "default")
@@ -138,17 +139,14 @@ class Orchestrator:
         preset, decisions = AU.preset_params(self.cfg, channel, params, self.adapters)
         merged = _merge(_merge(copy.deepcopy(self.cfg["job_defaults"]), copy.deepcopy(preset)), copy.deepcopy(params))
         decisions += AU.select_pools(self.cfg, merged, channel, self.adapters)
-        if mode is not None:
-            if mode not in P.MODES:
-                raise _spec_error(f"mode không hợp lệ: {mode!r}; hợp lệ: {sorted(P.MODES)}")
-            m_start, m_target = P.MODES[mode]
-            start_stage, target_stage = start_stage or m_start, target_stage or m_target
         items = self._prepare_imports(inputs or {}, from_job, merged)
-        plan = plan_job(start_stage, target_stage, {i["kind"] for i in items}, bool((merged.get("input") or {}).get("value")))
+        plan = self._plan(merged, {i["kind"] for i in items}, mode, start_stage, target_stage, pipeline)
         if plan.errors:
             raise _spec_error("; ".join(plan.errors), errors=plan.errors)
-        if plan.target_idx >= P.INDEX["render_youtube"]:                                 # Template: chốt version cụ thể + snapshot lúc tạo job (D-92)
-            tpls, tdec = TPL.select_templates(self.cfg, merged, channel, self.adapters)
+        spec = self._stored_pipeline(pipeline, plan)
+        tkinds = self._template_kinds(plan, spec)
+        if tkinds is None or tkinds:                                                    # Template: chốt version cụ thể + snapshot lúc tạo job (D-92)
+            tpls, tdec = TPL.select_templates(self.cfg, merged, channel, self.adapters, tkinds)
             if tpls:
                 merged["templates"] = tpls
             decisions += tdec
@@ -161,7 +159,7 @@ class Orchestrator:
             merged["watermark"] = channel["watermark"]                                  # watermark là channel asset (HANDOFF §10)
         job_id = self.store.create_job(merged, priority, state=P.STAGES[plan.start_idx].queue_state,
                                        start_stage=plan.start_stage, target_stage=plan.target_stage,
-                                       auto_resume=resolved, snapshot=snap, config_hash=config_hash(snap["semantic"]))
+                                       auto_resume=resolved, snapshot=snap, config_hash=config_hash(snap["semantic"]), pipeline=spec)
         try:
             jd = ensure_job_dirs(self.cfg.path("workspace"), job_id)
             self._register_imports(job_id, jd, items)
@@ -177,14 +175,40 @@ class Orchestrator:
         return job_id
 
     def plan(self, params: dict | None = None, *, mode: str | None = None, start_stage: str | None = None,
-             target_stage: str | None = None, inputs: dict | None = None, from_job: str | dict | None = None) -> Plan:
+             target_stage: str | None = None, inputs: dict | None = None, from_job: str | dict | None = None,
+             pipeline: dict | None = None) -> Plan:
         """Xem trước kế hoạch (không tạo job, không copy file)."""
         merged = _merge(copy.deepcopy(self.cfg["job_defaults"]), copy.deepcopy(params or {}))
+        items = self._prepare_imports(inputs or {}, from_job, merged)
+        return self._plan(merged, {i["kind"] for i in items}, mode, start_stage, target_stage, pipeline)
+
+    def _plan(self, merged: dict, provided: set[str], mode: str | None, start_stage: str | None, target_stage: str | None,
+              pipeline: dict | None) -> Plan:
+        has_input = bool((merged.get("input") or {}).get("value"))
+        if pipeline is not None:
+            if mode is not None or start_stage is not None or target_stage is not None:
+                raise _spec_error("pipeline không dùng chung với mode/start_stage/target_stage")
+            return plan_spec(pipeline, provided, has_input)
         if mode is not None:
+            if mode not in P.MODES:
+                raise _spec_error(f"mode không hợp lệ: {mode!r}; hợp lệ: {sorted(P.MODES)}")
             m_start, m_target = P.MODES[mode]
             start_stage, target_stage = start_stage or m_start, target_stage or m_target
-        items = self._prepare_imports(inputs or {}, from_job, merged)
-        return plan_job(start_stage, target_stage, {i["kind"] for i in items}, bool((merged.get("input") or {}).get("value")))
+        return plan_job(start_stage, target_stage, provided, has_input)
+
+    @staticmethod
+    def _stored_pipeline(pipeline: dict | None, plan: Plan) -> dict | None:
+        """Spec lưu theo job (None với job kiểu mode/start/target cũ). `run` là kết quả plan lúc tạo: runtime chỉ cần đọc, không tính lại."""
+        if pipeline is None:
+            return None
+        return {"version": 2, "requested_stages": plan.requested, "options": dict(pipeline.get("options") or {}), "run": list(plan.run)}
+
+    @staticmethod
+    def _template_kinds(plan: Plan, spec: dict | None) -> set[str] | None:
+        """Kind template cần chốt: job cũ = tất cả khi đích tới render (None); job có pipeline spec = chỉ nhánh render nằm trong kế hoạch."""
+        if spec is None:
+            return None if plan.target_idx >= P.INDEX["render_youtube"] else set()
+        return ({"youtube", "thumbnail"} if "render_youtube" in spec["run"] else set()) | ({"tiktok"} if "render_tiktok" in spec["run"] else set())
 
     # -- import artifact ----------------------------------------------------------------------
     def _prepare_imports(self, inputs: dict, from_job: str | dict | None, params: dict) -> list[dict]:
@@ -297,6 +321,8 @@ class Orchestrator:
         job = self.store.get_job(job_id)
         if job is None:
             raise ValueError(f"không có job {job_id}")
+        if job.get("pipeline") is not None:
+            raise _spec_error("job dùng pipeline tùy chỉnh: không đổi được bằng target_stage (dùng pipeline revision)")
         have = {a["kind"] for a in self.store.artifacts(job_id)}
         pos = P.position(job["state"])
         plan = plan_job(P.STAGES[min(pos, len(P.STAGES) - 1)].name if pos is not None else None, target_stage, have,
@@ -468,17 +494,23 @@ class Orchestrator:
         contract = StageContract(stage)
         try:
             jd = ensure_job_dirs(self.cfg.path("workspace"), job_id)
-            inputs = self.store.inputs(job_id, stage.requires + stage.optional)
+            if claim.pipeline is not None and stage.name not in claim.pipeline["run"]:        # không được yêu cầu: đi qua máy trạng thái, không chạy
+                imported = any(a["stage"] == "import" and a["kind"] in stage.produces for a in self.store.artifacts(job_id))
+                reason = "provided" if imported else "not_requested"
+                if self.store.succeed(claim, self.owner, [], {"skipped": reason}, status="skipped"):
+                    log("stage_skipped", reason=reason)
+                return
+            inputs, package_kinds = contract.scope_inputs(self.store.inputs(job_id, stage.requires + stage.optional), claim.pipeline)
             ready, _missing = contract.can_run({k for k, v in inputs.items() if v})
             key = contract.stage_key(claim.params, claim.snapshot, inputs) if ready else None
             if key:
                 self.store.set_run_key(claim.run_id, key)
-            reason = contract.skip_reason(self.store, job_id, jd, key, claim.target_idx)
+            reason = contract.skip_reason(self.store, job_id, jd, key, claim.target_idx, claim.pipeline)
             if reason:                              # output đã hợp lệ (hoặc được cung cấp sẵn): KHÔNG chạy lại
                 if self.store.succeed(claim, self.owner, [], {"skipped": reason}, status="skipped"):
                     log("stage_skipped", reason=reason)
                 return
-            contract.validate_inputs(inputs, jd)
+            contract.validate_inputs(inputs, jd, also=package_kinds)
             self.monitor.preflight(stage)
             sem = (claim.snapshot or {}).get("semantic", {})
             ctx = StageContext(job_id=job_id, stage=stage.name, attempt=claim.attempt, stage_key=key or "",

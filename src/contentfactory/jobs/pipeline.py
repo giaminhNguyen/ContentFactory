@@ -64,6 +64,10 @@ class Stage:
     # Input tùy chọn: nạp vào ctx.inputs nếu có, không bắt buộc, không ảnh hưởng planner (vd timeline cho cắt part TikTok).
     optional: tuple[str, ...] = ()
 
+    # Nhánh đóng gói của stage "gói" (output): (stage sản sinh, kind của nhánh). Nhánh chỉ được đóng gói khi stage sản sinh nằm trong
+    # kế hoạch của job (hoặc kind được cung cấp sẵn); các kind này KHÔNG nằm trong `requires` nên "YouTube-only" không bị ép TikTok.
+    packages: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
     @property
     def required_inputs(self) -> tuple[str, ...]:
         return self.requires
@@ -101,11 +105,12 @@ STAGES: tuple[Stage, ...] = (
           checkpoint="từng part TikTok (trạng thái từng part trong checkpoint)", params_deps=("render", "templates.tiktok", "fake"),
           config_deps=("render", "adapter_config"), deliverable=True),
     Stage("output", OUTPUT_READY, OUTPUT_PUBLISHING, UPLOAD_READY,
-          ("metadata", "video_youtube", "thumbnail", "video_tiktok"),
+          ("metadata",),
           ("output_package", "publish_metadata"), "output", ("output", "sequence"),
           checkpoint="gói output (dựng rồi mới rename; gói đã có không bị ghi đè — phiên bản mới nằm bên cạnh)",
           params_deps=("language", "project", "channel", "fake"), config_deps=("output", "channel_config", "publishing"),
-          deliverable=True, optional=("story_text", "tiktok_render_report")),      # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
+          deliverable=True, optional=("story_text", "tiktok_render_report", "video_youtube", "thumbnail", "video_tiktok"),   # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
+          packages=(("render_youtube", ("video_youtube", "thumbnail")), ("render_tiktok", ("video_tiktok",)))),
     Stage("publish", UPLOAD_READY, UPLOADING, PUBLISHED,
           ("video_youtube", "thumbnail", "publish_metadata"),
           ("publish_result",), "publish", ("publish", "sequence"),

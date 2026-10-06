@@ -74,6 +74,7 @@ Không tự dựng badge/nút/alert/empty/field trong view: dùng `components.js
 - **Một tùy chọn cài đặt:** thêm một dòng vào `SETTINGS` ở `service_admin.py` (khóa chấm, nhóm, nhãn, kiểu `bool|int|number|text|select|channel`, mô tả, khoảng/`options`/`danger`/`restart`). Giao diện, kiểm tra giá trị, lưu vào `config.local.json` và cập nhật cấu hình sống đều tự có.
 - **Một trạng thái/nhãn:** thêm vào `js/status.js` (và `diagnose.py` nếu là nhóm mới); test `test_ui_js` sẽ báo nếu lệch.
 - **Một chế độ chạy:** thêm vào `RUN_MODES` + `KIND_MODES` ở `service.py` (ánh xạ vào mode/target của core; không lộ `start_stage`).
+- **Chọn bước tùy ý:** công tắc "Tùy chỉnh các bước" ở màn Chạy. Danh sách bước và trạng thái (Đã chọn / Bắt buộc 🔒 / Dùng lại ↻ / không chạy) do `/api/preview` trả theo planner v2; frontend chỉ gửi các bước người dùng chọn (`pipeline: {mode: "custom", requested_stages}`), không có đồ thị phụ thuộc riêng. Bước bị bước phía sau cần thì khóa và giải thích lý do. `GET /api/pipeline` là descriptor (thứ tự/phụ thuộc từ `P.STAGES`); `POST /api/pipeline/plan` xem kế hoạch của một spec bất kỳ. QA: `qa.mjs --only pipeline`.
 - **Một view:** `js/views/<tên>.js` + một dòng trong `ROUTES` (`router.js`) + một mục `NAV` (`main.js`).
 - **Một endpoint:** hàm trong `Api` (`webui.py`) với `@route`; logic ở facade, có test ở `tests/test_ui.py`.
 

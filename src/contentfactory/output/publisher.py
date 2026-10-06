@@ -78,12 +78,16 @@ class BuiltinOutputPublisher:
         job_id, proj = req["job_id"], req["project"]
         parts = sorted(req["tiktok_parts"], key=lambda p: p["index"])
         width = max(2, len(str(len(parts))))
-        thumb_ext = req["youtube_thumbnail"]["path"].suffix.lower() or ".jpg"
+        has_yt = bool(req.get("youtube_video") and req.get("youtube_thumbnail"))        # pipeline chỉ TikTok: không có nhánh YouTube trong gói
+        if not has_yt and not parts:
+            raise StageError(ErrorClass.POLICY, "NOTHING_TO_PACKAGE", "gói output cần ít nhất một video (YouTube hoặc TikTok)")
         plan = [("story.txt", "story", req["story"])] if req.get("story") else []         # job chạy từ audio có sẵn thì không có truyện
-        plan += [("youtube/video.mp4", "youtube_video", req["youtube_video"]),
-                 (f"youtube/thumbnail{thumb_ext}", "youtube_thumbnail", req["youtube_thumbnail"])]
+        if has_yt:
+            thumb_ext = req["youtube_thumbnail"]["path"].suffix.lower() or ".jpg"
+            plan += [("youtube/video.mp4", "youtube_video", req["youtube_video"]),
+                     (f"youtube/thumbnail{thumb_ext}", "youtube_thumbnail", req["youtube_thumbnail"])]
         plan += [(f"tiktok/part_{p['index']:0{width}d}.mp4", "tiktok_part", p) for p in parts]
-        texts = {"youtube/title.txt": req["youtube_title"] + "\n", "youtube/description.txt": req["description"] + "\n"}
+        texts = {"youtube/title.txt": req["youtube_title"] + "\n", "youtube/description.txt": req["description"] + "\n"} if has_yt else {}
         sig = hashlib.sha256(json.dumps({"files": [(rel, e["sha256"]) for rel, _, e in plan], "texts": texts,
                                          "project": [proj["title"], proj["title_source"], proj["channel_id"], proj.get("sequence")]},
                                         sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -135,9 +139,10 @@ class BuiltinOutputPublisher:
                 "created": datetime.now().isoformat(timespec="seconds"), "content_sig": sig,
                 "project": {k: req["project"].get(k) for k in ("id", "title", "title_source", "language", "channel_id", "channel_name", "sequence")},
                 "story": ({"file": "story.txt", "sha256": by["story.txt"]["sha256"], "bytes": by["story.txt"]["bytes"]} if "story.txt" in by else None),
-                "youtube": {"video": next(f["path"] for f in yt if f["role"] == "youtube_video"),
-                            "thumbnail": next(f["path"] for f in yt if f["role"] == "youtube_thumbnail"),
-                            "title_file": "youtube/title.txt", "description_file": "youtube/description.txt", "title": req["youtube_title"]},
+                "youtube": ({"video": next(f["path"] for f in yt if f["role"] == "youtube_video"),
+                             "thumbnail": next(f["path"] for f in yt if f["role"] == "youtube_thumbnail"),
+                             "title_file": "youtube/title.txt", "description_file": "youtube/description.txt", "title": req["youtube_title"]}
+                            if yt else None),
                 "tiktok": {"count": len(parts), "parts": [{"index": f["index"], "file": f["path"], "duration_sec": f.get("duration_sec")}
                                                           for f in files if f["role"] == "tiktok_part"]},
                 "files": files, "warnings": req.get("warnings", []),
@@ -156,11 +161,14 @@ class BuiltinOutputPublisher:
                  f"Ngôn ngữ  : {p.get('language')}", f"Phiên bản : {version}" + (f"  (thay thế bản trước: {supersedes}; bản cũ được giữ nguyên)" if supersedes else ""),
                  "", "NỘI DUNG THƯ MỤC", "----------------",
                  "story.txt                : truyện đầy đủ, không đánh số chương" if "story.txt" in by else None,
-                 "youtube/video.mp4        : video YouTube hoàn chỉnh (" + mb("youtube/video.mp4") + ")",
-                 "youtube/thumbnail.*      : ảnh thumbnail",
-                 "youtube/title.txt        : tiêu đề dùng khi đăng", "youtube/description.txt  : mô tả dùng khi đăng",
-                 f"tiktok/part_*.mp4        : {len(parts)} video TikTok, đăng theo THỨ TỰ part", "project.json            : bản kê máy đọc được (đường dẫn, sha256, nguồn)", "",
-                 "TIÊU ĐỀ YOUTUBE", "---------------", req["youtube_title"], "", "CÁC PART TIKTOK", "---------------"]
+                 ("youtube/video.mp4        : video YouTube hoàn chỉnh (" + mb("youtube/video.mp4") + ")") if "youtube/video.mp4" in by else None,
+                 "youtube/thumbnail.*      : ảnh thumbnail" if "youtube/video.mp4" in by else None,
+                 "youtube/title.txt        : tiêu đề dùng khi đăng" if "youtube/title.txt" in by else None,
+                 "youtube/description.txt  : mô tả dùng khi đăng" if "youtube/description.txt" in by else None,
+                 f"tiktok/part_*.mp4        : {len(parts)} video TikTok, đăng theo THỨ TỰ part" if parts else None,
+                 "project.json            : bản kê máy đọc được (đường dẫn, sha256, nguồn)", "",
+                 *(["TIÊU ĐỀ YOUTUBE", "---------------", req["youtube_title"], ""] if "youtube/video.mp4" in by else []),
+                 *(["CÁC PART TIKTOK", "---------------"] if parts else [])]
         for f in [x for x in files if x["role"] == "tiktok_part"]:
             d = f.get("duration_sec")
             lines.append(f"  {f['path'].split('/')[-1]}  " + (f"{int(d // 60)}:{int(d % 60):02d}  " if d else "") + mb(f["path"]))
