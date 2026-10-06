@@ -201,6 +201,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pick-row .s-label { font-weight: 600; }
 .pick-row .s-tag { display: inline-flex; gap: var(--s-1); align-items: center; font-size: var(--fs-xs); font-weight: 600; }
 .pick-row .s-why { color: var(--muted); font-size: var(--fs-sm); }
+.preflight { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-1); }
+.preflight li { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline; }
+.preflight li svg { align-self: center; flex: none; }
+.preflight li[data-s="ok"] svg { color: var(--st-done-fg); }
+.preflight li[data-s="warn"] svg { color: var(--st-wait-fg); }
+.preflight li[data-s="fail"] svg { color: var(--st-fail-fg); }
 .plan { display: flex; flex-wrap: wrap; gap: var(--s-1); align-items: center; }
 .plan .step { padding: 2px var(--s-2); border-radius: var(--r-1); font-size: var(--fs-xs); font-weight: 600; border: 1px solid var(--border); }
 .plan .step[data-s="run"] { background: var(--st-running-bg); color: var(--st-running-fg); border-color: transparent; }
@@ -225,7 +231,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .job .stage { font-size: var(--fs-sm); display: flex; flex-direction: column; gap: var(--s-1); }
 
 /* ---------- Job detail ---------- */
-.stages { list-style: none; margin: 0; padding: 0; }
+.stages { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--s-5); }
+.stage-row { grid-column: 1 / -1; }
+.stage-row[data-name="render_youtube"], .stage-row[data-name="render_tiktok"] { grid-column: auto; }          /* hai nhánh render đứng cạnh nhau: không giả vờ cái nào cũng cần */
+.branch-chip { margin-left: var(--s-2); font-size: var(--fs-xs); }
+@media (max-width: 760px) { .stages { grid-template-columns: minmax(0, 1fr); } .stage-row[data-name="render_youtube"], .stage-row[data-name="render_tiktok"] { grid-column: 1 / -1; } }
 .stage-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: var(--s-3); padding: var(--s-3) 0; border-bottom: 1px solid var(--border); align-items: start; }
 .stage-row:last-child { border-bottom: 0; }
 .stage-row .ico { display: flex; justify-content: center; padding-top: 2px; }
@@ -318,3 +328,14 @@ dialog.dlg.wide { width: min(760px, calc(100vw - 2 * var(--s-4))); }
 .bulkbar { position: sticky; top: 0; z-index: 2; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); padding: var(--s-2) var(--s-3); align-items: center; }
 .listhead { border-bottom: 1px solid var(--border); align-items: center; }
 @media (max-width: 760px) { .job.child, .job.batch { grid-template-columns: minmax(0, 1fr); } }
+.dash .h3 { margin: 0; font-size: var(--fs-md); }
+.jobs-tools { margin: var(--s-3) 0; align-items: center; }
+.jobs-tools input[type=search] { flex: 1 1 260px; min-width: 200px; }
+.jobs-tools .select { max-width: 200px; }
+.job.selectable { grid-template-columns: auto minmax(0, 1fr) minmax(140px, 220px) auto; }
+.job-pick { width: 20px; height: 20px; }
+@media (max-width: 640px) { .job.selectable { grid-template-columns: auto minmax(0, 1fr) auto; } .job.selectable .stage { grid-column: 1 / -1; } }
+/* Thẻ ảnh thumbnail của job (Phase 8): nằm ở app.css vì trang Job không nạp pools.css */
+.job-thumb { display: grid; grid-template-columns: minmax(160px, 260px) 1fr; gap: var(--s-4); align-items: start; }
+.job-thumb img { width: 100%; border-radius: var(--r-2); border: 1px solid var(--border); }
+@media (max-width: 640px) { .job-thumb { grid-template-columns: minmax(0, 1fr); } }

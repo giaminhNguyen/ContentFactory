@@ -22,6 +22,21 @@ export const STAGE_STATE = {
   not_planned: { label: "Không chạy", icon: "skip", tone: "off" },
 };
 
+// Timeline chuẩn hoá của một bước trong job (Phase 9): backend quyết định, frontend chỉ vẽ nhãn/biểu tượng (không dựa vào màu).
+export const TIMELINE = {
+  DONE: { label: "Xong", icon: "check-circle", tone: "done" },
+  REUSED: { label: "Dùng lại", icon: "refresh", tone: "done" },
+  AVAILABLE: { label: "Có sẵn", icon: "check-circle", tone: "done" },
+  RUNNING: { label: "Đang chạy", icon: "spinner", tone: "running", spin: true },
+  QUEUED: { label: "Chờ tới lượt", icon: "clock", tone: "queue" },
+  PAUSED: { label: "Tạm dừng", icon: "hourglass", tone: "wait" },
+  FAILED: { label: "Lỗi", icon: "x-circle", tone: "fail" },
+  NOT_REQUESTED: { label: "Không yêu cầu", icon: "skip", tone: "off" },
+  INVALIDATED: { label: "Cần chạy lại", icon: "refresh", tone: "wait" },
+};
+export const BRANCH_LABEL = { youtube: "YouTube", tiktok: "TikTok", package: "Gói output" };
+export function timelineState(t) { return TIMELINE[t] || TIMELINE.QUEUED; }
+
 export const PART_STATE = { done: "Xong", running: "Đang dựng", failed: "Lỗi", pending: "Chờ", reused: "Dùng lại", queued: "Chờ" };
 
 export const FILTERS = [

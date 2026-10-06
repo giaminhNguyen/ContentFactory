@@ -180,7 +180,7 @@ export async function mount(root, ctx) {
       problems.append(alertBox({ tone: "wait", title: p.message, body: p.hint || null, actions: p.code === "INVALID_CHANNEL_TEMPLATE" ? [btn({ label: "Sửa template của kênh", size: "sm", href: `#/channels/${s.channel}` })] : [] }));
     }
     if (!(pv?.problems || []).some((p) => p.field === "title")) titleField.setError(null);
-    const planOk = s.isColl ? !(pv?.problems?.length) && !!pv?.plan : !!(pv && pv.can_run);
+    const planOk = s.isColl ? !(pv?.problems?.length) && !!pv?.plan && !(pv?.preflight?.blocking?.length) : !!(pv && pv.can_run);
     const ok = planOk && (!s.isColl || panel.ready()) && !s.running;
     runBtn.disabled = !ok;
     runBtn.querySelector("span").textContent = s.isColl ? "Tạo Channel Run" : "RUN";
@@ -263,7 +263,7 @@ export async function mount(root, ctx) {
         st.label, h("span", { class: "sr-only" }, ` — ${{ run: "sẽ chạy", skip: "bỏ qua", off: "không chạy" }[st.state]}`)));
     }
     previewBox.append(h("div", { class: "label" }, "Hệ thống sẽ làm"), plan);
-    const lines = [];
+    const lines = s.isColl ? panel.summaryLines() : [];
     lines.push(`Kênh “${pv.channel_name}”: tập kế tiếp là Full Audio ${pv.sequence_next}; chế độ đăng mặc định: ${pv.privacy}.`);
     if (pv.templates && Object.keys(pv.templates).length) {
       const L = { thumbnail: "Thumbnail", youtube: "YouTube", tiktok: "TikTok" };
@@ -271,6 +271,21 @@ export async function mount(root, ctx) {
     }
     for (const a of (pv.auto || []).filter((x) => !String(x.what).startsWith("template."))) lines.push(`Tự chọn ${a.what}: ${typeof a.value === "object" ? Array.isArray(a.value) ? a.value.join(", ") : "theo preset" : a.value} — ${a.why}`);
     previewBox.append(h("div", null, h("div", { class: "label small muted" }, "Đã tự nhận ra / tự chọn"), h("ul", { class: "autolist" }, ...lines.map((t) => h("li", null, t)))));
+    if (pv.preflight) previewBox.append(preflightBlock(pv.preflight));
+  }
+
+  // Kiểm tra trước khi chạy: chỉ những gì kế hoạch này cần. Chỉ dòng "chặn" mới khoá nút RUN; còn lại là thông tin (job sẽ giữ lại và tự chạy tiếp).
+  const PFI = { ok: ["check-circle", "Đạt"], warn: ["alert", "Lưu ý"], fail: ["x-circle", "Lỗi"] };
+  function preflightBlock(pf) {
+    const ul = h("ul", { class: "preflight", "aria-label": "Kết quả kiểm tra trước khi chạy" });
+    for (const c of pf.checks) {
+      const [ic, word] = PFI[c.status] || PFI.warn;
+      ul.append(h("li", { dataset: { s: c.status } }, icon(ic, { size: 16 }), h("span", { class: "sr-only" }, word + ": "), h("strong", null, c.label), c.detail ? h("span", { class: "muted" }, ` — ${c.detail}`) : null,
+        c.blocking ? h("span", { class: "chip warn" }, "Cần sửa trước khi chạy") : null, c.hint ? h("div", { class: "small muted" }, c.hint) : null));
+    }
+    const box = h("div", { class: "stack", style: "gap: var(--s-1)" }, h("div", { class: "label small muted" }, "Kiểm tra trước khi chạy"), ul);
+    if (pf.skipped?.length) box.append(disclosure({ label: `Không kiểm tra ${pf.skipped.length} mục vì không cần`, content: h("ul", { class: "autolist" }, ...pf.skipped.map((t) => h("li", null, t))) }));
+    return box;
   }
 
   // ---------- tạo kênh nhanh ----------

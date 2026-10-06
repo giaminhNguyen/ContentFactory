@@ -114,6 +114,13 @@ export function channelRun({ getChannel, onChange }) {
     reload() { if (value) discoverSoon(); },
     firstUrl: () => chosen()[0]?.url || null,
     count: () => chosen().length,
+    // “Hệ thống sẽ làm” cho Channel Run: nguồn, cách chọn, bao nhiêu bị bỏ qua và vì sao, kênh xuất bản, số job sẽ tạo
+    summaryLines() {
+      if (!data) return [];
+      const sel = manual ? "chọn tay từng video" : ({ newest: `${data.selection?.n ?? ""} video mới nhất`, oldest: `${data.selection?.n ?? ""} video cũ nhất`, range: `video từ vị trí ${data.selection?.from} đến ${data.selection?.to}`, dates: "video theo khoảng ngày" })[data.selection?.mode] || "";
+      const skipped = Object.entries(data.skipped).map(([k, n]) => `${n} ${(SKIP_TEXT[k] || k).toLowerCase()}`).join(", ");
+      return [`Nguồn: ${data.source.title || data.source.canonical_url}`, `Chọn: ${sel}${skipped ? `; bỏ qua ${skipped}` : ""}`, `Kênh xuất bản: ${data.output_channel.name}`, `Sẽ tạo ${chosen().length} job độc lập`];
+    },
     ready: () => !!data && !loading && chosen().length > 0,
     why: () => (loading ? "Đang quét kênh/playlist…" : error ? error.message : !data ? "" : !chosen().length ? "Chưa có video nào được chọn." : ""),
     // thân yêu cầu tạo batch (phần chạy/pipeline/kids do màn Chạy thêm vào)

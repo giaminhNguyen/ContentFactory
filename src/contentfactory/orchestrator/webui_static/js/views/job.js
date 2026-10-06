@@ -4,7 +4,7 @@ import { h, clear, patchList } from "../dom.js";
 import { icon } from "../icons.js";
 import { btn, alertBox, badge, jobBadge, updateBadge, stageBadge, progress, updateProgress, errorState, skeleton, switchCtl, disclosure, kv, toast, toastError, busy } from "../components.js";
 import { createPoller } from "../poller.js";
-import { jobStatus, stageState, ACTION_LABEL, PART_STATE } from "../status.js";
+import { jobStatus, stageState, timelineState, ACTION_LABEL, BRANCH_LABEL, PART_STATE } from "../status.js";
 import { relTime, duration } from "../format.js";
 import { openOutput, pauseJob, resumeJob, retryJob, setAutoResume } from "../actions.js";
 import { openPipelineDialog, openClone, confirmCancel, openRerollThumbnail } from "./_job_control.js";
@@ -180,8 +180,11 @@ export async function mount(root, ctx) {
   function paintStages(d) {
     const added = patchList(stagesList, d.pipeline, (s) => s.name, (s) => {
       const li = h("li", { class: "stage-row" });
-      li._p = { ico: h("div", { class: "ico" }), name: h("div", { class: "name" }), detail: h("div", { class: "small muted" }), items: h("div", { class: "items" }), bar: progress(0, "running", "Tiến độ bước"), right: h("div", { class: "row" }) };
-      li.append(li._p.ico, h("div", { class: "grow" }, li._p.name, li._p.detail, li._p.bar, li._p.items), li._p.right);
+      const why = h("p", { class: "small muted", hidden: true, id: `why-${s.name}` });
+      const whyBtn = h("button", { type: "button", class: "btn ghost sm", "aria-expanded": "false", "aria-controls": `why-${s.name}` }, "Vì sao?");
+      whyBtn.addEventListener("click", () => { why.hidden = !why.hidden; whyBtn.setAttribute("aria-expanded", String(!why.hidden)); });
+      li._p = { ico: h("div", { class: "ico" }), name: h("div", { class: "name" }), detail: h("div", { class: "small muted" }), items: h("div", { class: "items" }), bar: progress(0, "running", "Tiến độ bước"), right: h("div", { class: "row" }), why, whyBtn };
+      li.append(li._p.ico, h("div", { class: "grow" }, li._p.name, li._p.detail, li._p.bar, li._p.items, whyBtn, why), li._p.right);
       updateStage(li, s);
       return li;
     }, updateStage);
@@ -192,11 +195,16 @@ export async function mount(root, ctx) {
     const key = JSON.stringify(s);
     if (li._k === key) return;
     li._k = key;
-    const p = li._p, meta = stageState(s.state);
+    const p = li._p, meta = s.timeline ? timelineState(s.timeline) : stageState(s.state);
     li.dataset.state = s.state;
+    li.dataset.name = s.name;
+    li.dataset.branch = s.branch || "shared";
+    li.dataset.timeline = s.timeline || "";
     p.ico.replaceChildren(icon(meta.icon, { size: 20, cls: meta.spin ? "spin" : "" }));
     p.ico.style.color = `var(--st-${{ done: "done", running: "running", wait: "wait", fail: "fail", queue: "queue", off: "queue" }[meta.tone] || "queue"}-fg)`;
-    p.name.textContent = s.label;
+    p.name.replaceChildren(s.label, BRANCH_LABEL[s.branch] && s.name !== "publish" ? h("span", { class: "chip branch-chip" }, BRANCH_LABEL[s.branch]) : null);
+    p.why.textContent = s.why || "";
+    p.whyBtn.hidden = !s.why;
     const bits = [];
     if (s.detail && s.state !== "waiting") bits.push(s.detail);
     if (s.total && (s.state === "running" || s.state === "held" || s.state === "failed")) bits.unshift(`${s.done ?? 0}/${s.total}`);
@@ -207,7 +215,7 @@ export async function mount(root, ctx) {
     p.bar.hidden = !showBar;
     if (showBar) updateProgress(p.bar, (s.done || 0) / s.total, { running: "running", held: "wait", failed: "fail" }[s.state] || "running");
     p.items.replaceChildren(...s.items.map((it) => h("span", { class: "badge", dataset: { tone: { done: "done", failed: "fail", running: "running" }[it.state] || "queue" }, title: it.error || "" }, `${it.name} · ${PART_STATE[it.state] || it.state || ""}`)));
-    p.right.replaceChildren(stageBadge(s.state));
+    p.right.replaceChildren(s.timeline ? badge(meta) : stageBadge(s.state));
   }
 
   function paintOutput(d) {

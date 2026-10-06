@@ -177,9 +177,14 @@ class Api:
     def create_run(app, m, q, b):
         return app.service.create_run(b)
 
+    @route("GET", "/api/dashboard")
+    def dashboard(app, m, q, b):
+        return app.service.dashboard()
+
     @route("GET", "/api/jobs")
     def jobs(app, m, q, b):
-        return app.service.list_jobs(q.get("status", ["all"])[0], _int(q, "limit", 30, 1, 200), _int(q, "offset", 0, 0, 10 ** 7), q.get("since", [None])[0])
+        return app.service.list_jobs(q.get("status", ["all"])[0], _int(q, "limit", 30, 1, 200), _int(q, "offset", 0, 0, 10 ** 7), q.get("since", [None])[0],
+                                     q=q.get("q", [None])[0], kind=q.get("kind", [None])[0], channel=q.get("channel", [None])[0], days=_int(q, "days", 0, 0, 3650))
 
     @route("GET", r"/api/jobs/(?P<id>[\w\-]+)")
     def job(app, m, q, b):
@@ -196,7 +201,7 @@ class Api:
 
     @route("POST", "/api/jobs/bulk")
     def jobs_bulk(app, m, q, b):
-        return app.service.bulk(b.get("action", ""), b.get("job_ids") or [])
+        return app.service.bulk(b.get("action", ""), b.get("job_ids") or [], b.get("args"))
 
     @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/pause")
     def pause(app, m, q, b):

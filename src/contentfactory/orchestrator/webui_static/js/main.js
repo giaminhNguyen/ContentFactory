@@ -5,6 +5,7 @@ import { icon } from "./icons.js";
 import { btn, toast, alertBox } from "./components.js";
 import { app, start, section } from "./router.js";
 import { createPoller, net, isOnline } from "./poller.js";
+import * as notify from "./notify.js";
 
 const NAV = [
   ["run", "/", "Chạy", "play"],
@@ -99,7 +100,10 @@ async function boot() {
   createPoller(async (signal) => {
     if (Date.now() - (app.countsAt || 0) > 4000) {                  // view đang mở đã cập nhật số đếm gần đây thì khỏi hỏi lại (tránh trùng yêu cầu)
       const d = await api.get("/api/jobs", { query: { status: "all", limit: 1, since: version }, signal });
-      if (d.changed) { version = d.version; setCounts(d.counts); }
+      if (d.changed) {
+        version = d.version; setCounts(d.counts);
+        if (notify.enabled()) api.get("/api/dashboard", { signal }).then(notify.check).catch(() => {});          // thông báo tuỳ chọn: chỉ khi người dùng đã bật
+      }
     }
     if (tick++ % 5 === 0) { app.runtime = await api.get("/api/runtime", { signal }); paintRuntime(); }
     return (app.counts?.running || 0) > 0 ? "fast" : "idle";

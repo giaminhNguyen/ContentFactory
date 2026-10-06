@@ -169,6 +169,10 @@ if (wanted("pipeline")) {
   await page.waitForFunction(() => document.querySelector(".pick-row[data-role=not_requested] #stage-render_youtube"), null, { timeout: 10000 });
   check("bỏ YouTube: TikTok vẫn được chọn, audio vẫn bị khóa", await page.locator("#stage-render_tiktok").isChecked() && await page.locator("#stage-audio").isDisabled());
   check("kế hoạch hiển thị YouTube là 'không chạy'", (await page.locator(".plan .step[data-s=off]:has-text('Video YouTube')").count()) === 1);
+  await page.waitForSelector(".preflight li");
+  const pfText = await page.locator(".preflight").innerText();
+  check("preflight chỉ kiểm bước sẽ chạy: có TikTok/ffmpeg, KHÔNG có Đăng YouTube/Template YouTube", pfText.includes("Template TikTok") && pfText.includes("FFmpeg") && !pfText.includes("Đăng YouTube") && !pfText.includes("Template YouTube"), pfText.slice(0, 300));
+  check("preflight nói rõ mục không kiểm vì không cần", (await page.locator("button:has-text('Không kiểm tra')").count()) === 1);
   await axe(page, "pipeline tùy chỉnh");
   await noOverflow(page, "pipeline tùy chỉnh");
   await page.waitForFunction(() => !document.querySelector("button.btn.primary.lg")?.disabled, null, { timeout: 10000 });
@@ -503,6 +507,81 @@ if (wanted("imgpools")) {
   await noOverflow(page, "trang job có ảnh thumbnail");
   check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
   await send(page, "PUT", "/api/channels/kenh_a", { raw: { ...(ch.raw || {}), thumbnail: {} } });         // trả kênh về như cũ cho các phần QA khác
+  await page.context().close();
+}
+
+// ===================================================================== 3i. Trang Job: dải tổng quan, tìm kiếm/lọc (nhớ lựa chọn), chọn nhiều + hàng loạt; chi tiết job: timeline nhánh + "Vì sao?"
+if (wanted("jobsui")) {
+  console.log("\n# Job: tổng quan, tìm kiếm, hàng loạt, timeline");
+  const page = await newPage({ width: 1280, height: 900 });
+  await go(page, "/jobs");
+  await page.waitForSelector(".dash h2");
+  check("dải tổng quan trả lời 'có việc cần xử lý không' + hiện làn tài nguyên và ổ đĩa", (await page.locator(".dash").innerText()).includes("Render (GPU)") && (await page.locator(".dash").innerText()).includes("trống"));
+  await page.waitForSelector(".joblist li");
+  const before = await page.locator(".joblist li").count();
+  await page.getByLabel("Tìm job").fill("không có gì khớp zzzz");
+  await page.waitForSelector("h2:has-text('Không có job nào khớp bộ lọc')");
+  check("tìm không thấy: trạng thái trống giải thích + nút Xoá lọc", (await page.getByRole("button", { name: "Xoá lọc" }).count()) >= 1);
+  await page.getByRole("button", { name: "Xoá lọc" }).first().click();
+  await page.waitForFunction((n) => document.querySelectorAll(".joblist li").length === n, before, { timeout: 15000 });
+  check("xoá lọc trả lại danh sách đầy đủ", true);
+  await page.getByLabel("Tìm job").fill("chậm");
+  await page.waitForFunction(() => document.querySelectorAll(".joblist li").length >= 1 && [...document.querySelectorAll(".joblist li")].every((li) => /chậm/i.test(li.innerText)), null, { timeout: 15000 });
+  check("tìm theo tiêu đề chỉ giữ các job khớp", true);
+  await page.getByLabel("Tìm job").fill("");
+  await page.getByLabel("Loại job").selectOption("channel");
+  await page.waitForFunction(() => [...document.querySelectorAll(".joblist li")].every((li) => li.querySelector("a[href^='#/batches/']")) , null, { timeout: 15000 });
+  check("lọc theo loại 'Channel Run' chỉ còn hàng Channel Run (hoặc trống)", true);
+  await page.reload();
+  await page.waitForSelector(".jobs-tools");
+  check("lựa chọn lọc gần nhất được nhớ sau khi tải lại", (await page.getByLabel("Loại job").inputValue()) === "channel");
+  await page.getByLabel("Loại job").selectOption("");
+  await page.getByLabel("Thời gian tạo").selectOption("1");
+  await page.waitForSelector(".joblist li");
+  await page.getByLabel("Thời gian tạo").selectOption("");
+  await page.waitForTimeout(500);
+  await axe(page, "trang Job có thanh tìm/lọc");
+
+  // chọn nhiều + hàng loạt: báo thành công một phần rõ ràng (chỉ chọn job ĐÃ HOÀN TẤT: tạm dừng chúng bị từ chối kèm lý do, không đổi gì cho các phần QA khác)
+  await page.locator(".filters button:has-text('Hoàn tất')").click();
+  await page.waitForSelector(".joblist li");
+  await page.getByRole("button", { name: "Chọn nhiều" }).click();
+  await page.waitForSelector(".job-pick");
+  check("chế độ chọn nhiều: có ô tích có nhãn đọc được", (await page.locator(".job-pick").first().getAttribute("aria-label")).startsWith("Chọn job"));
+  check("chưa chọn gì: nút hàng loạt bị tắt", await page.locator(".bulkbar button:has-text('Tạm dừng')").isDisabled());
+  await page.getByRole("button", { name: "Chọn tất cả đang hiện" }).click();
+  check("chọn tất cả: thanh hàng loạt hiện số đã chọn", (await page.locator(".bulkbar").innerText()).includes("Đã chọn"));
+  await page.locator(".bulkbar button:has-text('Tạm dừng')").click();
+  await page.waitForSelector(".toast:has-text('Tạm dừng:')");
+  const dlg = page.locator("dialog[open]:has-text('Một số job không áp dụng được')");
+  await dlg.waitFor({ timeout: 15000 }).catch(() => {});
+  check("hàng loạt: job không áp dụng được (đã xong/lỗi…) được liệt kê kèm lý do", (await dlg.count()) === 1 && (await dlg.locator("li").count()) >= 1);
+  if (await dlg.count()) await dlg.getByRole("button", { name: "Đóng" }).click();
+  await page.getByRole("button", { name: "Xong chọn" }).click();
+  check("không lỗi console/mạng (trang Job)", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+
+  // chi tiết job: timeline + nhánh + vì sao
+  await go(page, "/jobs");
+  await page.waitForSelector(".joblist li a[href^='#/jobs/']");
+  const done = await (await page.request.get(base + "/api/jobs?status=completed", { headers: { "X-CF-Token": await page.locator("meta[name=cf-token]").getAttribute("content") } })).json();
+  const jid = done.jobs.find((j) => j.type !== "batch")?.id;
+  await go(page, `/jobs/${jid}`);
+  await page.waitForSelector(".stage-row[data-timeline]");
+  const tl = await page.locator(".stage-row").evaluateAll((els) => els.map((e) => [e.dataset.name, e.dataset.timeline, e.dataset.branch]));
+  check("timeline dùng trạng thái chuẩn hoá + nhánh", tl.length === 8 && tl.every(([, t]) => ["DONE", "REUSED", "AVAILABLE", "NOT_REQUESTED"].includes(t)) && tl.find(([n]) => n === "render_tiktok")[2] === "tiktok", JSON.stringify(tl));
+  const yt = await page.locator('.stage-row[data-name="render_youtube"]').boundingBox(), tt = await page.locator('.stage-row[data-name="render_tiktok"]').boundingBox();
+  check("hai nhánh YouTube/TikTok đứng cạnh nhau trên màn rộng", yt && tt && Math.abs(yt.y - tt.y) < 8 && tt.x > yt.x, JSON.stringify([yt, tt]));
+  const row = page.locator('.stage-row[data-name="audio"]');
+  const hiddenFirst = await row.locator("p[id^=why-]").isHidden();
+  await row.getByRole("button", { name: "Vì sao?" }).click();
+  check("'Vì sao?' thu gọn mặc định rồi mở được", hiddenFirst && (await row.locator("p[id^=why-]").isVisible()));
+  await axe(page, "chi tiết job: timeline");
+  await noOverflow(page, "chi tiết job: timeline");
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.waitForTimeout(900);                                                                  // bố cục + hoạt ảnh vào của thanh điều hướng ổn định rồi mới đo
+  const yt2 = await page.locator('.stage-row[data-name="render_youtube"]').boundingBox(), tt2 = await page.locator('.stage-row[data-name="render_tiktok"]').boundingBox();
+  check("màn hẹp: nhánh xếp dọc, không tràn ngang", tt2.y > yt2.y + 10);
+  await noOverflow(page, "chi tiết job 390");
   await page.context().close();
 }
 

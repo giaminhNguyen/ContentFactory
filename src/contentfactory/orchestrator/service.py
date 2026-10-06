@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -19,7 +20,7 @@ from urllib.parse import urlparse
 from ..contracts import ErrorClass, StageError, clean_title
 from ..fsutil import atomic_write_json
 from ..jobs import pipeline as P
-from ..jobs.plan import spec_for_mode
+from ..jobs.plan import plan_spec, spec_for_mode
 from ..jobs.workspace import job_dir
 from ..media import image_pool as IPOOL
 from ..source import discovery as DISC
@@ -29,6 +30,7 @@ from . import auto as AU
 from . import channels as CH
 from . import diagnose as DG
 from . import ops
+from . import preflight as PF
 from . import revisions as REV
 from . import templates as TPL
 from .service_templates import Raw
@@ -40,6 +42,10 @@ FILTERS = {"all": None, "running": {"running", "queued"}, "waiting": {"waiting",
 ACTION_VI = {"KEEP": "Giữ nguyên", "REUSE": "Dùng lại", "RUN": "Sẽ chạy", "RERUN": "Chạy lại", "REMOVE_FROM_PLAN": "Bỏ khỏi kế hoạch",
              "CURRENT_CONTINUE": "Đang chạy, làm nốt", "BLOCKED": "Không áp dụng được", "OFF": "Không chạy"}
 DEDUPE_WINDOW_S = 600
+# Timeline của bước trong job (Phase 9): trạng thái chuẩn hoá + nhóm nhánh để UI tách YouTube/TikTok thay vì giả vờ mọi thứ đều cần.
+TIMELINE_LABEL = {"DONE": "Xong", "REUSED": "Dùng lại", "AVAILABLE": "Có sẵn", "RUNNING": "Đang chạy", "QUEUED": "Chờ tới lượt", "PAUSED": "Tạm dừng",
+                  "FAILED": "Lỗi", "NOT_REQUESTED": "Không yêu cầu", "INVALIDATED": "Cần chạy lại"}
+BRANCH = {"render_youtube": "youtube", "render_tiktok": "tiktok", "output": "package", "publish": "youtube"}
 
 # id -> (nhãn, mô tả, đặc tả với orchestrator.submit)
 RUN_MODES: dict[str, tuple[str, str, dict]] = {
@@ -281,11 +287,13 @@ class Service:
         except StageError as e:
             res["problems"].append({"code": e.code, "message": e.message})
         tkinds = None if plan is None else self.orc._template_kinds(plan, {"run": plan.run} if custom is not None else None)
+        tpls_ok = None
         if res["plan"] and (tkinds is None or tkinds) and not (plan and plan.errors):                       # template của kênh dùng được không (báo sớm, trước khi bấm RUN)
             try:
                 tpls, tdec = TPL.select_templates(self.cfg, merged, ch, self.orc.adapters, tkinds)
                 res["auto"] = res["auto"] + tdec
                 res["templates"] = {k: {"id": v["id"], "version": v["version"], "name": v["name"]} for k, v in tpls.items()}
+                tpls_ok = res["templates"]
             except StageError as e:
                 res["problems"].append({"code": e.code, "message": e.message, "hint": "Mở Kênh → Template và chọn template đã publish."})
         reaches_publish = ("publish" in plan.run) if (custom is not None and plan is not None) else (custom is None and self._target_reaches(run) >= P.INDEX["publish"])
@@ -294,7 +302,8 @@ class Service:
         if res["needs_kids"]:
             res["problems"].append({"code": "MISSING_MADE_FOR_KIDS", "field": "kids",
                                     "message": "Kênh này chưa khai báo video có dành cho trẻ em hay không (khai báo bắt buộc của YouTube).", "hint": "Chọn Có/Không bên dưới; có thể ghi nhớ cho kênh."})
-        res["can_run"] = not res["problems"]
+        res["preflight"] = PF.run(self.orc, plan.run, ch, merged, tpls_ok) if plan is not None and not plan.errors else None       # chỉ kiểm thứ kế hoạch này cần (D-106)
+        res["can_run"] = not res["problems"] and not (res["preflight"] or {}).get("blocking")
         res["privacy"] = (ch.get("publishing") or {}).get("privacy") or self.cfg.data["publishing"]["defaults"]["privacy"]
         res["warnings"] = []
         if det["kind"] == "youtube_url" and not (payload.get("title") or "").strip() and reaches_publish:
@@ -493,18 +502,43 @@ class Service:
             part = min(1.0, (cp.get("done") or 0) / cp["total"])
         return round(min(1.0, (done + part) / planned), 3)
 
-    def list_jobs(self, status: str = "all", limit: int = 30, offset: int = 0, since: str | None = None) -> dict:
-        version = self.orc.store.jobs_version()
+    def list_jobs(self, status: str = "all", limit: int = 30, offset: int = 0, since: str | None = None, q: str | None = None, kind: str | None = None,
+                  channel: str | None = None, days: int | None = None) -> dict:
+        """Danh sách cấp cao (job đơn + Channel Run). Bộ lọc phụ (Phase 9): `q` tìm theo tiêu đề/URL/mã video/mã job (không phân biệt hoa thường, bỏ dấu cách thừa),
+        `kind` single|channel, `channel` = kênh xuất bản, `days` = tạo trong N ngày gần đây. Số đếm các nhóm trạng thái tính SAU các bộ lọc phụ để khớp với danh sách."""
+        q = " ".join(str(q or "").lower().split())
+        kind = kind if kind in ("single", "channel") else None
+        days = int(days) if days and int(days) > 0 else None
+        fkey = hashlib.sha1(json.dumps([q, kind, channel or "", days], ensure_ascii=False).encode()).hexdigest()[:8] if (q or kind or channel or days) else ""
+        version = self.orc.store.jobs_version() + (f"|{fkey}" if fkey else "")
         if since and since == version:
             return {"changed": False, "version": version}
         store = self.orc.store
         bs = self.orc.batch_service()
         by_batch, item_st = store.batch_jobs_all(), store.batch_item_statuses()
+        cutoff = time.time() - days * 86400 if days else None
         top: list[tuple[float, str, str, str, dict | None]] = []                       # (created_at, loại, id, nhóm hiển thị, tóm tắt batch)
-        for r in store.job_index():
-            if not r.get("batch_id"):                                                    # job con của Channel Run KHÔNG là hàng cấp cao
-                top.append((r["created_at"], "job", r["id"], DG.ui_status(r), None))
-        for b in store.list_batches():
+        singles = [] if kind == "channel" else [r for r in store.job_index() if not r.get("batch_id")]       # job con của Channel Run KHÔNG là hàng cấp cao
+        if channel:
+            singles = [r for r in singles if (r.get("channel_id") or "") == channel]
+        if cutoff:
+            singles = [r for r in singles if r["created_at"] >= cutoff]
+        if q and singles:
+            hay = {}
+            for chunk in range(0, len(singles), 200):
+                for j in store.jobs_by_ids([r["id"] for r in singles[chunk:chunk + 200]]):
+                    hay[j["id"]] = j
+            singles = [r for r in singles if r["id"] in hay and self._matches(q, [r["id"], r.get("source_key"), r.get("input_value"), self.title_of(hay[r["id"]])])]
+        for r in singles:
+            top.append((r["created_at"], "job", r["id"], DG.ui_status(r), None))
+        for b in ([] if kind == "single" else store.list_batches()):
+            if channel and b["output_channel_id"] != channel:
+                continue
+            if cutoff and b["created_at"] < cutoff:
+                continue
+            if q and not self._matches(q, [b["id"], b.get("source_title"), b.get("source_url"), b.get("source_id"), b.get("source_channel_title"),
+                                           *[f for it in store.batch_items(b["id"]) for f in (it.get("title"), it.get("source_video_id"))]]):
+                continue
             s = bs.summary(b, by_batch.get(b["id"], []), item_st.get(b["id"], []))
             top.append((b["created_at"], "batch", b["id"], s["ui_status"], s))
         top.sort(key=lambda t: t[0], reverse=True)
@@ -524,6 +558,57 @@ class Service:
                 for t in page if t[1] == "batch" or t[2] in full]
         return {"changed": True, "version": version, "counts": groups, "jobs": rows, "total": len(picked), "offset": offset, "limit": limit,
                 "has_more": offset + limit < len(picked)}
+
+    LANE_LABEL = {"gpu": "Render (GPU)", "tts": "Giọng đọc (TTS)"}
+
+    def dashboard(self) -> dict:
+        """Bảng nhanh trả lời MỘT câu hỏi: có việc gì cần người dùng xử lý không? Đếm theo JOB (kể cả job con của Channel Run) vì đó mới là khối lượng thật."""
+        store = self.orc.store
+        rows = store.job_index()
+        now = time.localtime()
+        midnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, 0, 0, -1))
+        c = {"running": 0, "queued": 0, "waiting": 0, "paused": 0, "attention": 0, "completed_today": 0}
+        lanes_used: dict[str, int] = {}
+        attention_ids = []
+        for r in rows:
+            st = DG.ui_status(r)
+            if st == "running":
+                c["running"] += 1
+                stage = P.BY_RUNNING.get(r["state"])
+                if stage is not None:
+                    key = stage.resource or stage.name
+                    lanes_used[key] = lanes_used.get(key, 0) + 1
+            elif st == "queued":
+                c["queued"] += 1
+            elif st == "waiting":
+                c["waiting"] += 1
+            elif st == "paused":
+                c["paused"] += 1
+            elif st in ("attention", "failed"):
+                c["attention"] += 1
+                attention_ids.append(r["id"])
+            elif st == "completed" and r["updated_at"] >= midnight:
+                c["completed_today"] += 1
+        limits = self.cfg.data.get("limits") or {}
+        lanes = [{"id": k, "label": self.LANE_LABEL[k], "used": lanes_used.get(k, 0), "limit": int(limits.get(k, limits.get("default", 2)))} for k in ("gpu", "tts")]
+        disk = []
+        for label, p in (("Workspace", self.cfg.path("workspace")), ("Output", self.cfg.path("output"))):
+            try:
+                du = shutil.disk_usage(p if p.exists() else p.anchor or ".")
+                disk.append({"id": label.lower(), "label": label, "free_gb": round(du.free / 2 ** 30, 1), "low": du.free / 2 ** 30 < 2.0})
+            except OSError:
+                pass
+        needs = []
+        for j in store.jobs_by_ids(attention_ids[:5]):
+            s = self.summary(j)
+            needs.append({"id": j["id"], "title": s["title"], "stage_label": s["stage_label"], "reason": (s.get("hold") or {}).get("title"), "status": s["status"]})
+        batches_running = sum(1 for b in store.list_batches() if self.orc.batch_service().summary(b, store.batch_jobs_all().get(b["id"], []), store.batch_item_statuses().get(b["id"], []))["status"] == "running")
+        return {**c, "lanes": lanes, "disk": disk, "needs_attention": needs, "batches_running": batches_running,
+                "headline": ("Có việc cần bạn xử lý" if c["attention"] else "Không có việc cần bạn xử lý"), "version": store.jobs_version()}
+
+    @staticmethod
+    def _matches(q: str, fields: list) -> bool:
+        return any(q in " ".join(str(f).lower().split()) for f in fields if f)
 
     def job_detail(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)
@@ -548,8 +633,9 @@ class Service:
                           "clone": status in ("completed", "cancelled", "failed"), "reroll_thumbnail": bool((j["params"].get("thumbnail_source")) and status not in ("completed", "cancelled")),
                           "prosody": any(a["kind"] == "speech_plan" for a in self.orc.store.artifacts(job_id))})
         s["thumbnail"] = self.thumbnail_info(j)
-        s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=self._pipeline(j, runs), decisions=j["params"].get("auto", []),
+        s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=self._pipeline(j, runs, pend, d.get("human"), cur, imported), decisions=j["params"].get("auto", []),
                  mode={"start": j.get("start_stage"), "target": j.get("target_stage")}, params_public=self._public_params(j["params"]),
+                 timeline_legend=TIMELINE_LABEL,
                  output=(lambda o: o if o.get("project_dir") else None)(self.output_info(job_id)),
                  attempts=[{"stage": r["stage"], "attempt": r["attempt"], "status": r["status"], "started_at": r["started_at"], "ended_at": r["ended_at"]} for r in runs][-40:])
         return s
@@ -563,7 +649,7 @@ class Service:
                                 for k, v in p["templates"].items() if isinstance(v, dict)}
         return out
 
-    def _pipeline(self, j: dict, runs: list[dict]) -> list[dict]:
+    def _pipeline(self, j: dict, runs: list[dict], pend: dict | None = None, human: str | None = None, cur: dict | None = None, imported: set | None = None) -> list[dict]:
         n = len(P.STAGES)
         start = P.INDEX[j["start_stage"]] if j.get("start_stage") else 0
         target = j["target_idx"] if j.get("target_idx") is not None else n - 1
@@ -593,6 +679,47 @@ class Service:
                          "done": cp.get("done") if state in ("running", "held", "failed") else None, "total": cp.get("total") if state in ("running", "held", "failed") else None,
                          "detail": cp.get("detail") if state in ("running", "held", "failed") else None, "items": items if state != "waiting" else [],
                          "seconds": round(dur, 1) if dur else None})
+        return self._timeline(j, rows, pend, human, cur, imported)
+
+    def _timeline(self, j: dict, rows: list[dict], pend: dict | None, human: str | None, cur: dict | None, imported: set | None) -> list[dict]:
+        """Thêm vào mỗi bước: `timeline` (DONE | REUSED | AVAILABLE | RUNNING | QUEUED | PAUSED | FAILED | NOT_REQUESTED | INVALIDATED), `branch` (shared | youtube | tiktok | package)
+        và `why` (vì sao ở trạng thái này, tiếng Việt). `state` cũ giữ nguyên (tương thích). Nhánh YouTube/TikTok tách riêng để không giả vờ mọi thứ đều cần."""
+        states = {}
+        try:
+            if cur:
+                pl = plan_spec({"version": 2, "requested_stages": cur["requested_stages"]}, imported or set(), bool((j["params"].get("input") or {}).get("value")))
+                states = pl.states or {}
+        except Exception:                                                              # noqa: BLE001 — giải thích chỉ là phụ trợ, không được làm hỏng trang job
+            states = {}
+        rerun = {s["id"]: s for s in ((pend or {}).get("impact") or {}).get("stages", []) if s.get("action") == "RERUN"}
+        paused = j.get("control_state") == "PAUSED"
+        lab = {st.name: DG.STAGE_LABEL[st.name] for st in P.STAGES}
+        for r in rows:
+            n, st = r["name"], r["state"]
+            info = states.get(n) or {}
+            by = [lab.get(b, b) for b in (info.get("by") or [])]
+            if n in rerun and st in ("done", "reused"):
+                tl, why = "INVALIDATED", "Kết quả cũ không còn đúng: " + (rerun[n].get("reason") or "một thay đổi đang chờ áp dụng") + ". Sẽ chạy lại."
+            elif st == "done":
+                tl, why = "DONE", "Đã chạy xong ở lần chạy này."
+            elif st == "reused":
+                tl, why = "REUSED", "Dùng lại kết quả hợp lệ có sẵn (tham số và đầu vào không đổi) nên không chạy lại."
+            elif st == "provided":
+                tl, why = "AVAILABLE", "Kết quả của bước này đã có sẵn (do bạn đưa vào hoặc từ job khác) nên không cần chạy."
+            elif st == "running":
+                tl, why = "RUNNING", "Đang chạy."
+            elif st == "held":
+                tl, why = "PAUSED", human or "Đang giữ lại vì tài nguyên chưa sẵn sàng; sẽ tự chạy tiếp khi sẵn sàng."
+            elif st == "failed":
+                tl, why = "FAILED", human or "Bước này lỗi: xem chẩn đoán phía trên."
+            elif st == "not_planned":
+                tl, why = "NOT_REQUESTED", "Không nằm trong kế hoạch và không bước nào bạn chọn cần kết quả của nó."
+            else:
+                tl = "PAUSED" if paused else "QUEUED"
+                why = "Job đang tạm dừng theo yêu cầu của bạn; bước này sẽ chạy sau khi tiếp tục." if paused else "Chờ tới lượt."
+            if info.get("state") == "locked" and by and tl not in ("NOT_REQUESTED", "AVAILABLE"):
+                why += " Bước này có mặt vì " + ", ".join(by) + " cần kết quả của nó."
+            r.update(timeline=tl, branch=BRANCH.get(n, "shared"), why=why)
         return rows
 
     # ================================================================================== output / log
@@ -708,9 +835,9 @@ class Service:
         return {"available": True, "mode": plan["mode"], "editable": plan["mode"] == "prosody", "profile": plan.get("profile"), "qc": plan["qc"], "warnings": plan.get("warnings", []),
                 "overrides": overrides, "boundaries": rows[:2000], "truncated": len(rows) > 2000}
 
-    BULK_ACTIONS = ("pause", "resume", "retry", "cancel")
+    BULK_ACTIONS = ("pause", "resume", "retry", "cancel", "update_pipeline", "template")
 
-    def bulk(self, action: str, job_ids: list[str]) -> dict:
+    def bulk(self, action: str, job_ids: list[str], args: dict | None = None) -> dict:
         """Hành động hàng loạt trên các job ĐÃ CHỌN. Backend kiểm TỪNG job (không tin giao diện); trả kết quả từng job + đếm để UI báo thành công một phần
         rõ ràng. Không có job nào bị bỏ lặng lẽ: mỗi job là `done` | `unchanged` | `skipped` (kèm lý do) | `error`."""
         if action not in self.BULK_ACTIONS:
@@ -720,6 +847,11 @@ class Service:
             raise _err("NOTHING_SELECTED", "Chưa chọn job nào.")
         if len(ids) > 500:
             raise _err("TOO_MANY_SELECTED", "Chọn tối đa 500 job mỗi lần.")
+        args = args or {}
+        if action == "update_pipeline" and not (args.get("pipeline") or {}).get("requested_stages"):
+            raise _err("BULK_ARGS", "Thiếu danh sách bước (pipeline.requested_stages).")                 # lỗi tham số chung: báo một lần, không lặp cho từng job
+        if action == "template" and not (args.get("kind") and args.get("template_id")):
+            raise _err("BULK_ARGS", "Thiếu loại template hoặc mã template.")
         results = []
         for jid in ids:
             r = None
@@ -742,6 +874,10 @@ class Service:
                     else:
                         self.orc.retry(jid)
                         ok, why = True, None
+                elif action == "update_pipeline":
+                    ok, why = self._bulk_update(jid, j, args or {})
+                elif action == "template":
+                    ok, why = self._bulk_template(jid, j, args or {})
                 else:
                     r = self.orc.cancel_job(jid)
                     ok = r == "changed"
@@ -752,6 +888,30 @@ class Service:
             results.append({"job_id": jid, "result": "done" if ok else ("unchanged" if r == "unchanged" else "skipped"), **({"reason": why} if why else {})})
         counts = {k: sum(1 for r in results if r["result"] == k) for k in ("done", "unchanged", "skipped", "error")}
         return {"action": action, "counts": counts, "results": results}
+
+    def _bulk_update(self, jid: str, j: dict, args: dict) -> tuple[bool, str | None]:
+        """Cập nhật pipeline cho MỘT job trong lô: dùng đúng impact planner/revision của từng job (job đã xong/hủy bị impact chặn kèm lý do)."""
+        stages = (args.get("pipeline") or {}).get("requested_stages")
+        imported = {a["kind"] for a in self.orc.store.artifacts(jid) if a["stage"] == "import"}
+        if set(REV.current_pipeline(j, imported)["requested_stages"]) == set(stages):
+            return False, "Pipeline của job này đã đúng như vậy."
+        try:
+            r = self.orc.request_update(jid, pipeline={"requested_stages": list(stages)}, apply_policy=args.get("apply_policy") or "after_current_safe_point")
+        except StageError as e:
+            return False, e.message + (" Dùng “Chạy lại với thay đổi”." if (e.detail or {}).get("clone_suggested") else "")
+        return True, {"applied": "Đã áp dụng.", "pending": "Sẽ áp dụng ở điểm an toàn kế tiếp."}.get(r["status"], r["status"])
+
+    def _bulk_template(self, jid: str, j: dict, args: dict) -> tuple[bool, str | None]:
+        """Đổi template (thumbnail | youtube | tiktok) cho job CHƯA kết thúc; job đã xong/hủy giữ nguyên (không sửa tại chỗ)."""
+        kind, tid = str(args.get("kind") or ""), str(args.get("template_id") or "")
+        if DG.ui_status(j) in ("completed", "cancelled"):
+            return False, "Job đã kết thúc: không sửa tại chỗ. Dùng “Chạy lại với thay đổi”."
+        if kind not in (j["params"].get("templates") or {}):
+            return False, "Job này không dùng loại template đó."
+        if j["state"] in P.BY_RUNNING:
+            return False, "Job đang chạy: tạm dừng hoặc chờ xong bước hiện tại rồi thử lại."
+        self.orc.retemplate(jid, kind, tid)
+        return True, "Đã đổi template; bước dựng liên quan sẽ chạy lại."
 
     def _job_or_error(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)

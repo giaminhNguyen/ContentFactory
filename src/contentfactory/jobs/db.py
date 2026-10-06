@@ -304,7 +304,8 @@ class JobStore:
 
     def job_index(self) -> list[dict]:
         """Bản nhẹ cho UI: chỉ các cột đủ để phân nhóm trạng thái (không parse params/snapshot), mới nhất trước."""
-        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, batch_id, created_at, updated_at FROM jobs ORDER BY seq DESC")]
+        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, batch_id, created_at, updated_at, channel_id, source_key, "
+                                                        "json_extract(params,'$.input.value') AS input_value FROM jobs ORDER BY seq DESC")]
 
     def jobs_by_ids(self, ids: list[str]) -> list[dict]:
         if not ids:

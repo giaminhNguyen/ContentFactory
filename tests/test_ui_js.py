@@ -57,6 +57,9 @@ class FrontendTest(unittest.TestCase):
             self.assertIn(DG.ui_status({"hold_reason": None, "needs_user": False, "target_idx": 7, **case}), d["job"])
         self.assertEqual(set(d["stage"]), {"done", "reused", "provided", "running", "waiting", "held", "failed", "not_planned"})
         self.assertEqual(d["filters"], list(FILTERS))
+        r2 = node("--input-type=module", "-e", f"import * as s from 'file:///{(STATIC / 'js' / 'status.js').as_posix()}'; console.log(JSON.stringify(Object.keys(s.TIMELINE)))")
+        from contentfactory.orchestrator.service import TIMELINE_LABEL
+        self.assertEqual(set(json.loads(r2.stdout)), set(TIMELINE_LABEL))                  # nhãn timeline của giao diện = tập trạng thái backend trả
 
     def test_index_html_is_self_contained_and_accessible(self):
         html = (STATIC / "index.html").read_text(encoding="utf-8")
