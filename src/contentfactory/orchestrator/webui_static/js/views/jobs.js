@@ -6,7 +6,7 @@ import { createPoller } from "../poller.js";
 import { publishCounts } from "../router.js";
 import { FILTERS } from "../status.js";
 import * as motion from "../motion.js";
-import { jobRow, updateJobRow } from "./_jobrow.js";
+import { makeRow, updateRow, rowKey } from "./_batch_ui.js";
 
 const PAGE = 30, CAP = 200;
 
@@ -48,7 +48,7 @@ export async function mount(root, ctx) {
         ? emptyState({ icon: "list", title: "Chưa có job nào", text: "Dán một link YouTube ở màn hình Chạy để bắt đầu.", action: btn({ label: "Tới màn hình Chạy", icon: "play", kind: "primary", href: "#/" }) })
         : emptyState({ icon: "check-circle", title: "Không có job nào trong nhóm này", text: status === "attention" ? "Tốt: không có gì cần bạn xử lý." : "Thử nhóm khác." }));
     }
-    const added = patchList(list, d.jobs, (j) => j.id, (j) => jobRow(j, () => poller.poke()), (el, j) => updateJobRow(el, j));
+    const added = patchList(list, d.jobs, rowKey, (j) => makeRow(j, () => poller.poke()), updateRow);
     scope.add(() => motion.itemsEnter(added));
     more.hidden = !d.has_more || shown >= CAP;
     more.replaceChildren(btn({ label: `Tải thêm (${d.total - d.jobs.length} job nữa)`, icon: "plus", onClick: () => { shown = Math.min(CAP, shown + PAGE); version = null; poller.poke(); } }));

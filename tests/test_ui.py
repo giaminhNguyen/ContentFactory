@@ -624,6 +624,12 @@ class HttpTest(UiCase):
         self.assertEqual((code, u["counts"]["applied"]), (200, 10))
         self.assertEqual(self.call("POST", f"/api/batches/{bid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}, "scope": "x"})[0], 400)
         self.assertEqual(self.call("POST", f"/api/batches/{bid}/cancel-queued")[1]["cancelled_jobs"], 10)
+        kids = [x["job_id"] for x in self.call("GET", f"/api/batches/{bid}?limit=3")[1]["items"]]
+        code, bk, _ = self.call("POST", "/api/jobs/bulk", {"action": "resume", "job_ids": kids + ["999999"]})
+        self.assertEqual((code, bk["counts"]["error"], len(bk["results"])), (200, 1, 4))
+        self.assertEqual(self.call("POST", "/api/jobs/bulk", {"action": "explode", "job_ids": kids})[0], 400)
+        code, lst, _ = self.call("GET", "/api/jobs")
+        self.assertEqual([(r["type"], r["id"]) for r in lst["jobs"]], [("batch", bid)])            # job con không phải hàng cấp cao
         self.assertEqual(self.call("GET", "/api/batches/B999999")[0], 404)
         self.assertEqual(self.call("POST", f"/api/batches/{bid}/rescan", token=False)[0], 401)
         code, r, _ = self.call("POST", "/api/runs", {"input": {"value": "@abc"}, "channel": "kenh"})

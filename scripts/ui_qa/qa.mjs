@@ -250,6 +250,60 @@ if (wanted("prosody")) {
   await page.context().close();
 }
 
+// ===================================================================== 3e. Channel Run: dán kênh -> chọn video -> tạo batch -> theo dõi -> thao tác nhiều video
+if (wanted("channelrun")) {
+  console.log("\n# Channel Run");
+  const page = await newPage();
+  await go(page, "/jobs");
+  await page.waitForSelector(".job");
+  const before = await page.locator(".joblist > li").count();
+  await go(page, "/");
+  await page.fill("#run-input", fx.channel_url);
+  await page.waitForSelector(".chip.ok:has-text('Kênh YouTube')");
+  await page.waitForSelector("text=Sẽ tạo 10 job");
+  check("kênh: mặc định chọn 10 video mới nhất chưa xử lý", (await page.locator(".chrun-list input:checked").count()) === 10);
+  check("video sắp công chiếu/livestream bị bỏ qua có lý do", (await page.locator(".chrun-list .chip.warn:has-text('Sắp công chiếu')").count()) === 1 && (await page.locator(".chrun-list .chip.warn:has-text('Livestream')").count()) === 1);
+  check("có link mở video nguồn an toàn (tab mới, noopener)", await page.locator(".chrun-list a[target=_blank][rel*=noopener]").first().isVisible());
+  await page.locator(".mode:has-text('Chỉ lấy phụ đề')").click();
+  await page.locator(".chrun-list input:checked").first().click();
+  await page.waitForSelector("text=Sẽ tạo 9 job");
+  check("bỏ chọn tay một video: 9 job + nhãn Chọn tay", (await page.locator(".chip:has-text('Chọn tay')").count()) >= 1);
+  await page.waitForTimeout(500);
+  await axe(page, "màn Chạy với kênh");
+  await noOverflow(page, "màn Chạy với kênh");
+  await page.waitForFunction(() => !document.querySelector("button.btn.primary.lg")?.disabled, null, { timeout: 15000 });
+  check("nút đổi thành Tạo Channel Run", (await page.locator("button.btn.primary.lg").innerText()).includes("Tạo Channel Run"));
+  await page.locator("button.btn.primary.lg").click();
+  await page.waitForURL(/#\/batches\/B\d+/);
+  await page.waitForSelector("#page-title:has-text('Channel Run')");
+  await page.waitForSelector(".chip:has-text('9 hoàn tất')", { timeout: 90000 });
+  check("batch hoàn tất 9/9, mỗi video một dòng", (await page.locator(".joblist > li.child").count()) === 9);
+  check("trạng thái batch có chữ (không chỉ màu)", (await page.locator(".badge:has-text('Hoàn tất')").count()) >= 1);
+  await page.locator(".joblist > li.child input[type=checkbox]").nth(0).check();
+  await page.locator(".joblist > li.child input[type=checkbox]").nth(1).check();
+  await page.waitForSelector("text=Đã chọn 2 video");
+  await page.locator(".bulkbar button:has-text('Tạm dừng')").click();
+  await page.waitForSelector("dialog[open]:has-text('Một số video không áp dụng được')");
+  check("thao tác nhiều video báo thành công một phần rõ ràng", true);
+  await page.locator("dialog[open] button:has-text('Đóng')").click();
+  await page.waitForTimeout(500);
+  await axe(page, "chi tiết Channel Run");
+  await noOverflow(page, "chi tiết Channel Run");
+  await page.locator(".joblist > li.child a.trunc").first().click();
+  await page.waitForSelector("a:has-text('Channel Run')");
+  check("job con: có link về Channel Run + mở video nguồn/kênh nguồn", (await page.locator("a[target=_blank]:has-text('Mở video nguồn')").count()) === 1 && (await page.locator("a[target=_blank]:has-text('Mở kênh nguồn')").count()) === 1);
+  await go(page, "/jobs");
+  await page.waitForSelector(".job.batch");
+  check("danh sách job: một thẻ Channel Run, job con không thành hàng cấp cao", (await page.locator(".job.batch").count()) === 1 && (await page.locator(".joblist > li").count()) === before + 1);
+  await axe(page, "danh sách job có Channel Run");
+  const mob = await newPage({ width: 390, height: 844 });
+  await go(mob, "/jobs");
+  await noOverflow(mob, "danh sách job có Channel Run 390px");
+  check("không lỗi console/mạng", page.problems.length === 0 && mob.problems.length === 0, [...page.problems, ...mob.problems].slice(0, 3).join(" | "));
+  await mob.context().close();
+  await page.context().close();
+}
+
 // ===================================================================== 4. job bị giữ / lỗi / cần xử lý
 if (wanted("paused")) {
   console.log("\n# Trạng thái giữ / lỗi");

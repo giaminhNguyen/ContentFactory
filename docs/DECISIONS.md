@@ -541,6 +541,13 @@
 - **Batch là điều phối**: trạng thái batch suy ra từ job con, không có checkpoint/runner riêng; hành động hàng loạt dùng đúng cơ chế điều khiển job của D-99 (Pause = pause_origin BATCH; Resume chỉ gỡ pause BATCH nên job người dùng tự dừng và job chờ tài nguyên giữ nguyên; Retry failed chỉ job FAILED; Cancel queued chỉ việc chưa bắt đầu; cập nhật pipeline theo phạm vi, job đã xong không bị sửa tại chỗ). Một con lỗi không dừng batch. Trần an toàn: quét 300, cần xác nhận khi chọn >100, tối đa 500.
 - **Liên kết chuẩn do backend giữ** (BUG-11): `params.source` + `links` trong API job; chỉ https tới YouTube. Danh sách job vẫn liệt kê job con như hàng riêng tới Phase 5 (gom thành thẻ Channel Run).
 
+### D-102 ✅ Giao diện Channel Run và hành động hàng loạt (Agent Plan, Phase 5)
+- **Danh sách job cấp cao = Job đơn + Channel Run.** `GET /api/jobs` trả hàng `type: "job" | "batch"`; job con (`jobs.batch_id`) không bao giờ là hàng cấp cao. Batch dùng chung nhóm hiển thị với job (`ui_status` suy từ trạng thái batch: PAUSED→paused, NEEDS_ATTENTION/COMPLETED_WITH_ERRORS→attention…) nên bộ lọc, đếm và huy hiệu “cần xử lý” đếm batch một lần. Truy vấn danh sách không N+1 theo job con (`batch_jobs_all` một lần); `jobs_version` gồm cả bảng `batches`.
+- **Chọn video ngay ở màn Chạy** (không có màn riêng): link kênh/playlist → panel chọn, nút “Tạo Channel Run”, xác nhận khi >100 job, `request_id` chống tạo trùng. Kế hoạch/kiểm tra (made_for_kids, template…) tính trên video đầu tiên được chọn bằng chính `/api/preview` — không có logic nghiệp vụ mới ở frontend.
+- **Chi tiết batch** (`#/batches/B…`): hành động và điều kiện bật/tắt do backend trả (`actions`), nút bị tắt có giải thích; hủy luôn có xác nhận; cập nhật pipeline theo phạm vi dùng lại bộ chọn bước có phụ thuộc do backend (`/api/pipeline/plan`) và báo kết quả từng video.
+- **`POST /api/jobs/bulk {action: pause|resume|retry|cancel, job_ids}`** (Service.bulk): backend kiểm TỪNG job (không tin giao diện), mỗi job có kết quả `done|unchanged|skipped|error` kèm lý do; tối đa 500 job/lần. Dùng lại ở Phase 9 cho bulk toàn danh sách.
+- **Liên kết:** job con và job đơn hiển thị Mở video nguồn / Mở kênh nguồn / Mở video đã đăng (link do backend dựng + kiểm, `target=_blank rel=noopener noreferrer`, kèm chữ “mở tab mới” cho trình đọc màn hình).
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:

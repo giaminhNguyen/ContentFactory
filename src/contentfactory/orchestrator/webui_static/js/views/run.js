@@ -8,7 +8,8 @@ import { publishCounts } from "../router.js";
 import { createSamples } from "../samples.js";
 import { disclosure } from "../components.js";
 import * as motion from "../motion.js";
-import { jobRow, updateJobRow } from "./_jobrow.js";
+import { makeRow, updateRow, rowKey } from "./_batch_ui.js";
+import { channelRun } from "./_channel_run.js";
 
 const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* bỏ qua */ } } };
 
@@ -17,7 +18,7 @@ export async function mount(root, ctx) {
   const boot = app.boot;
   const s = { value: "", kindOverride: null, title: "", channel: LS.get("cf-channel") || boot.default_channel, run: null, kids: null, remember: true,
               autoResume: boot.auto_resume_default, rid: null, seq: 0, preview: null, running: false,
-              custom: false, stages: new Set() };                       // custom: pipeline tùy chỉnh; stages = các bước người dùng CHỌN (phần bắt buộc do backend tính)
+              custom: false, stages: new Set(), isColl: false, collLabel: "" };                       // custom: pipeline tùy chỉnh; stages = các bước người dùng CHỌN (phần bắt buộc do backend tính)
   if (!boot.channels.some((c) => c.id === s.channel)) s.channel = boot.channels[0]?.id || boot.default_channel;
   let timer = null;
 
@@ -61,9 +62,10 @@ export async function mount(root, ctx) {
     : null;
   const noChannels = boot.channels.length === 0;
 
+  const panel = channelRun({ getChannel: () => s.channel, onChange: () => { s.rid = null; schedule(0); } });
   const card = h("div", { class: "card run-card stack" },
     h("div", { class: "field" }, h("label", { for: "run-input" }, "Đầu vào"), h("div", { class: "input-row" }, valueIn, pickBtn), detectLine),
-    titleField, channelField, modesField, customField, kidsBox, previewBox, problems,
+    panel.el, titleField, channelField, modesField, customField, kidsBox, previewBox, problems,
     h("div", { class: "stack" }, autoSw, autoHint),
     h("div", { class: "run-actions" }, runBtn, runNote));
   valueIn.id = "run-input";
@@ -98,6 +100,8 @@ export async function mount(root, ctx) {
   // ---------- nhập liệu ----------
   function onValue() {
     s.value = valueIn.value.trim();
+    s.isColl = false;
+    panel.setValue("");
     s.kindOverride = null;
     s.run = null;
     s.rid = null;
@@ -106,7 +110,7 @@ export async function mount(root, ctx) {
   valueIn.addEventListener("input", onValue);
   valueIn.addEventListener("paste", () => setTimeout(onValue, 0));
   titleIn.addEventListener("input", () => { s.title = titleIn.value; s.rid = null; schedule(400); });
-  channelSel.addEventListener("change", () => { s.channel = channelSel.value; LS.set("cf-channel", s.channel); s.rid = null; s.kids = null; clear(kidsBox); schedule(0); });
+  channelSel.addEventListener("change", () => { s.channel = channelSel.value; LS.set("cf-channel", s.channel); s.rid = null; s.kids = null; clear(kidsBox); panel.reload(); schedule(0); });
   valueIn.addEventListener("keydown", (e) => { if (e.key === "Enter" && !runBtn.disabled) runBtn.click(); });
 
   function schedule(ms) { clearTimeout(timer); timer = setTimeout(refresh, ms); }
@@ -115,8 +119,11 @@ export async function mount(root, ctx) {
     const my = ++s.seq;
     if (!s.value) { s.preview = null; paint(); return; }
     try {
-      const pv = await api.post("/api/preview", { input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids, pipeline: pipelineBody() });
+      // Link kênh/playlist: kế hoạch + kiểm tra (made_for_kids, template…) tính trên video đầu tiên được chọn; nhận dạng kênh/playlist giữ nguyên (sticky) tới khi ô nhập đổi
+      const value = (s.isColl && panel.firstUrl()) || s.value;
+      const pv = await api.post("/api/preview", { input: { value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids, pipeline: pipelineBody() });
       if (my !== s.seq) return;                         // đã có lần nhập mới hơn
+      if (pv.detect?.collection && !s.isColl) { s.isColl = true; s.collLabel = pv.detect.label; panel.setValue(s.value); }
       s.preview = pv;
       if (!s.run) s.run = pv.run;
     } catch (e) {
@@ -135,8 +142,8 @@ export async function mount(root, ctx) {
     else if (pv) {
       const d = pv.detect;
       if (d.ok) {
-        detectLine.append(h("span", { class: "chip ok" }, icon("check", { size: 14 }), d.label));
-        const det = d.details || {};
+        detectLine.append(h("span", { class: "chip ok" }, icon("check", { size: 14 }), s.isColl ? s.collLabel : d.label));
+        const det = s.isColl ? {} : (d.details || {});
         if (det.video_id) detectLine.append(h("span", { class: "muted mono" }, det.video_id));
         if (det.name) detectLine.append(h("span", { class: "muted" }, det.name));
         if (d.ambiguous) {
@@ -149,7 +156,7 @@ export async function mount(root, ctx) {
     }
     // tên truyện
     const d = pv?.detect;
-    titleField.hidden = !(d && d.ok && d.modes.length);
+    titleField.hidden = !(d && d.ok && d.modes.length) || s.isColl;            // job con lấy tên từ tiêu đề video nguồn
     const needs = !!d?.needs_title;
     titleField.querySelector("label").lastChild?.nodeName === "SPAN" && titleField.querySelector("label").lastChild.remove();
     if (needs) titleField.querySelector("label").append(h("span", { class: "muted", "aria-hidden": "true" }, " *"));
@@ -173,9 +180,11 @@ export async function mount(root, ctx) {
       problems.append(alertBox({ tone: "wait", title: p.message, body: p.hint || null, actions: p.code === "INVALID_CHANNEL_TEMPLATE" ? [btn({ label: "Sửa template của kênh", size: "sm", href: `#/channels/${s.channel}` })] : [] }));
     }
     if (!(pv?.problems || []).some((p) => p.field === "title")) titleField.setError(null);
-    const ok = !!(pv && pv.can_run) && !s.running;
+    const planOk = s.isColl ? !(pv?.problems?.length) && !!pv?.plan : !!(pv && pv.can_run);
+    const ok = planOk && (!s.isColl || panel.ready()) && !s.running;
     runBtn.disabled = !ok;
-    runNote.textContent = !s.value ? "Nhập đầu vào để bắt đầu." : ok ? (pv.warnings?.[0] || "") : (pv?.problems?.length ? "Hoàn thành các mục ở trên để chạy." : "");
+    runBtn.querySelector("span").textContent = s.isColl ? "Tạo Channel Run" : "RUN";
+    runNote.textContent = !s.value ? "Nhập đầu vào để bắt đầu." : ok ? (s.isColl ? `Sẽ tạo ${panel.count()} job con độc lập.` : (pv.warnings?.[0] || "")) : (s.isColl && panel.why() ? panel.why() : (pv?.problems?.length ? "Hoàn thành các mục ở trên để chạy." : ""));
   }
 
   function patchModes(modes) {
@@ -295,6 +304,14 @@ export async function mount(root, ctx) {
     s.rid = s.rid || newRequestId();
     await busy(runBtn, async () => {
       try {
+        if (s.isColl) {                                            // Channel Run: một batch + N job con, không phải một job
+          const c = await panel.confirm();
+          if (!c.ok) { s.running = false; return; }
+          const r = await api.post("/api/batches", { ...panel.body(), run: s.run, pipeline: pipelineBody(), kids: s.kids, auto_resume: s.autoResume, request_id: s.rid, confirm_large: c.large });
+          toast(r.deduped ? { title: "Đã có Channel Run này", message: "Chuyển tới Channel Run đó thay vì tạo thêm.", tone: "info" } : { title: `Đã tạo Channel Run ${r.id}`, message: `${r.counts.total} job con đã xếp hàng; mỗi video chạy độc lập.`, tone: "done" });
+          navigate(`/batches/${r.id}`);
+          return;
+        }
         const r = await api.post("/api/runs", { request_id: s.rid, input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids,
                                                 remember_kids: s.remember, auto_resume: s.autoResume, pipeline: pipelineBody() });
         toast(r.deduped ? { title: "Đã có job cùng nội dung đang chạy", message: "Chuyển tới job đó thay vì tạo thêm.", tone: "info" } : { title: `Đã xếp hàng job ${r.job_id}`, message: "Bạn có thể theo dõi tiến độ ở đây.", tone: "done" });
@@ -317,7 +334,7 @@ export async function mount(root, ctx) {
     version = d.version;
     publishCounts(d.counts);
     recentCard.hidden = d.jobs.length === 0;
-    const added = patchList(recent, d.jobs, (j) => j.id, (j) => jobRow(j, () => poller.poke()), (el, j) => updateJobRow(el, j));
+    const added = patchList(recent, d.jobs, rowKey, (j) => makeRow(j, () => poller.poke()), updateRow);
     scope.add(() => motion.itemsEnter(added));
     return d.jobs.some((j) => j.status === "running" || j.status === "queued") ? "fast" : "idle";
   });

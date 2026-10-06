@@ -296,7 +296,7 @@ class JobStore:
 
     def job_index(self) -> list[dict]:
         """Bản nhẹ cho UI: chỉ các cột đủ để phân nhóm trạng thái (không parse params/snapshot), mới nhất trước."""
-        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, batch_id, updated_at FROM jobs ORDER BY seq DESC")]
+        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, batch_id, created_at, updated_at FROM jobs ORDER BY seq DESC")]
 
     def jobs_by_ids(self, ids: list[str]) -> list[dict]:
         if not ids:
@@ -308,7 +308,8 @@ class JobStore:
     def jobs_version(self) -> str:
         """Dấu thay đổi rẻ cho polling: đổi khi có job mới hoặc bất kỳ job nào đổi trạng thái/tiến độ."""
         r = self._q("SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM jobs")[0]
-        return f"{r['n']}:{r['u']}"
+        b = self._q("SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM batches")[0]
+        return f"{r['n']}:{r['u']}:{b['n']}:{b['u']}"
 
     def discard_job(self, job_id: str) -> None:
         """Dọn dẹp một job vừa tạo mà khâu khởi tạo (import artifact) thất bại; không dùng cho job đã chạy."""
@@ -733,6 +734,20 @@ class JobStore:
         """Bản nhẹ của các job con (đủ để suy trạng thái/đếm), theo thứ tự tạo."""
         return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, failed_stage, source_key, updated_at FROM jobs "
                                          "WHERE batch_id=? ORDER BY seq", (bid,))]
+
+    def batch_jobs_all(self) -> dict[str, list[dict]]:
+        """Job con của MỌI batch trong MỘT truy vấn (danh sách job không N+1 theo batch)."""
+        out: dict[str, list[dict]] = {}
+        for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, failed_stage, source_key, batch_id, updated_at FROM jobs "
+                         "WHERE batch_id IS NOT NULL ORDER BY seq"):
+            out.setdefault(r["batch_id"], []).append(dict(r))
+        return out
+
+    def batch_item_statuses(self) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for r in self._q("SELECT batch_id, status FROM batch_items"):
+            out.setdefault(r["batch_id"], []).append({"status": r["status"]})
+        return out
 
     def find_job_by_source(self, source_key: str, channel_id: str) -> str | None:
         """Job gần nhất đã xử lý cùng video cho cùng kênh xuất bản (bỏ qua job đã hủy)."""

@@ -192,6 +192,10 @@ class Api:
     def resume(app, m, q, b):
         return app.service.resume(m["id"], bool(b.get("now")))
 
+    @route("POST", "/api/jobs/bulk")
+    def jobs_bulk(app, m, q, b):
+        return app.service.bulk(b.get("action", ""), b.get("job_ids") or [])
+
     @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/pause")
     def pause(app, m, q, b):
         return app.service.pause(m["id"])

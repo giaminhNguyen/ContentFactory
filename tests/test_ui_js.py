@@ -34,7 +34,7 @@ class FrontendTest(unittest.TestCase):
 
     def test_views_exported_for_every_route(self):
         router = (STATIC / "js" / "router.js").read_text(encoding="utf-8")
-        for name in ("run", "jobs", "job", "channels", "tts", "pools", "settings", "templates", "studio"):
+        for name in ("run", "jobs", "job", "batch", "channels", "tts", "pools", "settings", "templates", "studio"):
             self.assertIn(f'"{name}"', router)
             src = (STATIC / "js" / "views" / f"{name}.js").read_text(encoding="utf-8")
             self.assertIn("export async function mount", src, name)

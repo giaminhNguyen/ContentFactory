@@ -498,6 +498,117 @@ class RecoveryAndConcurrencyTest(BatchCase):
         self.assertEqual(bs.detail(d["id"])["counts"]["completed"], 6)
 
 
+class JobListTest(BatchCase):
+    """Danh sách job cấp cao = job đơn + Channel Run; job con chỉ nằm trong chi tiết batch."""
+
+    def test_children_are_not_top_level_rows_and_batch_counts_once(self):
+        orc, bs, _ = self.make()
+        svc = Service(orc)
+        single = svc.create_run({"input": {"value": "https://youtu.be/abcdefghijk"}, "channel": "default", "run": "story"})["job_id"]
+        d = bs.create(self.payload(selection={"mode": "newest", "n": 12}))
+        lst = svc.list_jobs()
+        self.assertEqual([(r["type"], r["id"]) for r in lst["jobs"]], [("batch", d["id"]), ("job", single)])
+        self.assertEqual((lst["total"], lst["counts"]["all"], lst["counts"]["running"]), (2, 2, 2))
+        row = lst["jobs"][0]
+        self.assertEqual((row["status"], row["batch_status"], row["counts"]["total"], row["next_action"], row["output_channel"]["id"]), ("queued", "QUEUED", 12, "pause", "default"))
+        self.assertEqual(row["source"]["channel_url"], f"https://www.youtube.com/channel/{CHAN}")
+        self.assertTrue(all(j["batch_id"] is None for j in lst["jobs"] if j["type"] == "job"))
+
+    def test_filters_use_the_same_groups_for_batches_and_jobs(self):
+        orc, bs, _ = self.make()
+        svc = Service(orc)
+        d = bs.create(self.payload(selection={"mode": "newest", "n": 3}))
+        bs.pause(d["id"])
+        self.assertEqual(svc.list_jobs("waiting")["jobs"][0]["status"], "paused")             # tạm dừng nằm nhóm "đang chờ"
+        self.assertEqual(svc.list_jobs("completed")["total"], 0)
+        bs.resume(d["id"])
+        j = orc.store.batch_job_index(d["id"])[0]["id"]
+        job = orc.store.get_job(j)
+        orc.store.set_params(j, {**job["params"], "fake": {"story": {"error_class": "POLICY", "fail_until_attempt": 99}}}, "t")
+        orc.run()
+        row = svc.list_jobs("attention")["jobs"][0]
+        self.assertEqual((row["id"], row["batch_status"], row["status"]), (d["id"], "COMPLETED_WITH_ERRORS", "attention"))
+        self.assertEqual(svc.list_jobs()["counts"]["attention"], 1)                          # huy hiệu "cần xử lý" tính batch một lần
+
+    def test_list_does_not_query_per_child_and_version_tracks_batch_changes(self):
+        orc, bs, _ = self.make()
+        svc = Service(orc)
+        bs.create(self.payload(selection={"mode": "newest", "n": 2}))
+        calls = {"n": 0}
+        orig = orc.store._q
+
+        def counted(*a, **k):
+            calls["n"] += 1
+            return orig(*a, **k)
+        orc.store._q = counted
+        svc.list_jobs()
+        small = calls["n"]
+        bs.create(self.payload(request_id="r-big", selection={"mode": "newest", "n": 20}))
+        calls["n"] = 0
+        svc.list_jobs()
+        two_batches = calls["n"]
+        self.assertLessEqual(two_batches, small + 3, "số truy vấn không được tăng theo số job con")
+        v1 = orc.store.jobs_version()
+        orc.store.set_batch_control("B000001", "PAUSED")
+        self.assertNotEqual(orc.store.jobs_version(), v1)
+        self.assertEqual(svc.list_jobs(since=orc.store.jobs_version())["changed"], False)
+
+    def test_pagination_mixes_rows_newest_first(self):
+        orc, bs, _ = self.make()
+        svc = Service(orc)
+        for i in range(3):
+            svc.create_run({"input": {"value": f"https://youtu.be/abcdefghij{i}"}, "channel": "default", "run": "story"})
+        bs.create(self.payload(selection={"mode": "newest", "n": 2}))
+        page = svc.list_jobs(limit=2, offset=0)
+        self.assertEqual((len(page["jobs"]), page["has_more"], page["total"]), (2, True, 4))
+        self.assertEqual(page["jobs"][0]["type"], "batch")
+        self.assertEqual(len(svc.list_jobs(limit=2, offset=2)["jobs"]), 2)
+
+    def test_child_detail_links_back_to_its_batch(self):
+        orc, bs, _ = self.make()
+        d = bs.create(self.payload(selection={"mode": "newest", "n": 1}))
+        det = Service(orc).job_detail(orc.store.batch_job_index(d["id"])[0]["id"])
+        self.assertEqual((det["batch"]["id"], det["batch"]["position"], det["links"]["source_video_url"]), (d["id"], 1, f"https://www.youtube.com/watch?v={vid(30)}"))
+        self.assertEqual(det["links"]["source_channel_url"], f"https://www.youtube.com/channel/{CHAN}")
+
+
+class BulkActionsTest(BatchCase):
+    def test_bulk_reports_every_job_and_validates_each(self):
+        orc, bs, _ = self.make()
+        svc = Service(orc)
+        d = bs.create(self.payload(selection={"mode": "newest", "n": 4}, run="subtitle"))
+        ids = [j["id"] for j in orc.store.batch_job_index(d["id"])]
+        orc.pause_job(ids[3], "USER")
+        orc.run()                                                                 # ids[0..2] xong; ids[3] vẫn tạm dừng
+        r = svc.bulk("pause", ids[:2] + [ids[3]] + ["999999"])
+        self.assertEqual(r["counts"], {"done": 0, "unchanged": 1, "skipped": 2, "error": 1})
+        by = {x["job_id"]: x for x in r["results"]}
+        self.assertEqual(by[ids[0]]["result"], "skipped")                       # đã hoàn tất: không có gì để tạm dừng, nói rõ lý do
+        self.assertIn("hoàn tất", by[ids[0]]["reason"])
+        self.assertEqual(by[ids[3]]["result"], "unchanged")
+        self.assertEqual(by["999999"]["result"], "error")
+        self.assertEqual(svc.bulk("resume", [ids[3]])["counts"]["done"], 1)
+        self.assertEqual(orc.store.get_job(ids[3])["control_state"], "RUNNING")
+        bad = svc.bulk("retry", [ids[0], ids[3]])
+        self.assertEqual((bad["counts"]["done"], bad["counts"]["skipped"]), (0, 2))     # chỉ job lỗi mới retry được
+        c = svc.bulk("cancel", [ids[3], ids[0]])
+        self.assertEqual((c["counts"]["done"], c["counts"]["skipped"]), (1, 1))
+        for bad_args in (("explode", ids), ("pause", []), ("pause", [str(i) for i in range(501)])):
+            with self.assertRaises(StageError):
+                svc.bulk(*bad_args)
+
+    def test_bulk_retry_only_touches_failed_jobs(self):
+        orc, bs, _ = self.make()
+        d = bs.create(self.payload(selection={"mode": "newest", "n": 2}, run="story"))
+        ids = [j["id"] for j in orc.store.batch_job_index(d["id"])]
+        job = orc.store.get_job(ids[0])
+        orc.store.set_params(ids[0], {**job["params"], "fake": {"story": {"error_class": "POLICY", "fail_until_attempt": 99}}}, "t")
+        orc.run()
+        r = Service(orc).bulk("retry", ids)
+        self.assertEqual({x["job_id"]: x["result"] for x in r["results"]}, {ids[0]: "done", ids[1]: "skipped"})
+        self.assertEqual(orc.store.get_job(ids[0])["state"], P.SOURCE_READY)
+
+
 class SourceLinksAndMigrationTest(BatchCase):
     def test_single_job_keeps_canonical_source_and_safe_links(self):
         orc, bs, _ = self.make()
@@ -524,7 +635,7 @@ class SourceLinksAndMigrationTest(BatchCase):
         orc, bs, _ = self.make()
         svc = Service(orc)
         d = svc.detect_input("https://www.youtube.com/@abc")
-        self.assertEqual((d["ok"], d["kind"], d["collection"], d["modes"]), (True, "youtube_channel", True, []))
+        self.assertEqual((d["ok"], d["kind"], d["collection"], [m["id"] for m in d["modes"]]), (True, "youtube_channel", True, ["full", "through_tts", "story", "subtitle"]))
         self.assertEqual(svc.detect_input("https://www.youtube.com/playlist?list=PLabcdefghijkl")["kind"], "youtube_playlist")
         self.assertEqual(svc.detect_input("https://www.youtube.com/watch?v=abcdefghijk")["kind"], "youtube_url")
         with self.assertRaises(StageError) as cm:

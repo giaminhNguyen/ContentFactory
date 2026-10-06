@@ -114,7 +114,8 @@ class Service:
                     info = None
                 if info and info["kind"] in ("channel", "playlist"):
                     o = self._finish(out, f"youtube_{info['kind']}", {"id": info["id"], "canonical_url": info["canonical_url"], "host": host})
-                    o["collection"], o["modes"] = True, []
+                    o["collection"] = True                                         # chọn kiểu chạy cho các job con như video đơn
+                    o["modes"] = [{"id": m, "label": RUN_MODES[m][0], "description": RUN_MODES[m][1]} for m in KIND_MODES["youtube_url"]]
                     return o
                 out["problem"] = "Link YouTube này không có mã video (v=...)."
                 return out
@@ -240,6 +241,9 @@ class Service:
         if not det["ok"]:
             if det.get("problem"):
                 res["problems"].append({"code": "INVALID_INPUT", "message": det["problem"]})
+            return res
+        if det.get("collection"):                                              # kênh/playlist: kế hoạch + kiểm tra thuộc về từng video (UI gọi lại với link video đầu tiên)
+            res["collection"] = True
             return res
         if not run and custom is None:
             return res
@@ -491,22 +495,33 @@ class Service:
         version = self.orc.store.jobs_version()
         if since and since == version:
             return {"changed": False, "version": version}
-        idx = self.orc.store.job_index()
+        store = self.orc.store
+        bs = self.orc.batch_service()
+        by_batch, item_st = store.batch_jobs_all(), store.batch_item_statuses()
+        top: list[tuple[float, str, str, str, dict | None]] = []                       # (created_at, loại, id, nhóm hiển thị, tóm tắt batch)
+        for r in store.job_index():
+            if not r.get("batch_id"):                                                    # job con của Channel Run KHÔNG là hàng cấp cao
+                top.append((r["created_at"], "job", r["id"], DG.ui_status(r), None))
+        for b in store.list_batches():
+            s = bs.summary(b, by_batch.get(b["id"], []), item_st.get(b["id"], []))
+            top.append((b["created_at"], "batch", b["id"], s["ui_status"], s))
+        top.sort(key=lambda t: t[0], reverse=True)
         groups = {k: 0 for k in FILTERS}
         keep = FILTERS.get(status)
-        ids = []
-        for r in idx:
-            g = DG.ui_status(r)
+        picked = []
+        for t in top:
             groups["all"] += 1
             for name, members in FILTERS.items():
-                if members and g in members:
+                if members and t[3] in members:
                     groups[name] += 1
-            if keep is None or g in keep:
-                ids.append(r["id"])
-        page = ids[offset: offset + limit]
-        jobs = [self.summary(j) for j in self.orc.store.jobs_by_ids(page)]
-        return {"changed": True, "version": version, "counts": groups, "jobs": jobs, "total": len(ids), "offset": offset, "limit": limit,
-                "has_more": offset + limit < len(ids)}
+            if keep is None or t[3] in keep:
+                picked.append(t)
+        page = picked[offset: offset + limit]
+        full = {j["id"]: j for j in store.jobs_by_ids([t[2] for t in page if t[1] == "job"])}
+        rows = [({**self.summary(full[t[2]]), "type": "job"} if t[1] == "job" else {**t[4], "status": t[4]["ui_status"], "batch_status": t[4]["status"]})   # hàng batch dùng nhóm hiển thị chung với job
+                for t in page if t[1] == "batch" or t[2] in full]
+        return {"changed": True, "version": version, "counts": groups, "jobs": rows, "total": len(picked), "offset": offset, "limit": limit,
+                "has_more": offset + limit < len(picked)}
 
     def job_detail(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)
@@ -520,6 +535,8 @@ class Service:
         pend = self.orc.store.pending_revision(job_id)
         status = s["status"]
         s["links"] = {**self._links(j, meta=True), "published_video_url": s["links"]["published_video_url"]}
+        b = self.orc.store.get_batch(j["batch_id"]) if j.get("batch_id") else None
+        s["batch"] = {"id": b["id"], "title": b.get("source_title") or b["source_url"], "position": (j["params"].get("batch") or {}).get("position")} if b else None
         s.update(control={"state": j["control_state"], "origin": j.get("pause_origin"), "pausing": s["pausing"]},
                  pipeline_revision=j.get("pipeline_revision", 1), requested_stages=cur["requested_stages"],
                  pending_revision=({"revision": pend["revision"], "apply_policy": pend["apply_policy"], "created_at": pend["created_at"],
@@ -687,6 +704,51 @@ class Service:
             overrides = PRO.resolve_prosody(j["params"]["prosody"])["overrides"]
         return {"available": True, "mode": plan["mode"], "editable": plan["mode"] == "prosody", "profile": plan.get("profile"), "qc": plan["qc"], "warnings": plan.get("warnings", []),
                 "overrides": overrides, "boundaries": rows[:2000], "truncated": len(rows) > 2000}
+
+    BULK_ACTIONS = ("pause", "resume", "retry", "cancel")
+
+    def bulk(self, action: str, job_ids: list[str]) -> dict:
+        """Hành động hàng loạt trên các job ĐÃ CHỌN. Backend kiểm TỪNG job (không tin giao diện); trả kết quả từng job + đếm để UI báo thành công một phần
+        rõ ràng. Không có job nào bị bỏ lặng lẽ: mỗi job là `done` | `unchanged` | `skipped` (kèm lý do) | `error`."""
+        if action not in self.BULK_ACTIONS:
+            raise _err("INVALID_BULK_ACTION", f"Hành động không hợp lệ: {action!r}; hợp lệ: {list(self.BULK_ACTIONS)}")
+        ids = list(dict.fromkeys(str(i) for i in (job_ids or [])))
+        if not ids:
+            raise _err("NOTHING_SELECTED", "Chưa chọn job nào.")
+        if len(ids) > 500:
+            raise _err("TOO_MANY_SELECTED", "Chọn tối đa 500 job mỗi lần.")
+        results = []
+        for jid in ids:
+            r = None
+            j = self.orc.store.get_job(jid)
+            if j is None:
+                results.append({"job_id": jid, "result": "error", "reason": "Không có job này."})
+                continue
+            try:
+                if action == "pause":
+                    r = self.orc.pause_job(jid)
+                    ok = r == "changed"
+                    why = {"complete": "Job đã hoàn tất.", "failed": "Job đang lỗi: chạy lại stage lỗi.", "cancelled": "Job đã bị hủy.", "unchanged": "Job đã tạm dừng từ trước."}.get(r)
+                elif action == "resume":
+                    r = self.orc.resume(jid)
+                    ok = r in ("unpaused", "resumed")
+                    why = {"cancelled": "Job đã bị hủy.", "not_held": "Job không bị tạm dừng/giữ.", "still_down": "Tài nguyên chưa sẵn sàng: job vẫn đang chờ."}.get(r)
+                elif action == "retry":
+                    if j["state"] != P.FAILED or j["control_state"] == "CANCELLED":
+                        ok, why = False, "Chỉ chạy lại được job đang lỗi."
+                    else:
+                        self.orc.retry(jid)
+                        ok, why = True, None
+                else:
+                    r = self.orc.cancel_job(jid)
+                    ok = r == "changed"
+                    why = {"complete": "Job đã hoàn tất.", "unchanged": "Job đã bị hủy từ trước."}.get(r)
+            except (StageError, ValueError) as e:
+                results.append({"job_id": jid, "result": "error", "reason": getattr(e, "message", str(e))})
+                continue
+            results.append({"job_id": jid, "result": "done" if ok else ("unchanged" if r == "unchanged" else "skipped"), **({"reason": why} if why else {})})
+        counts = {k: sum(1 for r in results if r["result"] == k) for k in ("done", "unchanged", "skipped", "error")}
+        return {"action": action, "counts": counts, "results": results}
 
     def _job_or_error(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)

@@ -9,6 +9,7 @@ import { relTime, duration } from "../format.js";
 import { openOutput, pauseJob, resumeJob, retryJob, setAutoResume } from "../actions.js";
 import { openPipelineDialog, openClone, confirmCancel } from "./_job_control.js";
 import { openProsodyDialog } from "./_prosody.js";
+import { externalLink } from "./_batch_ui.js";
 import * as motion from "../motion.js";
 
 const TONE = { waiting: "wait", attention: "attn", failed: "fail", paused: "wait" };
@@ -50,7 +51,7 @@ export async function mount(root, ctx) {
   // ---------- vẽ ----------
   function paint(d) {
     document.title = `${d.title} · ContentFactory`;
-    sig("head", [d.title, d.status, d.channel, d.created_at, JSON.stringify(d.actions), d.control?.pausing], () => paintHead(d));
+    sig("head", [d.title, d.status, d.channel, d.created_at, JSON.stringify(d.actions), d.control?.pausing, JSON.stringify(d.links), JSON.stringify(d.batch)], () => paintHead(d));
     sig("alert", [d.status, JSON.stringify(d.diagnosis.hold), d.diagnosis.human, d.diagnosis.resume.actions.join(), d.diagnosis.attempts, d.diagnosis.resume.text], () => paintAlert(d));
     sig("auto", [d.auto_resume, d.status], () => paintAuto(d));
     sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
@@ -64,7 +65,9 @@ export async function mount(root, ctx) {
     const live = h("span", { class: "sr-only", "aria-live": "polite" }, `Trạng thái: ${jobStatus(d.status).label}`);
     const bd = jobBadge(d.status);
     head.replaceChildren(h("div", { class: "page-head" },
-      h("div", { class: "grow" }, h("h1", { id: "page-title" }, d.title), h("p", { class: "muted" }, `Job #${d.id} · Kênh ${d.channel} · tạo ${relTime(d.created_at)}`)),
+      h("div", { class: "grow" }, h("h1", { id: "page-title" }, d.title), h("p", { class: "muted" }, `Job #${d.id} · Kênh ${d.channel} · tạo ${relTime(d.created_at)}`),
+        d.batch ? h("p", { class: "small" }, icon("tv", { size: 14 }), " Thuộc ", h("a", { href: `#/batches/${d.batch.id}` }, `Channel Run ${d.batch.title}`), d.batch.position ? ` (video #${d.batch.position})` : "") : null,
+        linkRow(d.links)),
       h("div", { class: "row" }, bd, live, controlBtn(d), d.output?.project_dir ? openBtn(d) : null)));
   }
   // Nút điều khiển chính theo ngữ cảnh: Tạm dừng (job đang sống) hoặc Tiếp tục (đã tạm dừng). Hủy nằm ở "Thao tác nâng cao" vì không hoàn tác được.
@@ -99,6 +102,11 @@ export async function mount(root, ctx) {
     if (a.cancel) tools.append(btn({ label: "Hủy job…", icon: "x", size: "sm", kind: "danger", onClick: () => confirmCancel(d, { after }) }));
     if (tools.childElementCount) box.append(disclosure({ label: "Thao tác nâng cao", content: h("div", { class: "stack", style: "padding-top: var(--s-2)" }, h("p", { class: "muted small" }, d.status === "completed" || d.status === "cancelled" || d.status === "failed" ? "Job đã kết thúc: kết quả cũ không bị thay đổi tại chỗ." : `Pipeline hiện tại: bản ${d.pipeline_revision}. Thay đổi chỉ áp dụng ở điểm an toàn và chỉ chạy lại phần bị ảnh hưởng.`), tools) }));
     if (box.childElementCount) controlHost.append(h("section", { class: "card stack" }, box));
+  }
+  // Link YouTube do backend trả (đã kiểm https + host); mở tab mới với noopener.
+  function linkRow(l) {
+    const ls = [["source_video_url", "Mở video nguồn"], ["source_channel_url", "Mở kênh nguồn"], ["published_video_url", "Mở video đã đăng"]].filter(([k]) => l?.[k]);
+    return ls.length ? h("div", { class: "row wrap" }, ...ls.map(([k, label]) => externalLink(l[k], label))) : null;
   }
   function openBtn(d) {
     const b = btn({ label: "Mở thư mục output", icon: "folder-open", kind: "primary" });

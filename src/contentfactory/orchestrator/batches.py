@@ -23,6 +23,12 @@ from . import diagnose as DG
 
 SCOPES = ("unstarted", "unfinished", "selected", "all_compatible")
 TERMINAL_UI = {"completed", "failed", "cancelled"}
+# trạng thái batch (suy ra) -> nhóm hiển thị chung với job (đếm bộ lọc, huy hiệu "cần xử lý")
+UI_OF_BATCH = {"QUEUED": "queued", "RUNNING": "running", "PAUSED": "paused", "NEEDS_ATTENTION": "attention", "COMPLETED": "completed",
+               "COMPLETED_WITH_ERRORS": "attention", "CANCELLED": "cancelled"}
+# nhóm của các tab lọc trong chi tiết Channel Run (một item chưa có job hiển thị là "pending")
+TAB_GROUPS = {"running": {"running"}, "queued": {"queued", "pending"}, "paused": {"paused", "waiting"}, "attention": {"attention", "failed"}, "failed": {"failed"},
+              "completed": {"completed"}, "cancelled": {"cancelled"}}
 STATUS_ORDER = ("running", "queued", "waiting", "paused", "attention", "failed", "completed", "cancelled")
 
 
@@ -202,14 +208,42 @@ class BatchService:
             tot += min(1.0, (pos or 0) / max(1, planned)) if self._ui(j) != "cancelled" else 0.0
         return round(tot / len(jobs), 3)
 
-    def summary(self, batch: dict) -> dict:
+    def summary(self, batch: dict, jobs: list[dict] | None = None, items: list[dict] | None = None) -> dict:
         bid = batch["id"]
-        jobs, items = self._jobs(bid), self.store.batch_items(bid)
+        jobs, items = (self._jobs(bid) if jobs is None else jobs), (self.store.batch_items(bid) if items is None else items)
         c = self.counts(bid, items, jobs)
         ch = self._channel_name(batch["output_channel_id"])
-        return {"id": bid, "kind": batch["kind"], "title": batch.get("source_title") or batch["source_url"], "status": self.derive_status(batch, c), "control": batch["control_state"],
+        derived = self.derive_status(batch, c)
+        return {"id": bid, "type": "batch", "kind": batch["kind"], "title": batch.get("source_title") or batch["source_url"], "status": derived, "ui_status": UI_OF_BATCH[derived],
+                "control": batch["control_state"], "fraction": self._fraction(jobs), "next_action": self._next_action(batch, c),
                 "source": self._source(batch), "output_channel": {"id": batch["output_channel_id"], "name": ch}, "counts": c, "progress": self._fraction(jobs),
-                "created_at": batch["created_at"], "updated_at": batch["updated_at"], "selection": batch["selection_spec"], "pipeline": batch["pipeline_spec"]}
+                "created_at": batch["created_at"], "updated_at": batch["updated_at"], "selection": batch["selection_spec"], "pipeline": batch["pipeline_spec"],
+                **self._pipeline_view(batch["pipeline_spec"])}
+
+    @staticmethod
+    def _pipeline_view(spec: dict) -> dict:
+        """Nhãn dễ đọc + các stage được yêu cầu của pipeline batch (để giao diện hiện/đổi mà không tự suy ra phụ thuộc)."""
+        from ..jobs.plan import spec_for_mode
+        from .service import RUN_MODES
+        custom = spec.get("pipeline")
+        if custom:
+            stages = list(custom.get("requested_stages") or [])
+            return {"pipeline_label": "Tùy chỉnh: " + ", ".join(DG.STAGE_LABEL.get(s, s) for s in stages), "requested_stages": stages}
+        label, _, run = RUN_MODES.get(spec.get("run") or "full", RUN_MODES["full"])
+        mode = run.get("mode") or "FULL"
+        return {"pipeline_label": label, "requested_stages": spec_for_mode(mode)["requested_stages"]}
+
+    @staticmethod
+    def _next_action(b: dict, c: dict) -> str | None:
+        """Hành động chính theo ngữ cảnh cho thẻ Channel Run: Tiếp tục khi đang tạm dừng, Chạy lại job lỗi khi chỉ còn lỗi, Tạm dừng khi đang chạy."""
+        live = c["running"] + c["queued"] + c["waiting"] + c["paused"] + c["attention"] + c["pending_creation"]
+        if b["control_state"] == CONTROL_PAUSED or (live and c["paused"] == live):
+            return "resume"
+        if not live and c["failed"]:
+            return "retry_failed"
+        if b["control_state"] == CONTROL_RUNNING and live and (c["running"] or c["queued"]):
+            return "pause"
+        return None
 
     def _channel_name(self, cid: str) -> str:
         try:
@@ -223,7 +257,8 @@ class BatchService:
                 "channel_id": b.get("source_channel_id"), "channel_url": b.get("source_channel_url"), "channel_title": b.get("source_channel_title")}
 
     def list(self) -> dict:
-        rows = [self.summary(b) for b in self.store.list_batches()]
+        by, items = self.store.batch_jobs_all(), self.store.batch_item_statuses()
+        rows = [self.summary(b, by.get(b["id"], []), items.get(b["id"], [])) for b in self.store.list_batches()]
         return {"batches": rows, "version": self.store.jobs_version()}
 
     def detail(self, bid: str, status: str | None = None, limit: int = 50, offset: int = 0) -> dict:
@@ -239,7 +274,7 @@ class BatchService:
         for it in items:
             j = by_job.get(it["job_id"]) if it["job_id"] else None
             st = self._ui(j) if j else ("pending" if it["status"] == "pending" else it["status"])
-            if status and status != "all" and not (st == status or (status == "attention" and st in ("attention", "failed")) or (status == "running" and st in ("running", "queued"))):
+            if status and status != "all" and st not in TAB_GROUPS.get(status, {status}):
                 continue
             rows.append((it, j, st))
         page = rows[offset:offset + limit]

@@ -306,3 +306,15 @@ dialog.dlg.wide { width: min(760px, calc(100vw - 2 * var(--s-4))); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
 }
+
+/* Channel Run (D-101): thẻ trong danh sách job, chi tiết batch, panel chọn video */
+.count-chips { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-1); }
+.count-chips .chip { display: inline-flex; gap: 4px; align-items: center; }
+.row.wrap { flex-wrap: wrap; }
+.job.batch { grid-template-columns: minmax(0, 1fr) minmax(140px, 220px) auto; }
+.batch-progress { display: flex; flex-direction: column; gap: var(--s-1); }
+.job.child { grid-template-columns: auto minmax(0, 1fr) minmax(100px, 180px) auto; }
+.chrun-list .job.child { grid-template-columns: auto minmax(0, 1fr); }
+.bulkbar { position: sticky; top: 0; z-index: 2; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); padding: var(--s-2) var(--s-3); align-items: center; }
+.listhead { border-bottom: 1px solid var(--border); align-items: center; }
+@media (max-width: 760px) { .job.child, .job.batch { grid-template-columns: minmax(0, 1fr); } }

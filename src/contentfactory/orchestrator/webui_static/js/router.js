@@ -9,6 +9,7 @@ const ROUTES = [
   [/^\/$/, "run", "Chạy"],
   [/^\/jobs$/, "jobs", "Job"],
   [/^\/jobs\/([\w-]+)$/, "job", "Chi tiết job"],
+  [/^\/batches\/(B\d+)$/, "batch", "Channel Run"],
   [/^\/channels(?:\/([\w-]+))?$/, "channels", "Kênh"],
   [/^\/tts$/, "tts", "Giọng đọc (TTS)"],
   [/^\/pools$/, "pools", "Video nguồn"],
@@ -34,7 +35,7 @@ export function navigate(to, { replace = false } = {}) {
 export function section(p = path()) {
   const m = ROUTES.find(([rx]) => rx.test(p));
   if (!m) return null;
-  return m[1] === "job" ? "jobs" : m[1] === "studio" ? "templates" : m[1];
+  return m[1] === "job" || m[1] === "batch" ? "jobs" : m[1] === "studio" ? "templates" : m[1];
 }
 
 export async function render() {

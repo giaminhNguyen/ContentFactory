@@ -55,6 +55,9 @@ def main() -> int:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000); w.writeframes(b"\x00\x00" * 8000 * 4)
     fx.update(srt=str(srt), story=str(story), wav=str(wav), youtube=URL)
     orc = Orchestrator(load_config(root))
+    from tests.test_batches import FakeYouTube, discovery as make_discovery, entry as yt_entry         # noqa: E402 - kênh YouTube giả (chỉ metadata) cho Channel Run
+    orc.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(30, live_status="is_upcoming"), yt_entry(29, live_status="was_live")] + [yt_entry(i) for i in range(28, 0, -1)]))
+    fx["channel_url"] = "@abc"
     opened = root / "opened.log"
     app = App(orc, run_loop=True, opener=lambda p: opened.open("a", encoding="utf-8").write(p + "\n"))
     orc.monitor.probes["network"] = type("Down", (), {"resource": "network", "check": lambda s: (False, "mất mạng (giả lập)")})()

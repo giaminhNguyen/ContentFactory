@@ -45,7 +45,7 @@ export function updateJobRow(li, j) {
   if (first) return;
 }
 
-function actionsFor(j, changed) {
+export function actionsFor(j, changed) {
   if (j.status === "completed" && j.output_dir) {
     const b = btn({ label: "Mở output", icon: "folder-open", size: "sm", kind: "primary" });
     b.addEventListener("click", () => openOutput(j.id, b));
