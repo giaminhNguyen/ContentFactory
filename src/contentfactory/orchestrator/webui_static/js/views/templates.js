@@ -67,14 +67,21 @@ export async function mount(root, ctx) {
     const def = r.default_for?.length ? h("span", { class: "small muted" }, "Mặc định cho: ", r.default_for.map((k) => KEY_LABEL[k] || k).join(", ")) : null;
     const open = btn({ label: r.scope === "builtin" ? "Xem" : r.draft ? "Sửa bản nháp" : "Mở", icon: "layout", kind: "primary", size: "sm", onClick: () => navigate(`/templates/${r.id}${r.draft ? `?v=${r.draft}` : ""}`) });
     const dup = btn({ label: "Nhân bản", icon: "copy", size: "sm", onClick: () => openDuplicate(r) });
-    const arch = r.scope === "user" && r.latest_published ? btn({ label: "Lưu trữ", icon: "folder", kind: "ghost", size: "sm", onClick: (e) => archive(r, e.currentTarget) }) : null;
+    // Hành động hợp lệ do BACKEND quyết định (r.actions); nút bị tắt luôn kèm lý do nhìn thấy được (không chỉ tooltip).
+    const act = r.actions || {};
+    const arch = act.archive ? btn({ label: "Lưu trữ", icon: "folder", kind: "ghost", size: "sm", onClick: (e) => archive(r, e.currentTarget) }) : null;
+    const newDraft = act.new_draft ? btn({ label: "Bản nháp mới", icon: "plus", kind: "ghost", size: "sm", onClick: (e) => newDraftFor(r, e.currentTarget) }) : null;
+    const restore = act.restore ? btn({ label: "Khôi phục", icon: "undo", size: "sm", title: "Tạo bản nháp mới từ version gần nhất đã lưu trữ; publish lại để chọn cho kênh.", onClick: (e) => restoreFor(r, e.currentTarget) }) : null;
+    const del = act.delete_draft ? btn({ label: "Xoá bản nháp", icon: "trash", kind: "danger", size: "sm", disabled: !act.delete_draft.enabled, onClick: (e) => deleteDraft(r, e.currentTarget) }) : null;
+    const blocked = act.delete_draft && !act.delete_draft.enabled ? alertBox({ tone: "wait", title: act.delete_draft.blocked,
+      actions: (r.used_by || []).map((u) => btn({ label: `Đổi template của kênh ${u.channel}`, size: "sm", href: `#/channels/${u.channel}` })) }) : null;
     return h("li", { class: "card tpl-card", dataset: { id: r.id } }, mini,
       h("div", { class: "tpl-body" },
         h("div", { class: "row spread" }, h("h2", { class: "tpl-name" }, r.name || r.id), h("span", { class: "chip" }, TYPE_LABEL[r.type] || r.type)),
         h("span", { class: "mono small muted" }, r.id),
         h("div", { class: "row" }, ...statusBadges(r)),
         r.description ? h("p", { class: "small muted" }, r.description) : null, used, def,
-        h("div", { class: "row tpl-actions" }, open, dup, arch)));
+        h("div", { class: "row tpl-actions" }, open, dup, restore, newDraft, arch, del), blocked));
   }
 
   // ---------- Template mới ----------
@@ -129,6 +136,32 @@ export async function mount(root, ctx) {
         toast({ title: "Đã nhân bản", tone: "done" });
         navigate(`/templates/${id}`);
       } }] });
+  }
+
+  async function deleteDraft(r, button) {
+    const d = r.actions.delete_draft;
+    const body = d.removes_template ? `“${r.name || r.id}” chỉ có bản nháp này nên template sẽ biến mất. Không thể khôi phục.` : `Xoá bản nháp v${d.version}. Các bản đã publish giữ nguyên. Không thể khôi phục.`;
+    if (!(await confirmDialog({ title: "Xoá bản nháp?", body, confirmLabel: "Xoá", danger: true }))) return;
+    await busy(button, async () => {
+      try {
+        await api.del(`/api/templates/${r.id}/${d.version}`);
+        toast({ title: "Đã xoá bản nháp", tone: "done" });
+      } catch (e) { toastError(e, "Chưa xoá được"); }
+      await load();                                                                  // luôn làm mới: danh sách phản ánh ngay trạng thái thật (kể cả khi đã xoá ở nơi khác)
+    });
+  }
+
+  async function newDraftFor(r, button) {
+    await busy(button, async () => {
+      try { await api.post(`/api/templates/${r.id}/new-draft`, {}); navigate(`/templates/${r.id}`); } catch (e) { toastError(e, "Chưa tạo được bản nháp"); }
+    });
+  }
+
+  async function restoreFor(r, button) {
+    await busy(button, async () => {
+      try { await api.post(`/api/templates/${r.id}/restore`, {}); toast({ title: "Đã tạo bản nháp từ bản lưu trữ", message: "Sửa nếu cần rồi Publish để chọn lại cho kênh.", tone: "done" }); navigate(`/templates/${r.id}`); }
+      catch (e) { toastError(e, "Chưa khôi phục được"); }
+    });
   }
 
   async function archive(r, button) {

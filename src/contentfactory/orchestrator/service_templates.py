@@ -26,8 +26,46 @@ class Raw:
         self.body, self.ctype = body, ctype
 
 
-def _err(code: str, msg: str, hint: str = "") -> StageError:
-    return StageError(ErrorClass.POLICY, code, msg, {"hint": hint}, resource="input")
+def _err(code: str, msg: str, hint: str = "", **detail) -> StageError:
+    return StageError(ErrorClass.POLICY, code, msg, {"hint": hint, **detail}, resource="input")
+
+
+# Lỗi vòng đời của ContentFlow (tiếng Anh) -> câu người dùng đọc được + việc nên làm (D-103). Mã giữ nguyên; bản gốc nằm ở detail["original"].
+VI_ERRORS = {
+    "TEMPLATE_READONLY": ("Template có sẵn chỉ đọc.", "Nhân bản template này để có bản sửa được."),
+    "TEMPLATE_IMMUTABLE": ("Bản đã publish hoặc đã lưu trữ không sửa hay xoá được.", "Tạo bản nháp mới để sửa, hoặc Lưu trữ để ẩn khỏi kênh."),
+    "TEMPLATE_IS_DRAFT": ("Đây là bản nháp nên không lưu trữ được.", "Dùng “Xoá bản nháp” nếu bạn không cần nó nữa."),
+    "TEMPLATE_NOT_FOUND": ("Không có template này.", "Có thể nó đã bị xoá: tải lại danh sách."),
+    "TEMPLATE_VERSION_NOT_FOUND": ("Không có version này của template.", "Tải lại để xem các version hiện có."),
+    "DRAFT_EXISTS": ("Template đã có một bản nháp đang mở.", "Lưu/publish hoặc xoá bản nháp đó trước."),
+    "TEMPLATE_ID_EXISTS": ("Mã template này đã tồn tại.", "Chọn mã khác."),
+    "NO_PUBLISHED_VERSION": ("Template chưa publish version nào.", "Publish một version trước khi chọn cho kênh."),
+    "ASSET_IN_USE": ("Asset đang được template dùng.", "Gỡ asset khỏi template rồi xoá."),
+    "LOCK_TIMEOUT": ("Template đang được một thao tác khác xử lý.", "Thử lại sau giây lát."),
+}
+CHANNEL_KEY_LABEL = {"thumbnail": "thumbnail", "youtube_video": "YouTube", "tiktok_video": "TikTok"}
+
+
+class _Vi:
+    """Bọc client template: lỗi vòng đời đã biết được dịch sang tiếng Việt (mã giữ nguyên để giao diện/test dựa vào)."""
+
+    def __init__(self, api) -> None:
+        self._api = api
+
+    def __getattr__(self, name: str):
+        fn = getattr(self._api, name)
+        if not callable(fn):
+            return fn
+
+        def call(*a, **kw):
+            try:
+                return fn(*a, **kw)
+            except StageError as e:
+                if e.error_class == ErrorClass.POLICY and e.code in VI_ERRORS:
+                    msg, hint = VI_ERRORS[e.code]
+                    raise StageError(ErrorClass.POLICY, e.code, msg, {**(e.detail or {}), "hint": hint, "original": e.message}, resource="input") from None
+                raise
+        return call
 
 
 class TemplateService:
@@ -41,7 +79,29 @@ class TemplateService:
     def api(self):
         if self.ops is None:
             raise _err("TEMPLATES_UNSUPPORTED", "Adapter render hiện tại không có hệ thống template.", "Dùng adapters.render = contentflow.")
-        return self.ops.api
+        return _Vi(self.ops.api)
+
+    @staticmethod
+    def _who(used: list[dict]) -> str:
+        return ", ".join(f"{u['channel']} ({CHANNEL_KEY_LABEL.get(u['key'], u['key'])})" for u in used)
+
+    def actions_for(self, r: dict) -> dict:
+        """Hành động hợp lệ cho một hàng danh sách — BACKEND quyết định (giao diện chỉ vẽ nút và lý do bị tắt).
+        builtin: chỉ Nhân bản · bản nháp của user: Sửa / Nhân bản / Xoá bản nháp · đã publish: Nhân bản / Bản nháp mới / Lưu trữ (KHÔNG xoá — job cũ cần tái lập) ·
+        đã lưu trữ: Nhân bản / Khôi phục (= bản nháp mới từ version gần nhất, rồi publish lại)."""
+        user, used = r["scope"] == "user", r.get("used_by") or []
+        pub, draft = r.get("latest_published"), r.get("draft")
+        archived = [v["version"] for v in r.get("versions", []) if v["status"] == "archived"]
+        removes = bool(draft) and len(r.get("versions", [])) == 1                    # xoá bản nháp này thì cả template biến mất
+        blocked = None
+        if draft and removes and used:
+            blocked = f"Không xoá được: kênh {self._who(used)} đang chọn template này. Đổi template của kênh trước, hoặc nhân bản thay vì xoá."
+        warn = f"Còn {len(used)} kênh đang chọn template này; job mới của các kênh đó sẽ báo lỗi cho tới khi chọn template khác." if used else None
+        return {"open": True, "duplicate": True,
+                "delete_draft": {"enabled": blocked is None, "version": draft, "removes_template": removes, "blocked": blocked} if user and draft else None,
+                "archive": {"enabled": True, "version": pub, "warning": warn} if user and pub else None,
+                "new_draft": {"enabled": True, "from_version": pub} if user and pub and not draft else None,
+                "restore": {"enabled": True, "from_version": archived[-1]} if user and not pub and not draft and archived else None}
 
     def _busy(self, key: str) -> threading.Lock:
         with self._lock:
@@ -51,6 +111,8 @@ class TemplateService:
     def overview(self, type: str | None = None, archived: bool = False) -> dict:
         self.api
         rows = self.ops.list(type, include_archived=archived)
+        for r in rows:
+            r["actions"] = self.actions_for(r)
         return {"templates": rows, "defaults": self.ops.options()["defaults"]}
 
     def options(self) -> dict:
@@ -89,14 +151,46 @@ class TemplateService:
             return self.api.publish(id=template_id, version=int(version))
 
     def archive(self, template_id: str, version=None) -> dict:
+        if self.api.get_template(id=template_id, version="latest", validate=False)["scope"] != "user":
+            raise _err("TEMPLATE_READONLY", "Template có sẵn chỉ đọc: không lưu trữ được.", "Nhân bản template này nếu bạn muốn một bản riêng.")
         used = self.ops.usage(template_id)
         res = self.api.archive(id=template_id, version=version)
         res["warning"] = (f"Còn {len(used)} kênh đang chọn template này; job mới của các kênh đó sẽ báo lỗi cho tới khi bạn chọn template khác." if used else None)
         return res
 
     def delete_draft(self, template_id: str, version: int) -> dict:
+        """Xoá MỘT bản nháp của user. An toàn khi bấm đúp (lần hai: đã xoá). Bản đã publish/lưu trữ không bao giờ bị xoá ở đây (job cũ cần tái lập): dùng Lưu trữ.
+        Nếu bản nháp là phiên bản duy nhất (xoá = template biến mất) mà kênh đang chọn nó thì từ chối và nói rõ kênh nào."""
+        version = int(version)
         with self._busy(template_id):
-            return self.api.delete_draft(id=template_id, version=int(version))
+            try:
+                got = self.api.get_template(id=template_id, version=version, validate=False)
+            except StageError as e:
+                if e.code in ("TEMPLATE_NOT_FOUND", "TEMPLATE_VERSION_NOT_FOUND"):
+                    return {"deleted": f"{template_id}@v{version}", "already_deleted": True}
+                raise
+            if got["scope"] != "user":
+                raise _err("TEMPLATE_READONLY", "Template có sẵn chỉ đọc: không xoá được.", "Nhân bản template này nếu bạn muốn một bản riêng.")
+            status = got["template"]["status"]
+            if status != "draft":
+                pub = status == "published"
+                raise _err("TEMPLATE_NOT_DRAFT", f"Chỉ xoá được bản nháp; v{version} đã {'publish' if pub else 'lưu trữ'}.",
+                           "Bản đã publish thì dùng “Lưu trữ” (job cũ vẫn dùng được version này)." if pub else
+                           "Bản đã lưu trữ được giữ để job cũ tái lập; Nhân bản hoặc Khôi phục nếu cần dùng lại.", suggest="archive" if pub else None)
+            if len(got["versions"]) == 1 and (used := self.ops.usage(template_id)):
+                raise _err("TEMPLATE_IN_USE", f"Không xoá được: kênh {self._who(used)} đang chọn template này.",
+                           "Mở trang Kênh → Template, chọn template khác (hoặc nhân bản template này), rồi xoá.", used_by=used)
+            return self.api.delete_draft(id=template_id, version=version)
+
+    def restore(self, template_id: str) -> dict:
+        """Khôi phục template đã lưu trữ = tạo bản nháp mới từ version gần nhất (sửa nếu cần, rồi publish lại để chọn cho kênh)."""
+        with self._busy(template_id):
+            got = self.api.get_template(id=template_id, version="latest", validate=False)
+            if got["scope"] != "user":
+                raise _err("TEMPLATE_READONLY", "Template có sẵn không cần khôi phục.", "Nhân bản nếu muốn bản riêng.")
+            if any(v["status"] == "published" for v in got["versions"]):
+                raise _err("NOT_ARCHIVED", "Template này đang ở trạng thái đã publish, không cần khôi phục.", "Dùng “Bản nháp mới” để sửa.")
+            return self.api.new_draft(id=template_id, from_version=None)
 
     # ------------------------------------------------------------------------------------------ xem trước / render thử
     def _artifact(self, res: dict) -> dict:

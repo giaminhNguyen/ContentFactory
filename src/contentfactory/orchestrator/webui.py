@@ -294,6 +294,10 @@ class Api:
     def template_duplicate(app, m, q, b):
         return app.templates.duplicate(m["id"], str(b.get("new_id") or ""), b.get("name"), b.get("version"))
 
+    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/restore")
+    def template_restore(app, m, q, b):
+        return app.templates.restore(m["id"])
+
     @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/new-draft")
     def template_new_draft(app, m, q, b):
         return app.templates.new_draft(m["id"], b.get("from_version"))

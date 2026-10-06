@@ -304,6 +304,37 @@ if (wanted("channelrun")) {
   await page.context().close();
 }
 
+// ===================================================================== 3f. Vòng đời template: xoá bản nháp ngay ở danh sách, template có sẵn chỉ nhân bản, lưu trữ/khôi phục
+if (wanted("tpllife")) {
+  console.log("\n# Vòng đời template");
+  const page = await newPage();
+  await go(page, "/templates");
+  await page.waitForSelector(".tpl-card");
+  const builtin = await page.locator(".tpl-card").count();
+  check("template có sẵn: không có nút Xoá/Lưu trữ", (await page.locator(".tpl-card button:has-text('Xoá bản nháp'), .tpl-card button:has-text('Lưu trữ')").count()) === 0);
+  await page.locator("button:has-text('Template mới')").first().click();
+  await page.waitForSelector("dialog[open]");
+  await page.locator("dialog[open] input[placeholder^='Ví dụ']").fill("Nháp thử xoá");
+  await page.locator("dialog[open] button:has-text('Tạo và mở Studio')").click();
+  await page.waitForURL(/#\/templates\/nhap_thu_xoa/);
+  await page.waitForSelector("button:has-text('Xoá bản nháp')");
+  check("Studio: nút Xoá bản nháp hiện ngay trên thanh công cụ (không giấu trong menu)", true);
+  await go(page, "/templates");
+  await page.waitForSelector(".tpl-card:has-text('Nháp thử xoá')");
+  const card = page.locator(".tpl-card:has-text('Nháp thử xoá')");
+  check("danh sách: bản nháp của user có Xoá bản nháp, không có Lưu trữ", (await card.locator("button:has-text('Xoá bản nháp')").count()) === 1 && (await card.locator("button:has-text('Lưu trữ')").count()) === 0);
+  await page.waitForTimeout(400);
+  await axe(page, "danh sách template có bản nháp");
+  await card.locator("button:has-text('Xoá bản nháp')").click();
+  await page.waitForSelector("dialog[open]:has-text('Xoá bản nháp?')");
+  check("xác nhận xoá nói rõ hậu quả (template biến mất, không khôi phục)", (await page.locator("dialog[open]").innerText()).includes("biến mất"));
+  await page.locator("dialog[open] button:has-text('Xoá')").last().click();
+  await page.waitForFunction((n) => document.querySelectorAll(".tpl-card").length === n, builtin, { timeout: 10000 });
+  check("xoá xong danh sách làm mới ngay, các template có sẵn còn nguyên", (await page.locator(".tpl-card:has-text('Nháp thử xoá')").count()) === 0);
+  check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+}
+
 // ===================================================================== 4. job bị giữ / lỗi / cần xử lý
 if (wanted("paused")) {
   console.log("\n# Trạng thái giữ / lỗi");

@@ -649,9 +649,9 @@ class HttpTest(UiCase):
         self.assertEqual(self.call("GET", res["variants"][0]["url"], token=False)[0], 401)
 
     def test_job_control_endpoints(self):
+        self.app.stop()                                                                   # dừng vòng lặp nền TRƯỚC khi tạo job: nếu không job có thể xong trước khi test kịp tạm dừng
         code, r, _ = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "story"})
         jid = r["job_id"]
-        self.app.stop()                                                                   # không để vòng lặp nền chạy mất job trong test
         self.assertEqual(self.call("POST", f"/api/jobs/{jid}/pause")[1]["result"], "changed")
         self.assertEqual(self.call("GET", f"/api/jobs/{jid}")[1]["status"], "paused")
         code, imp, _ = self.call("POST", f"/api/jobs/{jid}/pipeline-impact", {"pipeline": {"requested_stages": ["tts"]}})

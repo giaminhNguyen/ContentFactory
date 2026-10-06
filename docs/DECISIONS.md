@@ -548,6 +548,13 @@
 - **`POST /api/jobs/bulk {action: pause|resume|retry|cancel, job_ids}`** (Service.bulk): backend kiểm TỪNG job (không tin giao diện), mỗi job có kết quả `done|unchanged|skipped|error` kèm lý do; tối đa 500 job/lần. Dùng lại ở Phase 9 cho bulk toàn danh sách.
 - **Liên kết:** job con và job đơn hiển thị Mở video nguồn / Mở kênh nguồn / Mở video đã đăng (link do backend dựng + kiểm, `target=_blank rel=noopener noreferrer`, kèm chữ “mở tab mới” cho trình đọc màn hình).
 
+### D-103 ✅ Vòng đời template trong giao diện: xoá bản nháp, lưu trữ, khôi phục (Agent Plan, Phase 6)
+- **Nguyên nhân “template tạo ra không xoá được”:** backend (`delete-draft`) đã đúng; lỗi nằm ở giao diện — danh sách chỉ có “Lưu trữ” cho bản đã publish và không có hành động nào cho bản nháp; “Xoá bản nháp” bị giấu trong hộp “Thao tác khác” của Studio. Không thêm endpoint cạnh tranh.
+- **Backend sở hữu bảng hành động** (`TemplateService.actions_for`, trả trong `GET /api/templates` mỗi hàng): builtin chỉ Nhân bản; nháp user: Xoá bản nháp (tắt kèm lý do khi bị kênh tham chiếu); published: Lưu trữ / Bản nháp mới (cảnh báo kênh đang dùng); archived: Khôi phục (`POST /api/templates/{id}/restore` = `new_draft` từ version gần nhất). Published/archived **không bao giờ hard-delete** (reproducibility; ContentFlow không có API) — “Xoá” trên bản published được hướng sang Lưu trữ (`TEMPLATE_NOT_DRAFT` + gợi ý).
+- **`delete_draft` an toàn:** kiểm scope (builtin ⇒ `TEMPLATE_READONLY`), trạng thái, tham chiếu của kênh khi xoá sẽ làm template biến mất (`TEMPLATE_IN_USE`, nêu kênh + cách xử lý; không để lại cấu hình kênh trỏ vào template ma); bấm đúp/xoá ở nơi khác ⇒ `already_deleted` thay vì lỗi; `archive` cũng từ chối builtin. Job cũ không bị ảnh hưởng vì chúng giữ snapshot version đã publish.
+- **Lỗi dễ hiểu:** lỗi vòng đời tiếng Anh của ContentFlow được dịch ở `_Vi` (mã giữ nguyên, bản gốc ở `detail.original`) kèm “việc nên làm”.
+- **Giao diện:** nút theo `row.actions`, nút bị tắt luôn kèm lý do nhìn thấy được + nút “Đổi template của kênh X”; danh sách làm mới ngay sau mỗi thao tác (kể cả khi thất bại); Studio có “Xoá bản nháp” trên thanh công cụ. QA: `qa.mjs --only tpllife`.
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:

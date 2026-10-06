@@ -118,7 +118,7 @@ export async function mount(root, ctx) {
   document.addEventListener("keydown", onKey);
 
   // ================================================================================ thanh công cụ
-  let saveB, undoB, redoB, valB, prevB, testB, pubB, zoomSel, prevSw, moreB;
+  let saveB, undoB, redoB, valB, prevB, testB, pubB, zoomSel, prevSw, moreB, delB;
   function buildToolbar() {
     clear(toolbar);
     saveB = btn({ label: "Lưu nháp", icon: "save", kind: "primary", onClick: () => save() });
@@ -133,8 +133,9 @@ export async function mount(root, ctx) {
     prevSw = switchCtl({ label: "Hiện ảnh xem trước", checked: showPreview, onChange: (v) => { showPreview = v; renderStage(); } });
     prevSw.input.disabled = true;
     moreB = btn({ icon: "dot", label: "Thêm", onClick: () => openMore() });
+    delB = meta.scope === "user" && doc.status === "draft" ? btn({ icon: "trash", label: "Xoá bản nháp", kind: "danger", onClick: () => deleteDraft(), title: "Xoá bản nháp này (có xác nhận); bản đã publish không bị ảnh hưởng" }) : null;
     toolbar.append(h("div", { class: "row" }, saveB, undoB, redoB), h("span", { class: "st-sep", "aria-hidden": "true" }), h("div", { class: "row" }, valB, prevB, testB),
-      h("span", { class: "st-sep", "aria-hidden": "true" }), pubB, moreB, h("div", { class: "row st-zoom" }, h("label", { class: "small muted", for: "st-zoom" }, "Thu phóng"), zoomSel, prevSw));
+      h("span", { class: "st-sep", "aria-hidden": "true" }), pubB, delB, moreB, h("div", { class: "row st-zoom" }, h("label", { class: "small muted", for: "st-zoom" }, "Thu phóng"), zoomSel, prevSw));
     zoomSel.id = "st-zoom";
   }
   function updateToolbar() {
