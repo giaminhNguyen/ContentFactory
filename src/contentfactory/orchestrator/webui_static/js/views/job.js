@@ -6,10 +6,11 @@ import { btn, alertBox, badge, jobBadge, updateBadge, stageBadge, progress, upda
 import { createPoller } from "../poller.js";
 import { jobStatus, stageState, ACTION_LABEL, PART_STATE } from "../status.js";
 import { relTime, duration } from "../format.js";
-import { openOutput, resumeJob, retryJob, setAutoResume } from "../actions.js";
+import { openOutput, pauseJob, resumeJob, retryJob, setAutoResume } from "../actions.js";
+import { openPipelineDialog, openClone, confirmCancel } from "./_job_control.js";
 import * as motion from "../motion.js";
 
-const TONE = { waiting: "wait", attention: "attn", failed: "fail" };
+const TONE = { waiting: "wait", attention: "attn", failed: "fail", paused: "wait" };
 
 export async function mount(root, ctx) {
   const [id] = ctx.params;
@@ -19,11 +20,12 @@ export async function mount(root, ctx) {
   const head = h("div", null);
   const alertHost = h("div", { "aria-live": "polite" });
   const autoHost = h("div", null);
+  const controlHost = h("div", null);
   const stagesList = h("ul", { class: "stages", "aria-label": "Các bước của pipeline" });
   const stagesCard = h("section", { class: "card", "aria-labelledby": "pipe-h" }, h("div", { class: "card-title" }, h("h2", { id: "pipe-h" }, "Pipeline")), stagesList);
   const outputHost = h("div", null);
   const techHost = h("div", null);
-  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, stagesCard, outputHost, techHost));
+  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, controlHost, stagesCard, outputHost, techHost));
   head.append(skeleton(2));
 
   // ---------- tải ----------
@@ -39,7 +41,7 @@ export async function mount(root, ctx) {
     data = d;
     paint(d);
     if (logOpen && (d.status === "running" || d.status === "queued")) await loadLog(true, signal);
-    return d.status === "running" || d.status === "queued" ? "fast" : "idle";
+    return d.status === "running" || d.status === "queued" || d.control?.pausing || d.pending_revision ? "fast" : "idle";
   });
 
   const after = () => poller.poke();
@@ -47,9 +49,10 @@ export async function mount(root, ctx) {
   // ---------- vẽ ----------
   function paint(d) {
     document.title = `${d.title} · ContentFactory`;
-    sig("head", [d.title, d.status, d.channel, d.created_at], () => paintHead(d));
+    sig("head", [d.title, d.status, d.channel, d.created_at, JSON.stringify(d.actions), d.control?.pausing], () => paintHead(d));
     sig("alert", [d.status, JSON.stringify(d.diagnosis.hold), d.diagnosis.human, d.diagnosis.resume.actions.join(), d.diagnosis.attempts, d.diagnosis.resume.text], () => paintAlert(d));
     sig("auto", [d.auto_resume, d.status], () => paintAuto(d));
+    sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
     paintStages(d);
     sig("output", [JSON.stringify(d.output)], () => paintOutput(d));
     sig("tech", [d.decisions.length, d.attempts.length, d.mode.start, d.mode.target], () => paintTech(d));
@@ -61,7 +64,39 @@ export async function mount(root, ctx) {
     const bd = jobBadge(d.status);
     head.replaceChildren(h("div", { class: "page-head" },
       h("div", { class: "grow" }, h("h1", { id: "page-title" }, d.title), h("p", { class: "muted" }, `Job #${d.id} · Kênh ${d.channel} · tạo ${relTime(d.created_at)}`)),
-      h("div", { class: "row" }, bd, live, d.output?.project_dir ? openBtn(d) : null)));
+      h("div", { class: "row" }, bd, live, controlBtn(d), d.output?.project_dir ? openBtn(d) : null)));
+  }
+  // Nút điều khiển chính theo ngữ cảnh: Tạm dừng (job đang sống) hoặc Tiếp tục (đã tạm dừng). Hủy nằm ở "Thao tác nâng cao" vì không hoàn tác được.
+  function controlBtn(d) {
+    if (d.actions?.unpause) {
+      const b = btn({ label: ACTION_LABEL.resume, icon: "play", kind: "primary" });
+      b.addEventListener("click", () => resumeJob(d.id, b, { after }));
+      return b;
+    }
+    if (d.actions?.pause) {
+      const b = btn({ label: ACTION_LABEL.pause, icon: "pause", title: "Hoàn tất đơn vị đang chạy rồi dừng; kết quả đã xong được giữ nguyên" });
+      b.addEventListener("click", () => pauseJob(d.id, b, { after }));
+      return b;
+    }
+    return null;
+  }
+
+  function paintControl(d) {
+    clear(controlHost);
+    const a = d.actions || {};
+    const box = h("div", { class: "stack" });
+    if (d.pending_revision) {
+      const s = d.pending_revision.summary;
+      box.append(alertBox({ tone: "info", title: `Có thay đổi pipeline đang chờ áp dụng (bản ${d.pending_revision.revision})`,
+        body: h("div", null, d.pending_revision.apply_policy === "pause_and_apply" ? "Job sẽ dừng ở ranh giới an toàn kế tiếp rồi tự chạy tiếp." : "Sẽ áp dụng sau điểm an toàn, không làm hỏng đơn vị đang chạy.",
+          s.will_run.length ? h("div", { class: "small" }, "Sẽ chạy: " + s.will_run.join(", ")) : null) }));
+    }
+    const tools = h("div", { class: "row" });
+    if (a.update) tools.append(btn({ label: "Cập nhật pipeline…", icon: "layers", size: "sm", onClick: () => openPipelineDialog(d, { after }).catch((e) => toastError(e)) }));
+    if (a.clone) tools.append(btn({ label: "Chạy lại với thay đổi…", icon: "refresh", size: "sm", onClick: () => openClone(d, { navigate: ctx.navigate }).catch((e) => toastError(e)) }));
+    if (a.cancel) tools.append(btn({ label: "Hủy job…", icon: "x", size: "sm", kind: "danger", onClick: () => confirmCancel(d, { after }) }));
+    if (tools.childElementCount) box.append(disclosure({ label: "Thao tác nâng cao", content: h("div", { class: "stack", style: "padding-top: var(--s-2)" }, h("p", { class: "muted small" }, d.status === "completed" || d.status === "cancelled" || d.status === "failed" ? "Job đã kết thúc: kết quả cũ không bị thay đổi tại chỗ." : `Pipeline hiện tại: bản ${d.pipeline_revision}. Thay đổi chỉ áp dụng ở điểm an toàn và chỉ chạy lại phần bị ảnh hưởng.`), tools) }));
+    if (box.childElementCount) controlHost.append(h("section", { class: "card stack" }, box));
   }
   function openBtn(d) {
     const b = btn({ label: "Mở thư mục output", icon: "folder-open", kind: "primary" });
@@ -80,7 +115,7 @@ export async function mount(root, ctx) {
     }
     if (!TONE[d.status]) return;
     const actions = [];
-    for (const a of dg.resume.actions) actions.push(actionBtn(a, d));
+    if (d.status !== "paused") for (const a of dg.resume.actions) actions.push(actionBtn(a, d));      // tạm dừng: nút Tiếp tục đã ở đầu trang
     const body = h("div", { class: "stack" });
     if (dg.hold) body.append(h("div", null, dg.hold.why));
     else if (dg.human) body.append(h("div", null, dg.human));
@@ -104,7 +139,7 @@ export async function mount(root, ctx) {
 
   function paintAuto(d) {
     clear(autoHost);
-    if (d.status === "completed" || d.status === "failed") return;
+    if (d.status === "completed" || d.status === "failed" || d.status === "cancelled") return;
     const hid = "auto-hint";
     const sw = switchCtl({ label: "Auto Resume", checked: !!d.auto_resume, describedBy: hid, onChange: async (v) => { const ok = await setAutoResume(d.id, v, { after }); if (!ok) { sw.input.checked = !v; sw.querySelector(".state").textContent = !v ? "Bật" : "Tắt"; } } });
     autoHost.append(h("div", { class: "card row spread" }, sw, h("p", { class: "muted small", id: hid }, d.auto_resume ? "Khi gặp sự cố tạm thời (mạng, quota…), hệ thống tự chạy tiếp từ chỗ dừng." : "Khi gặp sự cố tạm thời, job chờ bạn bấm Tiếp tục.")));

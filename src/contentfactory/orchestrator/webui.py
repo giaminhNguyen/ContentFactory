@@ -163,6 +163,26 @@ class Api:
     def resume(app, m, q, b):
         return app.service.resume(m["id"], bool(b.get("now")))
 
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/pause")
+    def pause(app, m, q, b):
+        return app.service.pause(m["id"])
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/cancel")
+    def cancel(app, m, q, b):
+        return app.service.cancel(m["id"])
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/pipeline-impact")
+    def pipeline_impact(app, m, q, b):
+        return app.service.preview_update(m["id"], b)
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/pipeline-revisions")
+    def pipeline_revisions(app, m, q, b):
+        return app.service.request_update(m["id"], b)
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/clone")
+    def clone(app, m, q, b):
+        return app.service.clone(m["id"], b)
+
     @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/retry")
     def retry(app, m, q, b):
         return app.service.retry(m["id"])

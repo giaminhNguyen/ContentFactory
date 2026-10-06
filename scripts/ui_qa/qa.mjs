@@ -182,6 +182,41 @@ if (wanted("pipeline")) {
   await page.context().close();
 }
 
+// ===================================================================== 3c. tạm dừng / tiếp tục / cập nhật pipeline / hủy có xác nhận (job chạy chậm trong fixture)
+if (wanted("control")) {
+  console.log("\n# Điều khiển job");
+  const page = await newPage();
+  await go(page, "/jobs");
+  await page.locator("a:has-text('Truyện đang chạy chậm')").first().click();
+  await page.waitForSelector("#page-title:has-text('Truyện đang chạy chậm')");
+  await page.waitForSelector("button:has-text('Tạm dừng')");
+  check("job đang chạy: có nút Tạm dừng, không có nút Hủy ngoài menu nâng cao", await page.locator("button:has-text('Hủy job')").isHidden());
+  await page.locator("button:has-text('Tạm dừng')").first().click();
+  await page.waitForSelector("button.btn.primary:has-text('Tiếp tục')", { timeout: 15000 });
+  check("sau khi tạm dừng: nút chính đổi thành Tiếp tục", true);
+  await page.waitForFunction(() => document.querySelector(".badge[data-tone=wait]")?.textContent.includes("Tạm dừng"), null, { timeout: 15000 });
+  check("trạng thái hiển thị chữ 'Tạm dừng' (không chỉ màu)", true);
+  await page.locator("button:has-text('Thao tác nâng cao')").click();
+  await page.locator("button:has-text('Cập nhật pipeline')").click();
+  await page.waitForSelector("dialog[open] .pick-row");
+  check("dialog pipeline hiện đủ 8 bước với lý do", (await page.locator("dialog[open] .pick-row").count()) === 8 && (await page.locator("dialog[open] .pick-row .s-why:not(:empty)").count()) >= 1);
+  await axe(page, "dialog cập nhật pipeline");
+  await page.locator("dialog[open] #pd-publish").uncheck();
+  await page.waitForFunction(() => document.querySelector("dialog[open] #pd-publish")?.closest(".pick-row")?.dataset.role === "not_requested", null, { timeout: 10000 });
+  check("bỏ Đăng YouTube: impact báo bước đó bị bỏ khỏi kế hoạch", (await page.locator("dialog[open] .autolist").innerText()).includes("Bỏ khỏi kế hoạch"));
+  await page.locator("dialog[open] button:has-text('Hủy')").first().click();
+  await page.locator("button:has-text('Hủy job')").click();
+  await page.waitForSelector("dialog[open]:has-text('Hủy job này?')");
+  await page.locator("dialog[open] button:has-text('Không hủy')").click();
+  check("Hủy job cần xác nhận; 'Không hủy' giữ nguyên job", await page.locator("button.btn.primary:has-text('Tiếp tục')").isVisible());
+  await page.locator("button.btn.primary:has-text('Tiếp tục')").click();
+  await page.waitForFunction(() => !document.querySelector(".badge")?.textContent.includes("Tạm dừng"), null, { timeout: 20000 });
+  check("Tiếp tục: job rời trạng thái tạm dừng", true);
+  await noOverflow(page, "trang job có điều khiển");
+  check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+}
+
 // ===================================================================== 4. job bị giữ / lỗi / cần xử lý
 if (wanted("paused")) {
   console.log("\n# Trạng thái giữ / lỗi");

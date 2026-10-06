@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -65,6 +66,60 @@ class CancelToken:
     def check(self) -> None:
         if self._e.is_set():
             raise StageError(ErrorClass.CANCELLED, "CANCELLED", "stage cancelled")
+
+
+class JobCancelToken(CancelToken):
+    """Token của MỘT job (Agent Plan Phase 2): shutdown toàn cục (`parent`) + điều khiển của người dùng đọc từ DB qua `poll()`.
+
+    poll() trả None | "pause" | "abort". Hai mức khác nhau có chủ đích:
+      - "pause" (Tạm dừng an toàn): chỉ `check()` / `wait()` ném CANCELLED — handler gọi chúng ở RANH GIỚI đơn vị công việc có checkpoint
+        (segment TTS, part TikTok…), nên đơn vị đang chạy được hoàn tất rồi mới dừng. `is_set()` KHÔNG đổi: tiến trình con (ffmpeg, render) không bị giết giữa chừng.
+      - "abort" (Hủy job / shutdown): `is_set()` True ⇒ tiến trình con bị dừng ngay (adapter hỗ trợ), đơn vị đang chạy coi như chưa xong và chạy lại từ checkpoint trước.
+    poll bị giới hạn tần suất; `request_pause()` ép đọc lại ở lần kiểm tra kế tiếp (phản hồi tức thì khi người dùng bấm trong cùng tiến trình)."""
+
+    def __init__(self, parent: CancelToken | None = None, poll: Callable[[], str | None] | None = None, interval: float = 0.5) -> None:
+        super().__init__()
+        self._parent, self._poll, self._interval = parent, poll, interval
+        self._sig: str | None = None
+        self._last = 0.0
+
+    def _signal(self) -> str | None:
+        now = time.monotonic()
+        if self._poll and now - self._last >= self._interval:
+            self._last = now
+            try:
+                self._sig = self._poll()
+            except Exception:                                   # noqa: BLE001 - DB bận tạm thời: giữ tín hiệu cũ, lần sau đọc lại
+                pass
+        return self._sig
+
+    def request_pause(self) -> None:
+        self._last = 0.0
+
+    request_abort = request_pause
+
+    @property
+    def reason(self) -> str:
+        """shutdown | abort | pause | '' — vì sao token đang báo dừng."""
+        if self._parent is not None and self._parent.is_set():
+            return "shutdown"
+        return {"abort": "abort", "pause": "pause"}.get(self._signal() or "", "")
+
+    def is_set(self) -> bool:
+        return self._e.is_set() or (self._parent is not None and self._parent.is_set()) or self._signal() == "abort"
+
+    def check(self) -> None:
+        if self.is_set() or self._signal() == "pause":
+            raise StageError(ErrorClass.CANCELLED, "CANCELLED", "stage cancelled")
+
+    def wait(self, timeout: float) -> bool:
+        end = time.monotonic() + timeout
+        while True:
+            self.check()
+            rem = end - time.monotonic()
+            if rem <= 0:
+                return False
+            self._e.wait(min(rem, 0.25))
 
 
 class ArtifactRef(TypedDict):

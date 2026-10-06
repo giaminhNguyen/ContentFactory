@@ -5,7 +5,7 @@ import { jobStatus, ACTION_LABEL } from "../status.js";
 import { relTime, pct } from "../format.js";
 import { openOutput, resumeJob, retryJob } from "../actions.js";
 
-const TONE_OF_BAR = { running: "running", queued: "running", waiting: "wait", attention: "attn", failed: "fail", completed: "done" };
+const TONE_OF_BAR = { running: "running", queued: "running", waiting: "wait", attention: "attn", failed: "fail", completed: "done", paused: "wait", cancelled: "wait" };
 
 export function jobRow(j, onChanged) {
   const li = h("li", { class: "job" });
@@ -28,7 +28,7 @@ export function jobRow(j, onChanged) {
 
 export function updateJobRow(li, j) {
   const p = li._parts;
-  const sig = [j.status, j.stage, j.progress, j.fraction, j.next_action, j.output_dir, j.title, j.updated_at].join("|");
+  const sig = [j.status, j.stage, j.progress, j.fraction, j.next_action, j.output_dir, j.title, j.updated_at, j.pausing].join("|");
   if (li._sig === sig) { return; }
   li._sig = sig;
   const first = li._first === undefined;
@@ -38,7 +38,7 @@ export function updateJobRow(li, j) {
   p.meta.replaceChildren(h("span", null, `Kênh ${j.channel}`), h("span", { class: "mono" }, `#${j.id}`), h("span", null, relTime(j.updated_at)));
   const st = jobStatus(j.status);
   updateBadge(p.badge, st);
-  const text = j.status === "completed" ? "Xong tất cả các bước" : j.hold?.title && j.status !== "running" ? j.hold.title : (j.progress ? j.progress : j.stage_label || "Đang xếp hàng");
+  const text = j.status === "completed" ? "Xong tất cả các bước" : j.status === "cancelled" ? "Đã hủy" : j.status === "paused" ? (j.pausing ? "Đang tạm dừng…" : "Bạn đã tạm dừng") : j.hold?.title && j.status !== "running" ? j.hold.title : (j.progress ? j.progress : j.stage_label || "Đang xếp hàng");
   if (p.stageText.textContent !== text) p.stageText.textContent = text;
   updateProgress(p.bar, j.fraction, TONE_OF_BAR[j.status] || "running");
   p.action.replaceChildren(...actionsFor(j, li._onChanged));

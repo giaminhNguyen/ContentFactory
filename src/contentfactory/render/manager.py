@@ -182,6 +182,10 @@ class RenderManager:
             try:
                 info, n, errs = self._attempt(ctx, f"part {i}", prof["retry"], lambda: self.render.render_video(req, ctx))
             except StageError as e:
+                if e.error_class == ErrorClass.CANCELLED:          # Tạm dừng/Hủy/shutdown: part này chưa xong chứ không lỗi; resume dựng lại từ đầu part
+                    states[str(i)] = {"state": "pending", "attempts": 0}
+                    note()
+                    raise
                 if e.error_class != ErrorClass.TRANSIENT:
                     states[str(i)] = {"state": "failed", "attempts": int(e.detail.get("attempts", 1)), "error": e.code}
                     note()

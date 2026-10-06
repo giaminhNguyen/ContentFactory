@@ -413,6 +413,7 @@ Chuyển trạng thái hợp lệ (`pipeline.allowed`, kiểm tra ở mọi lầ
 |---|---|---|
 | Stage có `requires`/`produces`, `params_deps`/`config_deps`, `deliverable`, `checkpoint` | ✅ `jobs/pipeline.py` | `Stage.required_inputs/produced_outputs` là bí danh |
 | `start_stage`/`target_stage`, `MODES`, planner | ✅ `jobs/plan.py`, `Orchestrator.submit/plan/set_target` | lỗi spec bị từ chối lúc submit |
+| Tạm dừng an toàn / Hủy / cập nhật pipeline-config có revision, `clone_job` | ✅ `jobs/db.py` (v4), `contracts.JobCancelToken`, `orchestrator/revisions.py`, `Orchestrator.pause_job/cancel_job/request_update/apply_pending/clone_job` | D-99; điều khiển người dùng tách khỏi hold tài nguyên |
 | Pipeline spec v2 (`requested_stages`, đóng kín phụ thuộc, output theo nhánh) | ✅ `jobs/plan.py` (`plan_spec`), `jobs/db.py` (v3 `pipeline_spec`), D-98 | `submit(pipeline=...)`, `cf submit --stages`; `mode/start/target` cũ giữ nguyên |
 | Import artifact (`inputs`) và `from_job` | ✅ `Orchestrator._prepare_imports/_register_imports` | validator theo kind, copy vào `import/` |
 | Skip khi hợp lệ, `stage_key` theo khai báo | ✅ `orchestrator/stages.py` (`StageContract`) | cache liên job: chưa |

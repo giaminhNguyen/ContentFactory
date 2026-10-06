@@ -21,6 +21,16 @@ export async function resumeJob(jobId, button, { now = false, after } = {}) {
   });
 }
 
+export async function pauseJob(jobId, button, { after } = {}) {
+  return busy(button, async () => {
+    try {
+      const r = await api.post(`/api/jobs/${jobId}/pause`);
+      toast({ title: r.message, tone: r.result === "changed" ? "wait" : "info" });
+      after?.();
+    } catch (e) { toastError(e, "Không tạm dừng được"); }
+  });
+}
+
 export async function retryJob(jobId, button, { after } = {}) {
   return busy(button, async () => {
     try {

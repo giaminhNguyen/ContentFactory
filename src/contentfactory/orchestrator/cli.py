@@ -159,6 +159,22 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     rs.add_argument("--now", action="store_true")
     rt = add("retry", "retry job FAILED tại đúng stage lỗi")
     rt.add_argument("job_id")
+    pa = add("pause", "tạm dừng AN TOÀN job (hoàn tất đơn vị đang chạy rồi dừng); `resume <job>` để chạy tiếp")
+    pa.add_argument("job_id")
+    ca = add("cancel", "hủy job (không tự chạy lại; kết quả đã có được giữ)")
+    ca.add_argument("job_id")
+    up = add("update", "đổi pipeline/config của job đang sống: xem impact rồi áp dụng ở điểm an toàn")
+    up.add_argument("job_id")
+    up.add_argument("--stages", help="các stage muốn có kết quả, cách nhau dấu phẩy (thay pipeline hiện tại)")
+    up.add_argument("--patch", help="JSON gộp sâu vào config ngữ nghĩa của job")
+    up.add_argument("--params", help="JSON gộp vào params của job")
+    up.add_argument("--policy", choices=["after_current_safe_point", "pause_and_apply"], default="after_current_safe_point")
+    up.add_argument("--dry-run", action="store_true", help="chỉ in impact, không ghi gì")
+    cl = add("clone", "Chạy lại với thay đổi: tạo job MỚI từ kết quả còn hợp lệ của job cũ (job cũ không đổi)")
+    cl.add_argument("job_id")
+    cl.add_argument("--from-stage", help="chạy lại từ stage này trở đi (mặc định dùng lại mọi kết quả)")
+    cl.add_argument("--stages", help="pipeline mới (các stage muốn có kết quả)")
+    cl.add_argument("--params", help="JSON gộp vào params của job mới")
     dc = add("doctor", "kiểm tra máy sẵn sàng chưa")
     dc.add_argument("--json", action="store_true")
     add("channels", "danh sách kênh và preset")
@@ -380,6 +396,28 @@ def main(argv: list[str] | None = None) -> int:
                           "locked": [s for s, i in pl.states.items() if i["state"] == "locked"],
                           "provided": [s for s, i in pl.states.items() if i["state"] == "provided"], "errors": pl.errors}, ensure_ascii=False))
         return 1 if pl.errors else 0
+    elif a.cmd == "pause":
+        print(f"job {a.job_id}: {orc.pause_job(a.job_id)}")
+    elif a.cmd == "cancel":
+        print(f"job {a.job_id}: {orc.cancel_job(a.job_id)}")
+    elif a.cmd == "update":
+        kw = {"pipeline": {"requested_stages": [x.strip() for x in a.stages.split(",") if x.strip()]} if a.stages else None,
+              "config_patch": json.loads(a.patch) if a.patch else None, "params_patch": json.loads(a.params) if a.params else None}
+        imp = orc.preview_update(a.job_id, **kw)
+        for s in imp["stages"]:
+            print(f"  {s['id']:15} {s['action']:17} {s['reason']}")
+        if not imp["ok"]:
+            print("; ".join(imp["errors"]))
+            return 1
+        if imp["rewind_to"]:
+            print(f"  job sẽ lùi về stage {imp['rewind_to']}")
+        if not a.dry_run:
+            r = orc.request_update(a.job_id, **kw, apply_policy=a.policy, created_by="cli")
+            print(f"revision {r['revision']}: {r['status']}")
+    elif a.cmd == "clone":
+        new = orc.clone_job(a.job_id, rerun_from=a.from_stage, pipeline={"requested_stages": [x.strip() for x in a.stages.split(",") if x.strip()]} if a.stages else None,
+                            params_patch=json.loads(a.params) if a.params else None)
+        print(f"job {new}: tạo từ job {a.job_id}; chạy `cf run`")
     elif a.cmd == "resume":
         print(f"job {a.job_id}: {orc.resume(a.job_id, now=a.now)}")
     elif a.cmd == "rerender":

@@ -2,7 +2,7 @@
 
 `explain(orc, job_id)` trả về một dict đủ để biết: job nào, stage nào, artifact nào, provider nào, vì sao, đã thử mấy lần, checkpoint ở đâu,
 đường đi tiếp (tự động / bấm gì). Người dùng bình thường không cần đọc stack trace; log chi tiết chỉ là đường dẫn đính kèm.
-`ui_status(job)` gom trạng thái backend (state + hold) về 6 nhóm hiển thị: running, queued, waiting, attention, completed, failed.
+`ui_status(job)` gom trạng thái backend (state + hold + điều khiển của người dùng) về 8 nhóm hiển thị: running, queued, waiting, attention, paused, cancelled, completed, failed.
 """
 from __future__ import annotations
 
@@ -40,10 +40,15 @@ def stage_of(job: dict) -> str | None:
 
 def ui_status(job: dict) -> str:
     st = job["state"]
+    cs = job.get("control_state") or "RUNNING"
+    if cs == "CANCELLED":
+        return "cancelled"
     if st == P.FAILED:
         return "failed"
     if P.is_complete(st, job.get("target_idx")):
         return "completed"
+    if cs == "PAUSED":                                    # người dùng tự tạm dừng: khác hold tài nguyên (waiting/attention)
+        return "paused"
     hr = job.get("hold_reason")
     if hr:
         return "attention" if (job.get("needs_user") or hr in USER_ONLY_HOLDS) else "waiting"
@@ -90,6 +95,14 @@ def explain(orc, job_id: str) -> dict:
             resume = {"mode": "manual", "text": f"Auto Resume đang tắt: bấm Tiếp tục khi {cond}.", "actions": ["resume", "enable_auto_resume"], "cli": f"resume {job_id}"}
     else:
         resume = {"mode": "none", "text": "", "actions": [], "cli": None}
+    cs = j.get("control_state") or "RUNNING"
+    if cs == "PAUSED":                                    # ý định của người dùng thắng: Auto Resume không tự chạy tiếp
+        also = f" Job cũng đang chờ tài nguyên ({hold['title'].lower()}); sau khi tiếp tục vẫn chờ tới khi sẵn sàng." if hold else ""
+        resume = {"mode": "manual", "text": "Bạn đã tạm dừng job. Bấm Tiếp tục để chạy tiếp từ đúng chỗ dừng; kết quả đã xong được giữ nguyên." + also,
+                  "actions": ["resume"], "cli": f"resume {job_id}"}
+    elif cs == "CANCELLED":
+        resume = {"mode": "none", "text": "Job đã bị hủy và sẽ không tự chạy lại. Kết quả đã có vẫn được giữ; dùng “Chạy lại với thay đổi” để tạo job mới.", "actions": [],
+                  "cli": f"clone {job_id}"}
     arts = [{"kind": a["kind"], "stage": a["stage"], "path": a["path"]} for a in orc.store.artifacts(job_id)]
     needs = list(st.requires) if st else []
     human = ""
@@ -97,6 +110,11 @@ def explain(orc, job_id: str) -> dict:
         human = f"{STAGE_LABEL.get(stage, stage)} thất bại: {err.get('message') or err.get('code') or 'không rõ nguyên nhân'}"
     elif hold:
         human = f"{hold['title']}: {hold['why']}"
+    if cs == "PAUSED":
+        pausing = j["state"] in P.BY_RUNNING
+        human = "Đang tạm dừng: hoàn tất đơn vị đang chạy rồi dừng" if pausing else "Đã tạm dừng bởi bạn"
+    elif cs == "CANCELLED":
+        human = "Job đã bị hủy"
     return {
         "job_id": job_id, "state": j["state"], "status": status, "stage": stage, "stage_label": STAGE_LABEL.get(stage, stage),
         "reason_code": err.get("code") or (hold and hold["reason"]), "reason": err.get("message") or (hold and hold["detail"]),

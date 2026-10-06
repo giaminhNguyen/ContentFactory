@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS transitions(
   from_state TEXT, to_state TEXT NOT NULL, stage TEXT, attempt INTEGER, note TEXT);
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # v1 (Phase 2.9): điều khiển job (start/target stage), hold + auto resume, checkpoint, config snapshot, resource monitor
 V1_JOB_COLUMNS = (
     ("start_stage", "TEXT"), ("target_stage", "TEXT"), ("target_idx", "INTEGER"),
@@ -75,6 +75,20 @@ V2_SQL = (
 
 # v3 (Agent Plan Phase 1): pipeline spec theo job (JSON {version, requested_stages, options, run}); NULL = job kiểu cũ (start/target_stage)
 V3_JOB_COLUMNS = (("pipeline_spec", "TEXT"),)
+
+# v4 (Agent Plan Phase 2): điều khiển của người dùng TÁCH khỏi hold tài nguyên. control_state RUNNING|PAUSED|CANCELLED; pause_origin USER|BATCH.
+# Revision của pipeline/config: bảng pipeline_revisions (lịch sử + bản đang chờ áp dụng, tối đa một `pending` mỗi job). Mọi job bắt đầu ở revision 1.
+CONTROL_RUNNING, CONTROL_PAUSED, CONTROL_CANCELLED = "RUNNING", "PAUSED", "CANCELLED"
+V4_JOB_COLUMNS = (("control_state", "TEXT NOT NULL DEFAULT 'RUNNING'"), ("pause_origin", "TEXT"), ("pause_since", "REAL"),
+                  ("pipeline_revision", "INTEGER NOT NULL DEFAULT 1"))
+V4_SQL = (
+    "CREATE INDEX IF NOT EXISTS jobs_control ON jobs(control_state)",
+    """CREATE TABLE IF NOT EXISTS pipeline_revisions(
+         id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL,
+         created_at REAL NOT NULL, created_by TEXT NOT NULL, apply_policy TEXT NOT NULL, change TEXT NOT NULL,
+         impact TEXT, sig TEXT, applied_at REAL, UNIQUE(job_id, revision))""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS pipeline_revisions_pending ON pipeline_revisions(job_id) WHERE status='pending'",
+)
 
 _RUNNING_STATES = tuple(s.running_state for s in P.STAGES)
 
@@ -175,6 +189,13 @@ class JobStore:
                     for name, decl in V3_JOB_COLUMNS:
                         if name not in have:
                             c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
+                if ver < 4:
+                    have = {r["name"] for r in c.execute("PRAGMA table_info(jobs)")}
+                    for name, decl in V4_JOB_COLUMNS:
+                        if name not in have:
+                            c.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
+                    for sql in V4_SQL:
+                        c.execute(sql)
                 if ver < SCHEMA_VERSION:
                     c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
@@ -233,6 +254,7 @@ class JobStore:
         d["auto_resume"] = None if d.get("auto_resume") is None else bool(d["auto_resume"])
         d["needs_user"] = bool(d.get("needs_user"))
         d["pipeline"] = json.loads(d["pipeline_spec"]) if d.get("pipeline_spec") else None
+        d["control_state"] = d.get("control_state") or CONTROL_RUNNING
         return d
 
     def get_job(self, job_id: str) -> dict | None:
@@ -244,7 +266,7 @@ class JobStore:
 
     def job_index(self) -> list[dict]:
         """Bản nhẹ cho UI: chỉ các cột đủ để phân nhóm trạng thái (không parse params/snapshot), mới nhất trước."""
-        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, updated_at FROM jobs ORDER BY seq DESC")]
+        return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, updated_at FROM jobs ORDER BY seq DESC")]
 
     def jobs_by_ids(self, ids: list[str]) -> list[dict]:
         if not ids:
@@ -267,8 +289,9 @@ class JobStore:
 
     @staticmethod
     def is_active(job: dict) -> bool:
-        """Còn việc để chạy ngay: chưa terminal, chưa đạt target, chưa bị giữ."""
-        return not (job["state"] in P.TERMINAL or job.get("hold_reason") or P.is_complete(job["state"], job.get("target_idx")))
+        """Còn việc để chạy ngay: chưa terminal, chưa đạt target, chưa bị giữ (tài nguyên) và người dùng chưa tạm dừng/hủy."""
+        return not (job["state"] in P.TERMINAL or job.get("hold_reason") or P.is_complete(job["state"], job.get("target_idx"))
+                    or (job.get("control_state") or CONTROL_RUNNING) != CONTROL_RUNNING)
 
     def nonterminal_count(self) -> int:
         """Số job còn ACTIVE (chạy được ngay hoặc đang chạy). Job đã đạt target, FAILED hoặc đang bị giữ không tính."""
@@ -294,7 +317,7 @@ class JobStore:
             if n <= 0:
                 return []
             rows = c.execute(
-                "SELECT id, params, config_snapshot, target_idx, pipeline_spec FROM jobs WHERE state=? AND hold_reason IS NULL "
+                "SELECT id, params, config_snapshot, target_idx, pipeline_spec FROM jobs WHERE state=? AND hold_reason IS NULL AND control_state='RUNNING' "
                 "AND (not_before IS NULL OR not_before<=?) AND (target_idx IS NULL OR target_idx>=?) "
                 "ORDER BY priority DESC, seq LIMIT ?", (stage.queue_state, now, P.INDEX[stage.name], n)).fetchall()
             for r in rows:
@@ -369,6 +392,8 @@ class JobStore:
         with self._tx() as c:
             if not self._owned(c, claim, owner):
                 return False
+            if artifacts:                                           # stage chạy lại (pipeline revision lùi job về): kết quả mới THAY kết quả cũ của chính stage này
+                c.execute("DELETE FROM artifacts WHERE job_id=? AND stage=?", (claim.job_id, claim.stage.name))
             for a in artifacts:
                 c.execute("INSERT INTO artifacts(job_id,stage,run_id,kind,path,sha256,bytes,meta,created_at) "
                           "VALUES(?,?,?,?,?,?,?,?,?)",
@@ -450,6 +475,147 @@ class JobStore:
                        hold_detail=None, hold_since=None, resume_after=None, needs_user=0,
                        auto_resumes_without_progress=0, hold_sig=None)
         return stage.name
+
+    # -- điều khiển của người dùng: pause / resume / cancel (khác hold tài nguyên) ----------------------
+    def job_signal(self, job_id: str) -> str | None:
+        """Tín hiệu cho job đang chạy (JobCancelToken.poll): 'abort' khi bị hủy, 'pause' khi người dùng tạm dừng hoặc có revision
+        `pause_and_apply` đang chờ, None khi cứ chạy tiếp."""
+        rows = self._q("SELECT control_state, EXISTS(SELECT 1 FROM pipeline_revisions r WHERE r.job_id=jobs.id AND r.status='pending' "
+                       "AND r.apply_policy='pause_and_apply') AS rev FROM jobs WHERE id=?", (job_id,))
+        if not rows:
+            return "abort"
+        if rows[0]["control_state"] == CONTROL_CANCELLED:
+            return "abort"
+        return "pause" if rows[0]["control_state"] == CONTROL_PAUSED or rows[0]["rev"] else None
+
+    def set_control(self, job_id: str, want: str, origin: str | None = None, now: float | None = None) -> str:
+        """Đổi control_state (CAS trong một transaction, idempotent). Trả:
+        'changed' | 'unchanged' | 'complete' (job đã xong: không đổi lịch sử) | 'failed' (không có gì để tạm dừng) |
+        'cancelled' (đã hủy: không quay lại) | 'not_owner' (resume bởi BATCH khi người dùng tự pause).
+        Pause của USER thắng pause của BATCH: batch resume không tự chạy tiếp job người dùng đã dừng."""
+        if want not in (CONTROL_RUNNING, CONTROL_PAUSED, CONTROL_CANCELLED):
+            raise ValueError(f"control_state không hợp lệ: {want!r}")
+        now = now or time.time()
+        with self._tx() as c:
+            j = c.execute("SELECT state, target_idx, control_state, pause_origin FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if j is None:
+                raise ValueError(f"không có job {job_id}")
+            cur = j["control_state"] or CONTROL_RUNNING
+            if cur == CONTROL_CANCELLED:
+                return "unchanged" if want == CONTROL_CANCELLED else "cancelled"
+            if want != CONTROL_RUNNING and P.is_complete(j["state"], j["target_idx"]):
+                return "complete"
+            if want == CONTROL_PAUSED:
+                if j["state"] == P.FAILED:
+                    return "failed"
+                if cur == CONTROL_PAUSED:
+                    if origin == "USER" and j["pause_origin"] != "USER":
+                        c.execute("UPDATE jobs SET pause_origin='USER', updated_at=? WHERE id=?", (now, job_id))
+                        self._note(c, job_id, j["state"], now, "pause owner -> USER")
+                        return "changed"
+                    return "unchanged"
+                c.execute("UPDATE jobs SET control_state='PAUSED', pause_origin=?, pause_since=?, updated_at=? WHERE id=?",
+                          (origin or "USER", now, now, job_id))
+                self._note(c, job_id, j["state"], now, f"paused ({origin or 'USER'})")
+                return "changed"
+            if want == CONTROL_RUNNING:
+                if cur == CONTROL_RUNNING:
+                    return "unchanged"
+                if origin == "BATCH" and j["pause_origin"] == "USER":
+                    return "not_owner"
+                c.execute("UPDATE jobs SET control_state='RUNNING', pause_origin=NULL, pause_since=NULL, updated_at=? WHERE id=?", (now, job_id))
+                self._note(c, job_id, j["state"], now, "unpaused")
+                return "changed"
+            c.execute("UPDATE jobs SET control_state='CANCELLED', updated_at=? WHERE id=?", (now, job_id))        # CANCELLED
+            c.execute("UPDATE pipeline_revisions SET status='cancelled' WHERE job_id=? AND status='pending'", (job_id,))
+            self._note(c, job_id, j["state"], now, "cancelled by user")
+            return "changed"
+
+    # -- pipeline revision ----------------------------------------------------------------------
+    def revisions(self, job_id: str) -> list[dict]:
+        out = []
+        for r in self._q("SELECT * FROM pipeline_revisions WHERE job_id=? ORDER BY revision", (job_id,)):
+            d = dict(r)
+            d["change"] = json.loads(d["change"])
+            d["impact"] = json.loads(d["impact"]) if d["impact"] else None
+            out.append(d)
+        return out
+
+    def pending_revision(self, job_id: str) -> dict | None:
+        return next((r for r in self.revisions(job_id) if r["status"] == "pending"), None)
+
+    def jobs_with_pending_revision(self) -> list[str]:
+        return [r["job_id"] for r in self._q("SELECT job_id FROM pipeline_revisions WHERE status='pending' ORDER BY id")]
+
+    def create_revision(self, job_id: str, change: dict, impact: dict, apply_policy: str, created_by: str = "user",
+                        now: float | None = None) -> tuple[dict, bool]:
+        """Ghi revision `pending` (thay revision pending cũ, đánh dấu superseded). Cùng nội dung với bản đang pending ⇒ trả lại bản đó (idempotent
+        khi bấm đúp). Trả (revision, created)."""
+        now = now or time.time()
+        sig = _sig({"change": change, "policy": apply_policy})
+        with self._tx() as c:
+            cur = c.execute("SELECT * FROM pipeline_revisions WHERE job_id=? AND status='pending'", (job_id,)).fetchone()
+            if cur is not None and cur["sig"] == sig:
+                return self._rev(cur), False
+            if cur is not None:
+                c.execute("UPDATE pipeline_revisions SET status='superseded' WHERE id=?", (cur["id"],))
+            number = max(c.execute("SELECT pipeline_revision FROM jobs WHERE id=?", (job_id,)).fetchone()[0],
+                         c.execute("SELECT COALESCE(MAX(revision), 0) FROM pipeline_revisions WHERE job_id=?", (job_id,)).fetchone()[0]) + 1
+            rid = c.execute("INSERT INTO pipeline_revisions(job_id,revision,status,created_at,created_by,apply_policy,change,impact,sig) "
+                            "VALUES(?,?,?,?,?,?,?,?,?)", (job_id, number, "pending", now, created_by, apply_policy,
+                                                         json.dumps(change, ensure_ascii=False), json.dumps(impact, ensure_ascii=False), sig)).lastrowid
+            state = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()["state"]
+            self._note(c, job_id, state, now, f"pipeline revision {number} pending ({apply_policy})")
+            return self._rev(c.execute("SELECT * FROM pipeline_revisions WHERE id=?", (rid,)).fetchone()), True
+
+    @staticmethod
+    def _rev(r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["change"] = json.loads(d["change"])
+        d["impact"] = json.loads(d["impact"]) if d["impact"] else None
+        return d
+
+    def reject_revision(self, rev_id: int, impact: dict | None = None) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE pipeline_revisions SET status='rejected', impact=COALESCE(?, impact) WHERE id=? AND status='pending'",
+                      (json.dumps(impact, ensure_ascii=False) if impact else None, rev_id))
+
+    def cancel_revision(self, job_id: str) -> bool:
+        with self._tx() as c:
+            return c.execute("UPDATE pipeline_revisions SET status='cancelled' WHERE job_id=? AND status='pending'", (job_id,)).rowcount > 0
+
+    def apply_revision(self, rev: dict, *, expect_state: str, pipeline: dict, start_stage: str | None, target_stage: str | None,
+                       new_state: str, snapshot: dict | None = None, config_hash: str | None = None, params: dict | None = None,
+                       impact: dict | None = None, now: float | None = None) -> str:
+        """Áp revision NGUYÊN TỬ tại điểm an toàn: job phải đang đúng `expect_state`, không ai giữ lease. Cập nhật pipeline_spec/start/target/state
+        (rewind nếu cần), snapshot/params (nếu có) và đánh dấu revision applied trong cùng transaction. Trả 'applied' | 'not_safe' | 'gone'
+        ('gone' = revision không còn pending: áp hai lần chỉ có một lần có hiệu lực)."""
+        now = now or time.time()
+        with self._tx() as c:
+            row = c.execute("SELECT status FROM pipeline_revisions WHERE id=?", (rev["id"],)).fetchone()
+            if row is None or row["status"] != "pending":
+                return "gone"
+            j = c.execute("SELECT state, lease_owner, config_revision FROM jobs WHERE id=?", (rev["job_id"],)).fetchone()
+            if j is None or j["state"] != expect_state or j["lease_owner"] is not None:
+                return "not_safe"
+            cols: dict[str, object] = {"pipeline_spec": json.dumps(pipeline, ensure_ascii=False), "pipeline_revision": rev["revision"],
+                                       "start_stage": start_stage, "target_stage": target_stage,
+                                       "target_idx": P.INDEX[target_stage] if target_stage else None, "updated_at": now}
+            if snapshot is not None:
+                cols |= {"config_snapshot": json.dumps(snapshot, ensure_ascii=False), "config_hash": config_hash, "config_revision": j["config_revision"] + 1}
+            if params is not None:
+                cols["params"] = json.dumps(params, ensure_ascii=False)
+            if new_state != expect_state:                                           # rewind: về hàng đợi của stage cần chạy lại (chỉ ở điểm an toàn, không có lease)
+                cols |= {"state": new_state, "retry_used": 0, "not_before": None, "failed_stage": None, "last_error": None,
+                         "hold_reason": None, "hold_detail": None, "hold_since": None, "resume_after": None, "needs_user": 0,
+                         "auto_resumes_without_progress": 0, "hold_sig": None}
+            c.execute("UPDATE jobs SET " + ", ".join(f"{k}=?" for k in cols) + " WHERE id=?", (*cols.values(), rev["job_id"]))
+            c.execute("UPDATE pipeline_revisions SET status='applied', applied_at=?, impact=COALESCE(?, impact) WHERE id=?",
+                      (now, json.dumps(impact, ensure_ascii=False) if impact else None, rev["id"]))
+            c.execute("INSERT INTO transitions(ts,job_id,from_state,to_state,stage,note) VALUES(?,?,?,?,?,?)",
+                      (now, rev["job_id"], expect_state, new_state, None, f"pipeline revision {rev['revision']} applied"
+                       + (f" (rewind -> {new_state})" if new_state != expect_state else "")))
+        return "applied"
 
     # -- hold / resume ----------------------------------------------------------------------
     def release_hold(self, job_id: str, now: float | None = None, *, auto: bool = False,

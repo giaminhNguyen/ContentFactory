@@ -26,12 +26,15 @@ from . import auto as AU
 from . import channels as CH
 from . import diagnose as DG
 from . import ops
+from . import revisions as REV
 from . import templates as TPL
 
 AUDIO_EXT = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
 SUBTITLE_EXT = {".srt", ".vtt", ".json"}
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"}
-FILTERS = {"all": None, "running": {"running", "queued"}, "waiting": {"waiting"}, "attention": {"attention", "failed"}, "completed": {"completed"}}
+FILTERS = {"all": None, "running": {"running", "queued"}, "waiting": {"waiting", "paused"}, "attention": {"attention", "failed"}, "completed": {"completed"}}
+ACTION_VI = {"KEEP": "Giữ nguyên", "REUSE": "Dùng lại", "RUN": "Sẽ chạy", "RERUN": "Chạy lại", "REMOVE_FROM_PLAN": "Bỏ khỏi kế hoạch",
+             "CURRENT_CONTINUE": "Đang chạy, làm nốt", "BLOCKED": "Không áp dụng được", "OFF": "Không chạy"}
 DEDUPE_WINDOW_S = 600
 
 # id -> (nhãn, mô tả, đặc tả với orchestrator.submit)
@@ -407,10 +410,11 @@ class Service:
         cp = (j.get("checkpoint") or {}).get(stage) if stage else None
         frac = self._fraction(j, cp)
         row = {"id": j["id"], "title": self.title_of(j), "channel": j["params"].get("channel") or "default", "status": st, "state": j["state"],
+               "control": j.get("control_state") or "RUNNING", "pausing": (j.get("control_state") == "PAUSED" and j["state"] in P.BY_RUNNING),
                "stage": stage, "stage_label": DG.STAGE_LABEL.get(stage, "Hoàn tất" if st == "completed" else ""), "progress": j.get("progress"),
                "fraction": frac, "created_at": j["created_at"], "updated_at": j["updated_at"], "auto_resume": j.get("auto_resume"),
                "input_kind": (j["params"].get("input") or {}).get("kind") or "import", "next_action": None, "hold": None}
-        if st in ("waiting", "attention", "failed"):
+        if st in ("waiting", "attention", "failed", "paused"):
             d = DG.explain(self.orc, j["id"])
             row["hold"] = {"title": (d["hold"] or {}).get("title") or d["stage_label"], "reason": d.get("reason_code")}
             row["next_action"] = d["resume"]["actions"][0] if d["resume"]["actions"] else None
@@ -463,6 +467,17 @@ class Service:
         runs = self.orc.store.stage_runs(job_id)
         d = DG.explain(self.orc, job_id)
         s = self.summary(j)
+        imported = {a["kind"] for a in self.orc.store.artifacts(job_id) if a["stage"] == "import"}
+        cur = REV.current_pipeline(j, imported)
+        pend = self.orc.store.pending_revision(job_id)
+        status = s["status"]
+        s.update(control={"state": j["control_state"], "origin": j.get("pause_origin"), "pausing": s["pausing"]},
+                 pipeline_revision=j.get("pipeline_revision", 1), requested_stages=cur["requested_stages"],
+                 pending_revision=({"revision": pend["revision"], "apply_policy": pend["apply_policy"], "created_at": pend["created_at"],
+                                    "summary": self._impact_summary(pend["impact"] or {})} if pend else None),
+                 actions={"pause": j["control_state"] == "RUNNING" and status not in ("completed", "failed", "cancelled"), "unpause": j["control_state"] == "PAUSED",
+                          "cancel": j["control_state"] != "CANCELLED" and status != "completed", "update": status not in ("completed", "cancelled"),
+                          "clone": status in ("completed", "cancelled", "failed")})
         s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=self._pipeline(j, runs), decisions=j["params"].get("auto", []),
                  mode={"start": j.get("start_stage"), "target": j.get("target_stage")}, params_public=self._public_params(j["params"]),
                  output=(lambda o: o if o.get("project_dir") else None)(self.output_info(job_id)),
@@ -595,8 +610,65 @@ class Service:
     def resume(self, job_id: str, now: bool = False) -> dict:
         res = self.orc.resume(job_id, now=now)
         msg = {"resumed": "Đã tiếp tục job.", "still_down": "Nguyên nhân vẫn còn (tài nguyên chưa sẵn sàng); job được giữ nguyên.",
-               "not_held": "Job này không bị giữ."}[res]
+               "not_held": "Job này không bị giữ.", "unpaused": "Đã tiếp tục job từ chỗ dừng.", "cancelled": "Job đã bị hủy nên không tiếp tục được; dùng “Chạy lại với thay đổi”."}[res]
+        if res == "unpaused" and self.orc.store.get_job(job_id)["hold_reason"]:
+            msg += " Job vẫn đang chờ tài nguyên nên sẽ chạy khi tài nguyên sẵn sàng."
         return {"result": res, "message": msg}
+
+    def _job_or_error(self, job_id: str) -> dict:
+        j = self.orc.store.get_job(job_id)
+        if j is None:
+            raise _err("JOB_NOT_FOUND", f"Không có job {job_id}.", "Quay lại danh sách job.")
+        return j
+
+    def pause(self, job_id: str) -> dict:
+        """Tạm dừng AN TOÀN: hoàn tất đơn vị đang chạy (segment/part) rồi dừng; không đổi kết quả đã có."""
+        self._job_or_error(job_id)
+        res = self.orc.pause_job(job_id)
+        msg = {"changed": "Đã tạm dừng. Đơn vị đang chạy sẽ hoàn tất rồi job dừng lại; kết quả đã xong được giữ nguyên.", "unchanged": "Job đã ở trạng thái tạm dừng.",
+               "complete": "Job đã hoàn tất, không có gì để tạm dừng.", "failed": "Job đang lỗi: dùng “Chạy lại stage lỗi”.", "cancelled": "Job đã bị hủy."}[res]
+        return {"result": res, "message": msg}
+
+    def cancel(self, job_id: str) -> dict:
+        self._job_or_error(job_id)
+        res = self.orc.cancel_job(job_id)
+        msg = {"changed": "Đã hủy job. Kết quả đã có được giữ lại; job sẽ không tự chạy lại.", "unchanged": "Job đã bị hủy từ trước.",
+               "complete": "Job đã hoàn tất nên không hủy được."}[res]
+        return {"result": res, "message": msg}
+
+    # ---- cập nhật pipeline/config + chạy lại với thay đổi
+    @staticmethod
+    def _update_args(payload: dict) -> dict:
+        pl = payload.get("pipeline")
+        return {"pipeline": {"requested_stages": pl.get("requested_stages")} if isinstance(pl, dict) else None,
+                "config_patch": payload.get("config_patch") or None, "params_patch": payload.get("params_patch") or None}
+
+    @staticmethod
+    def _impact_summary(impact: dict) -> dict:
+        """Tóm tắt bằng ngôn ngữ người dùng: Thay đổi này sẽ chạy / giữ nguyên / bỏ khỏi kế hoạch."""
+        by = {a: [s["label"] for s in impact.get("stages", []) if s["action"] == a] for a in ACTION_VI}
+        return {"will_run": by["RUN"] + by["RERUN"], "kept": by["KEEP"] + by["REUSE"], "removed": by["REMOVE_FROM_PLAN"], "continuing": by["CURRENT_CONTINUE"]}
+
+    def _impact_view(self, impact: dict) -> dict:
+        return {**impact, "stages": [{**s, "action_label": ACTION_VI[s["action"]]} for s in impact["stages"]], "summary_text": self._impact_summary(impact)}
+
+    def preview_update(self, job_id: str, payload: dict) -> dict:
+        self._job_or_error(job_id)
+        return self._impact_view(self.orc.preview_update(job_id, **self._update_args(payload)))
+
+    def request_update(self, job_id: str, payload: dict) -> dict:
+        self._job_or_error(job_id)
+        r = self.orc.request_update(job_id, **self._update_args(payload), apply_policy=payload.get("apply_policy") or "after_current_safe_point")
+        msg = {"applied": "Đã áp dụng thay đổi. Job chạy tiếp theo pipeline mới.",
+               "pending": "Đã ghi thay đổi. Sẽ áp dụng ở điểm an toàn kế tiếp (không làm hỏng đơn vị đang chạy).",
+               "rejected": "Thay đổi bị từ chối khi áp dụng.", "none": "Không có thay đổi cần áp dụng."}[r["status"]]
+        return {**r, "impact": self._impact_view(r["impact"]), "message": msg}
+
+    def clone(self, job_id: str, payload: dict) -> dict:
+        self._job_or_error(job_id)
+        new = self.orc.clone_job(job_id, rerun_from=payload.get("rerun_from") or None, pipeline=self._update_args(payload)["pipeline"],
+                                 params_patch=payload.get("params_patch") or None)
+        return {"job_id": new, "message": f"Đã tạo job #{new} từ kết quả còn hợp lệ của job #{job_id}; job cũ không bị thay đổi."}
 
     def retry(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)

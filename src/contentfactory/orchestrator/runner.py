@@ -23,11 +23,11 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-from ..contracts import ArtifactRef, CancelToken, ErrorClass, StageContext, StageError, StageResult
+from ..contracts import ArtifactRef, CancelToken, ErrorClass, JobCancelToken, StageContext, StageError, StageResult
 from ..fsutil import atomic_write, atomic_write_json, sha256_file
 from ..jobs import manifest as M
 from ..jobs import pipeline as P
-from ..jobs.db import Claim, JobStore
+from ..jobs.db import CONTROL_CANCELLED, CONTROL_PAUSED, CONTROL_RUNNING, Claim, JobStore
 from ..jobs.plan import Plan, plan_job, plan_spec
 from ..jobs.policy import RetryPolicy
 from ..jobs.workspace import ensure_job_dirs, job_dir
@@ -39,6 +39,7 @@ from ..jobs.sequences import SequenceManager
 from . import auto as AU
 from . import cleanup as CL
 from . import channels as CH
+from . import revisions as REV
 from . import templates as TPL
 from .pools import PoolSyncService
 from .registry import build_adapters
@@ -75,6 +76,7 @@ class Orchestrator:
         self._last_cleanup = 0.0
         self._manifest_lock = threading.Lock()
         self._guard_logged: dict[str, float] = {}
+        self._tokens: dict[str, JobCancelToken] = {}                 # token của các job đang chạy stage (để Pause/Cancel phản hồi tức thì)
         self.pool_sync = PoolSyncService(self)
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
 
@@ -281,6 +283,13 @@ class Orchestrator:
         job = self.store.get_job(job_id)
         if job is None:
             raise ValueError(f"không có job {job_id}")
+        if job["control_state"] == CONTROL_CANCELLED:
+            return "cancelled"
+        if job["control_state"] == CONTROL_PAUSED:                  # Tiếp tục sau Tạm dừng: chỉ gỡ pause thủ công, KHÔNG gỡ hold tài nguyên
+            self.store.set_control(job_id, CONTROL_RUNNING)
+            self.log.emit("job_unpaused", job_id=job_id, held=job["hold_reason"])
+            self._manifest(job_id)
+            return "unpaused"
         if not job["hold_reason"]:
             return "not_held"
         ok, detail = self.monitor.ready(job, force=now)
@@ -291,6 +300,31 @@ class Orchestrator:
         self.log.emit("job_resumed", job_id=job_id, manual=True, from_reason=job["hold_reason"])
         self._manifest(job_id)
         return "resumed"
+
+    # -- điều khiển của người dùng: pause / cancel (D-99) ------------------------------------------------
+    def pause_job(self, job_id: str, origin: str = "USER") -> str:
+        """Tạm dừng AN TOÀN: đơn vị đang chạy (segment TTS, part TikTok…) được hoàn tất và ghi checkpoint rồi stage dừng; không stage/đơn vị mới được nhận.
+        Khác hold tài nguyên (Auto Resume không bao giờ gỡ nó) và khác Cancel. Idempotent. Trả 'changed' | 'unchanged' | 'complete' | 'failed' | 'cancelled'."""
+        res = self.store.set_control(job_id, CONTROL_PAUSED, origin)
+        if res == "changed":
+            self.log.emit("job_paused", job_id=job_id, origin=origin)
+            tok = self._tokens.get(job_id)
+            if tok:
+                tok.request_pause()
+            self._manifest(job_id)
+        return res
+
+    def cancel_job(self, job_id: str) -> str:
+        """Hủy job (ý định riêng, không tự chạy lại): dừng đơn vị đang chạy NGAY nếu adapter hỗ trợ; artifact và lịch sử được giữ.
+        Trả 'changed' | 'unchanged' | 'complete'. Job đã hoàn tất không bị đổi."""
+        res = self.store.set_control(job_id, CONTROL_CANCELLED)
+        if res == "changed":
+            self.log.emit("job_cancelled", "warning", job_id)
+            tok = self._tokens.get(job_id)
+            if tok:
+                tok.request_abort()
+            self._manifest(job_id)
+        return res
 
     def rerender_part(self, job_id: str, part: int) -> str:
         """Ép render lại ĐÚNG một part TikTok (xóa output + khóa của part đó): job phải đang xếp hàng/bị giữ/FAILED ở stage render_tiktok.
@@ -371,6 +405,120 @@ class Orchestrator:
         self._manifest(job_id)
         return rev
 
+    # -- cập nhật pipeline/config của job đang sống: impact -> revision -> áp dụng tại điểm an toàn (D-99) ----------------
+    def preview_update(self, job_id: str, *, pipeline: dict | None = None, config_patch: dict | None = None, params_patch: dict | None = None) -> dict:
+        """Impact của thay đổi (stage nào KEEP/REUSE/RUN/RERUN/REMOVE_FROM_PLAN/CURRENT_CONTINUE, job lùi về đâu). Không đổi gì."""
+        job = self.store.get_job(job_id)
+        if job is None:
+            raise ValueError(f"không có job {job_id}")
+        return REV.compute_impact(self, job, pipeline=pipeline, config_patch=config_patch, params_patch=params_patch)
+
+    def request_update(self, job_id: str, *, pipeline: dict | None = None, config_patch: dict | None = None, params_patch: dict | None = None,
+                       apply_policy: str = "after_current_safe_point", created_by: str = "user") -> dict:
+        """Ghi một revision `pending` rồi áp dụng ngay nếu job đang ở điểm an toàn (không có stage chạy), ngược lại chờ:
+        `after_current_safe_point` (mặc định) = sau khi đơn vị/stage hiện tại xong; `pause_and_apply` = dừng ở ranh giới checkpoint kế tiếp rồi áp dụng và chạy tiếp.
+        Không bao giờ đổi pipeline giữa một đơn vị đang chạy. Bấm đúp cùng một thay đổi chỉ tạo một revision. Trả {revision, status, impact, ...}."""
+        if apply_policy not in REV.POLICIES:
+            raise _spec_error(f"apply_policy không hợp lệ: {apply_policy!r}; hợp lệ: {list(REV.POLICIES)}")
+        impact = self.preview_update(job_id, pipeline=pipeline, config_patch=config_patch, params_patch=params_patch)
+        if not impact["ok"]:
+            raise _spec_error("; ".join(impact["errors"]), errors=impact["errors"], blocked=impact.get("blocked"), clone_suggested=impact.get("clone_suggested"))
+        change = {"pipeline": {"requested_stages": impact["pipeline"]["requested_stages"]} if pipeline else None,
+                  "config_patch": config_patch or None, "params_patch": params_patch or None}
+        rev, created = self.store.create_revision(job_id, change, impact, apply_policy, created_by)
+        if created:
+            self.log.emit("pipeline_revision_requested", job_id=job_id, revision=rev["revision"], policy=apply_policy, rewind_to=impact["rewind_to"])
+        tok = self._tokens.get(job_id)
+        if apply_policy == "pause_and_apply" and tok:
+            tok.request_pause()
+        status = self.apply_pending(job_id)
+        return {"revision": rev["revision"], "created": created, "status": status, "apply_policy": apply_policy, "impact": impact}
+
+    def apply_pending(self, job_id: str) -> str:
+        """Áp revision đang chờ nếu job ở điểm an toàn (không có stage đang chạy/lease). Trả 'applied' | 'pending' | 'rejected' | 'none'.
+        Impact được tính lại tại thời điểm áp dụng (job có thể đã đi tiếp từ lúc yêu cầu) và ghi vào DB cùng transaction đổi pipeline;
+        áp hai lần chỉ có một lần có hiệu lực."""
+        rev = self.store.pending_revision(job_id)
+        job = self.store.get_job(job_id)
+        if rev is None or job is None:
+            return "none"
+        if job["state"] in P.BY_RUNNING or job.get("lease_owner"):
+            return "pending"
+        ch = rev["change"]
+        impact = REV.compute_impact(self, job, pipeline=ch.get("pipeline"), config_patch=ch.get("config_patch"), params_patch=ch.get("params_patch"))
+        if not impact["ok"]:
+            return self._reject_revision(job_id, rev, impact)
+        run = impact["pipeline"]["run"]
+        snapshot = chash = None
+        if ch.get("config_patch"):
+            snapshot = apply_patch(job["config_snapshot"], ch["config_patch"])
+            chash = config_hash(snapshot["semantic"])
+        params = _merge(copy.deepcopy(job["params"]), copy.deepcopy(ch["params_patch"])) if ch.get("params_patch") else None
+        try:
+            params = self._templates_for_run(job, params if params is not None else job["params"], run, changed=params is not None)
+        except StageError as e:
+            return self._reject_revision(job_id, rev, {**impact, "ok": False, "errors": [e.message]})
+        rewind, state = impact["rewind_to"], job["state"]
+        new_state = state
+        if state == P.FAILED:
+            failed = job["failed_stage"]
+            if rewind or failed not in run:                   # job lỗi: chỉ xếp lại khi pipeline mới thật sự đổi việc phải làm
+                new_state = P.BY_NAME[rewind or failed].queue_state
+        elif rewind:
+            new_state = P.BY_NAME[rewind].queue_state
+        old_start = P.INDEX[job["start_stage"]] if job.get("start_stage") else 0
+        res = self.store.apply_revision(rev, expect_state=state, pipeline=impact["pipeline"],
+                                        start_stage=P.STAGES[min(old_start, P.INDEX[run[0]])].name, target_stage=P.STAGES[max(P.INDEX[r] for r in run)].name,
+                                        new_state=new_state, snapshot=snapshot, config_hash=chash, params=params, impact=impact)
+        if res == "applied":
+            self.log.emit("pipeline_revision_applied", job_id=job_id, revision=rev["revision"], rewind_to=rewind, state=new_state)
+            self._manifest(job_id)
+            return "applied"
+        return "pending" if res == "not_safe" else "none"
+
+    def _reject_revision(self, job_id: str, rev: dict, impact: dict) -> str:
+        self.store.reject_revision(rev["id"], impact)
+        self.log.emit("pipeline_revision_rejected", "warning", job_id, revision=rev["revision"], errors=impact["errors"])
+        self._manifest(job_id)
+        return "rejected"
+
+    def _templates_for_run(self, job: dict, params: dict, run: list[str], changed: bool) -> dict | None:
+        """Pipeline mới có nhánh render mà job chưa chốt template (vd tạo job chỉ TikTok rồi thêm YouTube): chốt lúc áp dụng, giống lúc tạo job.
+        Trả params mới nếu có thay đổi, None nếu không đổi gì (và `changed` False)."""
+        need = ({"youtube", "thumbnail"} if "render_youtube" in run else set()) | ({"tiktok"} if "render_tiktok" in run else set())
+        missing = need - set(params.get("templates") or {})
+        if missing:
+            channel = (job.get("config_snapshot") or {}).get("semantic", {}).get("channel_config") or CH.load_channel(self.cfg, str(params.get("channel") or "default"))
+            tpls, tdec = TPL.select_templates(self.cfg, params, channel, self.adapters, missing)
+            if tpls:
+                params = {**params, "templates": {**(params.get("templates") or {}), **tpls}, "auto": list(params.get("auto") or []) + tdec}
+                changed = True
+        return params if changed else None
+
+    def _apply_pending_revisions(self) -> None:
+        for jid in dict.fromkeys(self.store.jobs_with_pending_revision()):
+            self.apply_pending(jid)
+
+    def clone_job(self, job_id: str, *, rerun_from: str | None = None, pipeline: dict | None = None, params_patch: dict | None = None) -> str:
+        """“Chạy lại với thay đổi” (D-99): job đã hoàn tất/đã hủy KHÔNG bị đổi tại chỗ (output cũ giữ nguyên). Tạo job MỚI, dùng lại artifact còn hợp lệ
+        của job cũ (from_job) ở các stage đứng TRƯỚC `rerun_from` (None = dùng lại tất cả: chỉ phần pipeline mới thêm mới chạy)."""
+        src = self.store.get_job(job_id)
+        if src is None:
+            raise ValueError(f"không có job {job_id}")
+        if rerun_from is not None and rerun_from not in P.INDEX:
+            raise _spec_error(f"rerun_from không hợp lệ: {rerun_from!r}; hợp lệ: {[s.name for s in P.STAGES]}")
+        imported = {a["kind"] for a in self.store.artifacts(job_id) if a["stage"] == "import"}
+        spec = pipeline or {"requested_stages": REV.current_pipeline(src, imported)["requested_stages"]}
+        keep = P.STAGES[:P.INDEX[rerun_from]] if rerun_from else P.STAGES
+        kinds = sorted({k for s in keep for k in s.produces})
+        params = {k: v for k, v in copy.deepcopy(src["params"]).items() if k not in ("ui", "auto")}      # `templates` giữ nguyên: snapshot cũ => kết quả tái lập được
+        if params_patch:
+            params = _merge(params, copy.deepcopy(params_patch))
+        new = self.submit(params, pipeline={"version": 2, "requested_stages": spec["requested_stages"]}, from_job={"job_id": job_id, "kinds": kinds},
+                          auto_resume=src.get("auto_resume"))
+        self.log.emit("job_cloned", job_id=new, source=job_id, rerun_from=rerun_from)
+        return new
+
     # -- vòng lặp chính ------------------------------------------------------------------------
     def run(self, until_idle: bool = True, stop: threading.Event | None = None) -> None:
         self.cancel = CancelToken()                 # token riêng cho mỗi lần run: instance dùng lại được sau khi đã dừng
@@ -446,7 +594,7 @@ class Orchestrator:
             return
         self._last_tick = now
         for job in self.store.held_jobs():
-            if job["needs_user"]:
+            if job["needs_user"] or job["control_state"] != CONTROL_RUNNING:    # Auto Resume không bao giờ override Tạm dừng/Hủy của người dùng
                 continue
             ok, detail = self.monitor.ready(job)    # cập nhật resource_status; cooldown nằm trong monitor
             auto = job["auto_resume"] if job["auto_resume"] is not None else bool(self.cfg.data.get("auto_resume_default", True))
@@ -459,6 +607,7 @@ class Orchestrator:
             self._manifest(job["id"])
 
     def _schedule(self, executor: ThreadPoolExecutor, futures: set[Future]) -> None:
+        self._guarded(self._apply_pending_revisions)
         cap = int(self.cfg.data.get("max_workers", 8))
         for stage in reversed(P.STAGES):            # ưu tiên stage sau để hút pipeline (HANDOFF §14)
             free = cap - len(futures)
@@ -492,7 +641,10 @@ class Orchestrator:
         stage, job_id = claim.stage, claim.job_id
         log = self.log.bind(job_id, stage.name, claim.attempt)
         contract = StageContract(stage)
+        token = JobCancelToken(self.cancel, lambda: self.store.job_signal(job_id))
+        self._tokens[job_id] = token
         try:
+            token.check()                           # đã bị Tạm dừng/Hủy giữa lúc nhận job và lúc bắt đầu: nhả lại, không chạy
             jd = ensure_job_dirs(self.cfg.path("workspace"), job_id)
             if claim.pipeline is not None and stage.name not in claim.pipeline["run"]:        # không được yêu cầu: đi qua máy trạng thái, không chạy
                 imported = any(a["stage"] == "import" and a["kind"] in stage.produces for a in self.store.artifacts(job_id))
@@ -521,7 +673,7 @@ class Orchestrator:
                                        "render": sem.get("render", self.cfg.data.get("render", {})),
                                        "channel_config": sem.get("channel_config"),
                                        "publishing": sem.get("publishing", self.cfg.data.get("publishing", {}))},
-                               cancel=self.cancel, log=log, progress=self._progress_fn(job_id, stage.name))
+                               cancel=token, log=log, progress=self._progress_fn(job_id, stage.name))
             log("stage_started", stage_key=(key or "")[:12])
             t0 = time.time()
             adapters = {**self._adapters_for(claim.snapshot), "sequence": self.sequence}
@@ -537,12 +689,14 @@ class Orchestrator:
             log("stage_exception", "error", error=repr(e), traceback=traceback.format_exc())
             self._on_error(claim, StageError(ErrorClass.POLICY, "UNEXPECTED", repr(e)), log)
         finally:
+            self._tokens.pop(job_id, None)
             self._manifest(job_id)
 
     def _on_error(self, claim: Claim, e: StageError, log) -> None:
         if e.error_class == ErrorClass.CANCELLED:
             self.store.release(claim, self.owner)
-            log("stage_released", "warning")
+            tok = self._tokens.get(claim.job_id)
+            log("stage_released", "warning", reason=(tok.reason if tok else "") or "shutdown")      # pause | abort | shutdown
             return
         outcome = self.store.handle_error(claim, self.owner, e, self._policy(claim.snapshot))
         log("stage_failed" if outcome in ("failed", "lost") else f"stage_{outcome}",

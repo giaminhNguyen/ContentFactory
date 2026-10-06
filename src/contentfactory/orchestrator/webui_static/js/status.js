@@ -7,6 +7,8 @@ export const JOB_STATUS = {
   attention: { label: "Cần bạn xử lý", icon: "alert", tone: "attn" },
   failed: { label: "Lỗi", icon: "x-circle", tone: "fail" },
   completed: { label: "Hoàn tất", icon: "check-circle", tone: "done" },
+  paused: { label: "Tạm dừng", icon: "pause", tone: "wait" },
+  cancelled: { label: "Đã hủy", icon: "skip", tone: "off" },
 };
 
 export const STAGE_STATE = {
@@ -27,7 +29,7 @@ export const FILTERS = [
 ];
 
 export const ACTION_LABEL = {
-  resume: "Tiếp tục", resume_now: "Thử lại ngay", retry: "Chạy lại stage lỗi", enable_auto_resume: "Bật Auto Resume", disable_auto_resume: "Tắt Auto Resume",
+  pause: "Tạm dừng", resume: "Tiếp tục", resume_now: "Thử lại ngay", retry: "Chạy lại stage lỗi", enable_auto_resume: "Bật Auto Resume", disable_auto_resume: "Tắt Auto Resume",
 };
 
 export function jobStatus(s) { return JOB_STATUS[s] || JOB_STATUS.queued; }

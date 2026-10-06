@@ -49,10 +49,11 @@ class FrontendTest(unittest.TestCase):
         r = node("--input-type=module", "-e", f"import * as s from 'file:///{(STATIC / 'js' / 'status.js').as_posix()}'; console.log(JSON.stringify({{job:Object.keys(s.JOB_STATUS),stage:Object.keys(s.STAGE_STATE),filters:s.FILTERS.map(f=>f[0])}}))")
         self.assertEqual(r.returncode, 0, r.stderr)
         d = json.loads(r.stdout)
-        backend_job = {"running", "queued", "waiting", "attention", "completed", "failed"}
+        backend_job = {"running", "queued", "waiting", "attention", "completed", "failed", "paused", "cancelled"}
         self.assertEqual(set(d["job"]), backend_job)
         for case in ({"state": "NEW"}, {"state": "TTS_RUNNING"}, {"state": "FAILED"}, {"state": "PUBLISHED"}, {"state": "SOURCE_READY", "hold_reason": "PAUSED_QUOTA"},
-                     {"state": "SOURCE_READY", "hold_reason": "PAUSED_CREDENTIAL"}):
+                     {"state": "SOURCE_READY", "hold_reason": "PAUSED_CREDENTIAL"}, {"state": "TTS_RUNNING", "control_state": "PAUSED"},
+                     {"state": "SOURCE_READY", "control_state": "CANCELLED"}):
             self.assertIn(DG.ui_status({"hold_reason": None, "needs_user": False, "target_idx": 7, **case}), d["job"])
         self.assertEqual(set(d["stage"]), {"done", "reused", "provided", "running", "waiting", "held", "failed", "not_planned"})
         self.assertEqual(d["filters"], list(FILTERS))

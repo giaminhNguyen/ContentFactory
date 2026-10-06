@@ -57,6 +57,52 @@ class UiCase(RootCase):
         return p
 
 
+# ================================================================================== điều khiển job (Phase 2)
+class JobControlViewTest(UiCase):
+    def test_pause_resume_cancel_states_actions_and_filters(self):
+        jid = self.svc.create_run({"input": {"value": URL}, "channel": "kenh", "run": "story"})["job_id"]
+        d = self.svc.job_detail(jid)
+        self.assertEqual((d["status"], d["actions"]["pause"], d["actions"]["cancel"], d["actions"]["unpause"]), ("queued", True, True, False))
+        r = self.svc.pause(jid)
+        self.assertEqual(r["result"], "changed")
+        d = self.svc.job_detail(jid)
+        self.assertEqual((d["status"], d["control"]["state"], d["actions"]["unpause"], d["actions"]["pause"]), ("paused", "PAUSED", True, False))
+        self.assertEqual(d["diagnosis"]["resume"]["actions"], ["resume"])
+        lst = self.svc.list_jobs("waiting")                                       # tạm dừng nằm cùng nhóm "đang chờ"
+        self.assertEqual((lst["counts"]["waiting"], [j["id"] for j in lst["jobs"]]), (1, [jid]))
+        self.assertEqual(self.svc.resume(jid)["result"], "unpaused")
+        self.o.run()
+        self.assertEqual(self.svc.job_detail(jid)["status"], "completed")
+        self.assertEqual(self.svc.pause(jid)["result"], "complete")
+        self.assertEqual(self.svc.cancel(jid)["result"], "complete")
+        j2 = self.svc.create_run({"input": {"value": URL + "x"}, "channel": "kenh", "run": "story"})["job_id"]
+        self.assertEqual(self.svc.cancel(j2)["result"], "changed")
+        d = self.svc.job_detail(j2)
+        self.assertEqual((d["status"], d["actions"]["cancel"], d["actions"]["clone"], d["actions"]["update"]), ("cancelled", False, True, False))
+        self.assertEqual(self.svc.resume(j2)["result"], "cancelled")
+        with self.assertRaises(StageError):
+            self.svc.pause("999999")
+
+    def test_impact_preview_and_revision_service_messages(self):
+        jid = self.svc.create_run({"input": {"value": URL}, "channel": "kenh", "pipeline": {"mode": "custom", "requested_stages": ["render_youtube", "render_tiktok"]}, "kids": False})["job_id"]
+        self.svc.pause(jid)
+        imp = self.svc.preview_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}})
+        acts = {s["id"]: (s["action"], s["action_label"], s["role"]) for s in imp["stages"]}
+        self.assertEqual(acts["render_youtube"][0], "REMOVE_FROM_PLAN")
+        self.assertEqual(acts["audio"][2], "locked")
+        self.assertIn("Video YouTube", imp["summary_text"]["removed"])
+        r = self.svc.request_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}})
+        self.assertEqual(r["status"], "applied")
+        d = self.svc.job_detail(jid)
+        self.assertEqual((d["pipeline_revision"], d["requested_stages"], d["pending_revision"]), (2, ["render_tiktok"], None))
+        blocked = self.svc.preview_update(jid, {})
+        self.assertFalse(blocked["ok"])
+        with self.assertRaises(StageError):
+            self.svc.request_update(jid, {"pipeline": {"requested_stages": ["bogus"]}})
+        with self.assertRaises(StageError):
+            self.svc.request_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}, "apply_policy": "now"})
+
+
 # ================================================================================== nhận dạng đầu vào
 class DetectTest(UiCase):
     def test_youtube_urls(self):
@@ -490,6 +536,23 @@ class HttpTest(UiCase):
         except urllib.error.HTTPError as e:
             raw_body = e.read()
             return e.code, (json.loads(raw_body) if raw_body else {}), e.headers
+
+    def test_job_control_endpoints(self):
+        code, r, _ = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "story"})
+        jid = r["job_id"]
+        self.app.stop()                                                                   # không để vòng lặp nền chạy mất job trong test
+        self.assertEqual(self.call("POST", f"/api/jobs/{jid}/pause")[1]["result"], "changed")
+        self.assertEqual(self.call("GET", f"/api/jobs/{jid}")[1]["status"], "paused")
+        code, imp, _ = self.call("POST", f"/api/jobs/{jid}/pipeline-impact", {"pipeline": {"requested_stages": ["tts"]}})
+        self.assertEqual((code, imp["ok"], imp["pipeline"]["run"]), (200, True, ["source", "story", "tts"]))
+        code, rev, _ = self.call("POST", f"/api/jobs/{jid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}})
+        self.assertEqual((code, rev["status"]), (200, "applied"))
+        self.assertEqual(self.call("POST", f"/api/jobs/{jid}/pipeline-revisions", {"pipeline": {"requested_stages": ["nope"]}})[0], 400)
+        self.assertEqual(self.call("POST", f"/api/jobs/{jid}/resume")[1]["result"], "unpaused")
+        self.assertEqual(self.call("POST", f"/api/jobs/{jid}/cancel")[1]["result"], "changed")
+        self.assertEqual(self.call("POST", f"/api/jobs/{jid}/clone", {})[0], 200)
+        self.assertEqual(self.call("POST", "/api/jobs/999999/pause")[0], 404)
+        self.assertEqual(self.call("POST", f"/api/jobs/{jid}/pause", token=False)[0], 401)
 
     def test_pipeline_descriptor_and_plan_endpoints(self):
         code, d, _ = self.call("GET", "/api/pipeline")
