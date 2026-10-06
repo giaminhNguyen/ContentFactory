@@ -4,6 +4,7 @@ import { h, loadCss } from "../dom.js";
 import { icon } from "../icons.js";
 import { badge, btn, busy, field, input, alertBox, errorState, skeleton, pageHead, toastError, openDialog } from "../components.js";
 import { createPoller } from "../poller.js";
+import { prosodyCard } from "./_prosody.js";
 
 const REASON = {
   required_reference_voice: "cần file giọng mẫu", credential: "cần API key", required_parameter: "cần nhập tham số", credential_optional: "API key (tuỳ chọn)",
@@ -31,7 +32,11 @@ export async function mount(root, ctx) {
     try {
       const data = await api.get("/api/tts");
       if (destroyed) return;
-      dynamic.replaceChildren(engineCard(data.engine), autoCard(data), profilesCard(data), onboard);
+      let pro;
+      try { pro = await prosodyCard({ engineOk: data.engine.ok, profiles: data.profiles, isDestroyed: () => destroyed }); }
+      catch (e) { pro = alertBox({ tone: "fail", title: "Không tải được phần Nhịp đọc", body: e.message }); }
+      if (destroyed) return;
+      dynamic.replaceChildren(engineCard(data.engine), autoCard(data), pro, profilesCard(data), onboard);
     } catch (e) {
       if (destroyed || e.name === "AbortError") return;
       dynamic.replaceChildren(errorState(e, load));

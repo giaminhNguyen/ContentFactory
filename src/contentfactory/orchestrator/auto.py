@@ -129,6 +129,15 @@ def preset_params(cfg: Config, channel: dict, explicit: dict, adapters: dict) ->
         if sel:
             out["tts"] = load_tts_profile(cfg, sel[0])
             dec.append({"what": "tts_profile", "value": sel[0], "why": "tự chọn: " + sel[1]})
+    default_prosody = (cfg.data.get("prosody") or {}).get("default_profile")
+    if "prosody" in explicit:
+        pass
+    elif pre.get("prosody"):
+        out["prosody"] = pre["prosody"]
+        dec.append({"what": "prosody", "value": (pre["prosody"] or {}).get("profile", "natural"), "why": f"nhịp đọc ưa thích của kênh '{channel['id']}'"})
+    elif default_prosody:
+        out["prosody"] = {"profile": default_prosody}
+        dec.append({"what": "prosody", "value": default_prosody, "why": "nhịp đọc mặc định của máy (tất định, không dùng LLM)"})
     return out, dec
 
 

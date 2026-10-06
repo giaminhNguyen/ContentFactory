@@ -217,6 +217,39 @@ if (wanted("control")) {
   await page.context().close();
 }
 
+// ===================================================================== 3d. Nhịp đọc (Prosody): nghe thử A/B ở trang Giọng đọc + chỉnh nhịp của job
+if (wanted("prosody")) {
+  console.log("\n# Nhịp đọc");
+  const page = await newPage();
+  await go(page, "/tts");
+  await page.waitForSelector("h2:has-text('Nhịp đọc (Prosody)')");
+  check("trang Giọng đọc có thẻ Nhịp đọc", true);
+  await page.locator("label.switch:has-text('So sánh A/B')").click();
+  await page.locator("button:has-text('Nghe thử A và B')").click();
+  await page.waitForSelector("audio[aria-label='Bản nghe thử B']", { timeout: 60000 });
+  check("nghe thử A/B: có hai trình phát và thời lượng/số lần gọi TTS", (await page.locator("audio").count()) === 2 && (await page.locator("text=lần gọi TTS").count()) === 2);
+  await axe(page, "trang Giọng đọc + Nhịp đọc");
+  await noOverflow(page, "trang Giọng đọc + Nhịp đọc");
+  await go(page, "/jobs");
+  await page.locator("a:has-text('Truyện có nhịp đọc')").first().click();
+  await page.waitForSelector("#page-title:has-text('Truyện có nhịp đọc')");
+  await page.locator("button:has-text('Thao tác nâng cao')").click();
+  await page.locator("button:has-text('Nhịp đọc…')").click();
+  await page.waitForSelector("dialog[open] .pick-row");
+  check("dialog nhịp đọc liệt kê khoảng nghỉ được chèn", (await page.locator("dialog[open] .pick-row").count()) >= 1);
+  await page.waitForTimeout(600);                                     // đợi hết hiệu ứng mở dialog (axe đo contrast khi đang mờ dần sẽ sai)
+  await axe(page, "dialog nhịp đọc");
+  const first = page.locator("dialog[open] .pick-row input[type=number]").first();
+  await first.fill("1500");
+  await page.locator("dialog[open]").getByText("Chạy lại với nhịp này").waitFor({ timeout: 10000 });
+  check("job đã xong: gợi ý Chạy lại với nhịp này (không sửa tại chỗ)", true);
+  await page.locator("dialog[open] button:has-text('Áp dụng')").click();
+  await page.waitForURL(/#\/jobs\/\d+/);
+  check("áp dụng tạo job mới", !page.url().endsWith("#/jobs/1"));
+  check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+}
+
 // ===================================================================== 4. job bị giữ / lỗi / cần xử lý
 if (wanted("paused")) {
   console.log("\n# Trạng thái giữ / lỗi");

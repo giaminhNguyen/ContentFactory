@@ -16,6 +16,7 @@ Trạng thái kiểm chứng thực tế trên máy phát triển (Windows 11, P
 | `setup` trên thư mục sạch và trên repo này (venv, pip, build uploader, doctor) | chạy thật | OK |
 | Bí mật không lọt vào output/log/DB/workspace/`status`/`doctor --json` | `SecretsTest` | OK |
 | Upload chậm không chặn render job khác; Story/TTS tiếp tục khi renderer bận | `UploadDoesNotBlockTest`, test_render | OK |
+| Prosody (D-100): speech plan tất định, tách câu tiếng Việt (số thập phân, ngày, domain, viết tắt, thoại), không chia vụn ở dấu phẩy, khoảng nghỉ chính xác ±30 ms khi engine để lại im lặng cuối, không trôi qua 40 segment, retry dùng lại plan, mặc định 0 lần gọi LLM | test_prosody (39 test, gồm `StitchTest` với ffmpeg thật và `GoldenTest` 6 mẫu nội bộ), test_ui (`ProsodyViewTest`), `qa.mjs --only prosody` | OK. **Chưa nghe thử với engine TTS thật** (repo chỉ có engine giả): quy trình QA nghe — mở Giọng đọc → Nghe thử A/B với giọng thật, ghi `rules_version` (`vi-1`) + profile vào ghi chú; kiểm không máy móc, không nghỉ đôi, không cụt cuối câu, không click |
 | Resume/retry: mạng, quota, token, đĩa, kill, restart, part lỗi, upload lỗi, Auto Resume bật/tắt | test_pause_resume, test_resume, test_failure_retry, test_render, test_publishing | OK |
 | Dữ liệu: `project.title`, tiêu đề `[Full Audio N] \| …`, sequence ổn định qua retry, mô tả từ Channel Config, watermark theo kênh, `project.json`, output không có file tạm | test_publishing, test_automode | OK |
 

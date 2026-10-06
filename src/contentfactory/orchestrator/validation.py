@@ -56,7 +56,7 @@ def _json_ok(path: Path) -> dict | list | None:
         return None
 
 
-for _kind in ("transcript_structured", "story_report", "tts_manifest", "audio_timeline", "audio_report", "youtube_render_report",
+for _kind in ("transcript_structured", "story_report", "tts_manifest", "audio_timeline", "speech_plan", "audio_report", "youtube_render_report",
               "tiktok_render_report", "output_package", "publish_result"):
     VALIDATORS[_kind] = lambda path, meta: [] if _json_ok(path) is not None else ["BAD_JSON"]
 

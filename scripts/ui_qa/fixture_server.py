@@ -63,6 +63,7 @@ def main() -> int:
         orc.submit(params(channel="kenh_a", project={"title": "Truyện bị lỗi giọng đọc"}, fake={"tts_chunk_3": {"error_class": "POLICY", "fail_until_attempt": 99}}), auto_resume=False)
         orc.submit(params(channel="kenh_a", project={"title": "Truyện chờ mạng"}, fake={"story": {"error_class": "RESOURCE", "resource": "network", "fail_until_attempt": 99}}), auto_resume=True)
         orc.submit(params(channel="kenh_a", project={"title": "Truyện cần đăng nhập"}, fake={"story": {"error_class": "AUTH", "fail_until_attempt": 99}}), auto_resume=False)
+        orc.submit(params(channel="kenh_a", project={"title": "Truyện có nhịp đọc"}, prosody={"profile": "natural"}), mode="THROUGH_TTS", auto_resume=False)
         orc.run()
         svc = Service(orc)
         svc.create_run({"input": {"value": URL}, "channel": "kenh_a", "run": "full", "title": "Truyện đã hoàn tất"})

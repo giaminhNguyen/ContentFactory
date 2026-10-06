@@ -21,6 +21,7 @@ from pathlib import Path
 from ..contracts import AudioProcessor, ErrorClass, Segment, StageContext, StageError, StageResult, TTSAdapter
 from ..fsutil import atomic_write, atomic_write_json, sha256_file
 from . import qa as chunk_qa
+from . import prosody as PRO
 from .normalize import normalize_text
 from .planner import RuleSegmentPlanner, SegmentPlanner, validate_plan
 from .schema import cache_identity, normalize_capabilities, resolve, segment_key, stable_hash
@@ -95,6 +96,43 @@ class TTSManager:
         atomic_write_json(f, {"plan_key": plan_key, "report": report, "segments": segments})
         return segments, report
 
+    # -- speech plan (Prosody Engine) ---------------------------------------------------------------
+    def speech_plan(self, ctx: StageContext, text: str, flat: dict, caps: dict, prosody: dict) -> tuple[dict, dict]:
+        """Speech plan tất định, KHÔNG LLM (trừ khi prosody.semantic_llm bật rõ ràng và có bộ gán nhãn). Plan được snapshot vào `speech_plan.json`:
+        retry/resume/rerender dùng lại đúng plan đó nếu khóa nội dung (văn bản, profile, override, luật, giới hạn engine, nhãn ngữ nghĩa) không đổi."""
+        mx = int(flat["segment"]["max_chars"])
+        report: dict = {"requested": "prosody", "used": "prosody", "attempts": [], "reused_plan": False, "llm_calls": 0}
+        semantic, warnings = None, []
+        if prosody["semantic_llm"]:
+            labeler = getattr(self.planner, "semantic_labeler", None)
+            if labeler is None:
+                warnings.append("prosody.semantic_llm bật nhưng adapter planner không có bộ gán nhãn (semantic_labeler): bỏ qua, dùng luật tất định")
+            else:
+                semantic, srep = PRO.semantic_for(labeler, PRO.sentence_texts(text, mx), PRO.plan_key(text, prosody, flat["segment"], flat["joiner"], caps),
+                                                  ctx.stage_dir / "semantic.json")
+                report["llm_calls"] = srep["calls"]
+                report["semantic_cached"] = srep["cached"]
+        key = PRO.plan_key(text, prosody, flat["segment"], flat["joiner"], caps, semantic)
+        f = ctx.stage_dir / "speech_plan.json"
+        plain = PRO.strip_marks(text)
+        if f.is_file():
+            try:
+                old = json.loads(f.read_text(encoding="utf-8"))
+                if old.get("plan_key") == key and not validate_plan(PRO.segments_of(old), plain, flat)["errors"]:
+                    return old, {**report, "reused_plan": True}
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        plan = PRO.build_speech_plan(text, flat, caps, prosody, semantic)
+        plan["plan_key"] = key
+        plan["warnings"] = [*plan["warnings"], *warnings]
+        v = validate_plan(PRO.segments_of(plan), plain, flat)
+        if v["errors"]:
+            raise StageError(ErrorClass.POLICY, "SPEECH_PLAN_INVALID", "speech plan không qua validator: " + "; ".join(f"{x['code']} {x['message']}" for x in v["errors"][:3]),
+                             {"errors": v["errors"][:10]})
+        report["warnings"] = v["warnings"][:50]
+        atomic_write_json(f, plan)
+        return plan, report
+
     # -- một segment ----------------------------------------------------------------------------------
     def _synth(self, ctx: StageContext, seg: Segment, flat: dict, out: Path, key: str) -> tuple[dict, dict]:
         """Retry CHỈ segment này (TRANSIENT hoặc chunk không đạt QA). Trả (kết quả adapter, thông tin lần thử)."""
@@ -141,10 +179,24 @@ class TTSManager:
     def run(self, ctx: StageContext, text: str, raw_profile: dict | None) -> StageResult:
         caps = normalize_capabilities(self.tts.capabilities())
         flat = resolve(raw_profile, caps, ctx.params.get("language"), getattr(self.tts, "engine_id", None))
-        text, nrep = normalize_text(text, flat["normalize"])
-        if not text:
+        prosody = PRO.resolve_prosody(ctx.params["prosody"]) if ctx.params.get("prosody") else None      # None = job cũ: đường planner cũ, không đổi hành vi
+        text, nrep = normalize_text(PRO.mark_scenes(text) if prosody else text, flat["normalize"])
+        if not (PRO.strip_marks(text) if prosody else text):
             raise StageError(ErrorClass.POLICY, "EMPTY_STORY", "story.txt không có nội dung sau chuẩn hóa")
-        segments, plan_report = self.plan(ctx, text, flat)
+        if prosody:
+            splan, plan_report = self.speech_plan(ctx, text, flat, caps, prosody)
+            segments = PRO.segments_of(splan)
+        else:
+            segments, plan_report = self.plan(ctx, text, flat)
+            splan = PRO.legacy_plan(segments, flat, plan_report)
+        use_ctx = bool(caps.get("supports_context"))
+        if prosody and use_ctx:
+            for seg, g in zip(segments, splan["groups"]):
+                first = next(s for s in splan["segments"] if s["id"] == g["segments"][0])
+                last = next(s for s in splan["segments"] if s["id"] == g["segments"][-1])
+                seg["context"] = {"previous": first.get("previous_context", ""), "next": last.get("next_context", "")}
+        ctx.log("speech_plan", mode=splan["mode"], profile=splan.get("profile"), groups=len(segments), warnings=len(splan["qc"]["warnings"]),
+                llm_calls=plan_report.get("llm_calls", 0), reused=plan_report.get("reused_plan"))
         ident = cache_identity(flat, caps)
         cache_dir = Path(ctx.config["tts_cache_dir"]) if ctx.config.get("tts_cache_dir") else None
         chunk_dir = ctx.stage_dir / "chunks"
@@ -154,7 +206,7 @@ class TTSManager:
         n_local = n_cache = n_synth = n_retry = 0
         for seg in segments:
             ctx.cancel.check()
-            idx, key = seg["index"], segment_key(seg["text"], ident)
+            idx, key = seg["index"], segment_key(self._key_text(seg), ident)
             out, side = chunk_dir / f"{idx:06d}.wav", chunk_dir / f"{idx:06d}.json"
             row = {"index": idx, "chars": len(seg["text"]), "key": key[:16], "pause_after_ms": seg["pause_after_ms"]}
             hit = self._local_hit(out, side, key)
@@ -191,6 +243,9 @@ class TTSManager:
             joined.update(self.audio.assemble(chunks, [s["pause_after_ms"] for s in segments], tmp, ctx) or {})
         atomic_write(master, build)
         timeline = self._timeline(segments, rows, joined, flat)
+        audio_qc = PRO.analyze_audio([s["pause_after_ms"] for s in segments], joined, None, joined.get("duration_sec"))
+        splan["qc"]["audio"] = audio_qc
+        sp_file = atomic_write_json(ctx.stage_dir / "speech_plan.json", splan)                  # bản cuối kèm QC sau ghép (nội dung plan không đổi)
         tl_file = atomic_write_json(ctx.workspace / "audio" / "timeline.json", timeline)
         qa = self.audio.qa(master)
         if not qa["ok"]:
@@ -199,6 +254,8 @@ class TTSManager:
                     "language": flat["language"], "voice": flat["voice"], "model": flat["model"],
                     "profile_version": flat["profile_version"], "profile_hash": stable_hash(flat)[:16],
                     "identity_hash": stable_hash(ident)[:16], "normalize": nrep, "planner": plan_report,
+                    "prosody": {"mode": splan["mode"], "profile": splan.get("profile"), "rules_version": splan.get("rules_version"),
+                                "plan_key": splan.get("plan_key"), "strategy": splan.get("strategy"), "qc": splan["qc"], "llm_calls": plan_report.get("llm_calls", 0)},
                     "segments": rows,
                     "totals": {"segments": len(rows), "chars": sum(r["chars"] for r in rows), "reused": n_local,
                                "cache_hits": n_cache, "synthesized": n_synth, "retries": n_retry,
@@ -206,10 +263,18 @@ class TTSManager:
         mf = atomic_write_json(ctx.stage_dir / "tts_manifest.json", manifest)
         return StageResult(
             [ctx.draft(master, "audio_master", duration_sec=qa["duration_sec"]), ctx.draft(mf, "tts_manifest"),
-             ctx.draft(tl_file, "audio_timeline", segments=len(timeline["segments"]))],
+             ctx.draft(tl_file, "audio_timeline", segments=len(timeline["segments"])),
+             ctx.draft(sp_file, "speech_plan", mode=splan["mode"], groups=len(segments))],
             {"segments": len(rows), "reused_chunks": n_local + n_cache, "cache_hits": n_cache, "synthesized": n_synth,
              "segment_retries": n_retry, "duration_sec": qa["duration_sec"], "engine": flat["engine"],
-             "planner": plan_report["used"]})
+             "planner": plan_report["used"], "prosody": splan["mode"], "prosody_warnings": len(splan["qc"]["warnings"]) + len(audio_qc["warnings"]),
+             "llm_calls": plan_report.get("llm_calls", 0)})
+
+    @staticmethod
+    def _key_text(seg: dict) -> str:
+        """Văn bản dùng cho cache key: thêm ngữ cảnh/break CHỈ khi chúng thật sự đi vào lời gọi engine (engine hỗ trợ), vì khi đó chúng đổi âm thanh."""
+        extra = {k: seg[k] for k in ("breaks", "context") if seg.get(k)}
+        return seg["text"] + ("\x1f" + json.dumps(extra, sort_keys=True, ensure_ascii=False) if extra else "")
 
     # -- timeline ranh giới (cho cắt part TikTok ở Phase 4) -------------------------------------------
     @staticmethod

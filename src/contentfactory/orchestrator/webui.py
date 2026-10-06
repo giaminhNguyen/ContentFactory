@@ -305,6 +305,22 @@ class Api:
     def tts(app, m, q, b):
         return app.admin.tts_overview()
 
+    @route("GET", "/api/tts/prosody")
+    def prosody_info(app, m, q, b):
+        return app.admin.prosody_info()
+
+    @route("POST", "/api/tts/prosody/preview")
+    def prosody_preview(app, m, q, b):
+        return app.admin.prosody_preview(b)
+
+    @route("GET", r"/api/tts/prosody/preview/(?P<id>[0-9a-f]{16})")
+    def prosody_preview_file(app, m, q, b):
+        return app.admin.prosody_preview_file(m["id"])
+
+    @route("GET", r"/api/jobs/(?P<id>[\w\-]+)/speech-plan")
+    def speech_plan(app, m, q, b):
+        return app.service.speech_plan(m["id"], q.get("scope", ["external"])[0])
+
     @route("GET", r"/api/tts/profiles/(?P<name>[\w\-\.]+)")
     def tts_profile(app, m, q, b):
         return app.admin.tts_profile_detail(m["name"])

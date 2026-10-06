@@ -67,7 +67,7 @@ def normalize_channel(raw: dict | None, channel_id: str) -> dict:
     return out
 
 
-PRESET_KEYS = {"tts_profile": (str, type(None)), "tts": dict, "language": str, "pools": dict, "render": dict, "audio": dict, "tiktok": dict}
+PRESET_KEYS = {"tts_profile": (str, type(None)), "tts": dict, "language": str, "pools": dict, "render": dict, "audio": dict, "tiktok": dict, "prosody": dict}
 
 
 def validate_preset(pre) -> list[str]:

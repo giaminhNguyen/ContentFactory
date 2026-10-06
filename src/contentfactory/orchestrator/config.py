@@ -32,6 +32,8 @@ DEFAULTS: dict = {
     "tts_profiles_dir": "tts_profiles",                       # profile TTS đã onboard (annotated JSON); Auto Mode chọn tự động theo ngôn ngữ/engine
     # Auto Mode (Phase 7): cấu hình của MÁY, áp dụng lúc tạo job (kết quả chốt vào params/snapshot của job)
     "auto": {"tts_profile_selection": True, "pool_selection": True},
+    # Prosody (D-100): nhịp đọc cho job MỚI (natural | fast | dramatic); None/"" = tắt, dùng planner cũ. Job đã tạo trước đó không bị đổi (params.prosody chốt lúc tạo job).
+    "prosody": {"default_profile": "natural"},
     # Auto Cleanup: dọn trung gian của job đã đăng, cache quá cỡ, workspace cũ. KHÔNG BAO GIỜ đụng output/ (của người dùng)
     "cleanup": {"enabled": True, "interval_s": 600, "intermediates_after_publish": True, "artifact_keep_days": 14, "failed_keep_days": 30,
                 "cache_gb": {"tts": 20, "source": 5}},

@@ -22,6 +22,7 @@ from ..jobs import pipeline as P
 from ..jobs.plan import spec_for_mode
 from ..jobs.workspace import job_dir
 from ..output import metadata as MD
+from ..tts import prosody as PRO
 from . import auto as AU
 from . import channels as CH
 from . import diagnose as DG
@@ -477,7 +478,8 @@ class Service:
                                     "summary": self._impact_summary(pend["impact"] or {})} if pend else None),
                  actions={"pause": j["control_state"] == "RUNNING" and status not in ("completed", "failed", "cancelled"), "unpause": j["control_state"] == "PAUSED",
                           "cancel": j["control_state"] != "CANCELLED" and status != "completed", "update": status not in ("completed", "cancelled"),
-                          "clone": status in ("completed", "cancelled", "failed")})
+                          "clone": status in ("completed", "cancelled", "failed"),
+                          "prosody": any(a["kind"] == "speech_plan" for a in self.orc.store.artifacts(job_id))})
         s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=self._pipeline(j, runs), decisions=j["params"].get("auto", []),
                  mode={"start": j.get("start_stage"), "target": j.get("target_stage")}, params_public=self._public_params(j["params"]),
                  output=(lambda o: o if o.get("project_dir") else None)(self.output_info(job_id)),
@@ -615,6 +617,29 @@ class Service:
             msg += " Job vẫn đang chờ tài nguyên nên sẽ chạy khi tài nguyên sẵn sàng."
         return {"result": res, "message": msg}
 
+    def speech_plan(self, job_id: str, scope: str = "external") -> dict:
+        """Nhịp đọc của một job (từ speech plan đã snapshot): QC + danh sách ranh giới kèm khóa để chỉnh tay (`params.prosody.overrides`).
+        scope: external (khoảng nghỉ thật sự được chèn, giữa các nhóm) | all (cả ranh giới trong nhóm do engine tự xử lý)."""
+        j = self._job_or_error(job_id)
+        art = next((a for a in self.orc.store.artifacts(job_id) if a["kind"] == "speech_plan"), None)
+        if art is None:
+            return {"available": False, "reason": "Job chưa chạy tới bước giọng đọc nên chưa có nhịp đọc."}
+        try:
+            plan = json.loads((job_dir(self.cfg.path("workspace"), job_id) / art["path"]).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"available": False, "reason": "Không đọc được speech plan của job."}
+        last = {g["segments"][-1] for g in plan["groups"]}
+        labels = {k["id"]: k["label"] for k in PRO.describe()["kinds"]}
+        rows = [{"key": s.get("key"), "text": s["text"][-90:], "kind": s["boundary_after"], "kind_label": labels.get(s["boundary_after"], s["boundary_after"]),
+                 "pause_ms": s["pause_after_ms"], "source": s.get("source"),
+                 "manual": bool(s.get("manual_override")), "group": s.get("synthesis_group"), "realized": s.get("realized"), "external": s["id"] in last}
+                for s in plan["segments"] if s["boundary_after"] != "end" and (scope == "all" or s["id"] in last)]
+        overrides = {}
+        if j["params"].get("prosody"):
+            overrides = PRO.resolve_prosody(j["params"]["prosody"])["overrides"]
+        return {"available": True, "mode": plan["mode"], "editable": plan["mode"] == "prosody", "profile": plan.get("profile"), "qc": plan["qc"], "warnings": plan.get("warnings", []),
+                "overrides": overrides, "boundaries": rows[:2000], "truncated": len(rows) > 2000}
+
     def _job_or_error(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)
         if j is None:
@@ -701,7 +726,7 @@ class Service:
         pools = sorted(((self.cfg.data.get("render") or {}).get("pools") or {}).keys())
         files = sorted(x.name for x in d.iterdir() if x.is_file() and x.name != "channel.json") if d.is_dir() else []
         return {"id": channel_id, "raw": raw, "channel": {k: v for k, v in ch.items() if k != "loaded_from"}, "assets": files,
-                "options": {"tts_profiles": profiles, "pools": pools, "privacy": ["private", "unlisted", "public"]}}
+                "options": {"tts_profiles": profiles, "pools": pools, "privacy": ["private", "unlisted", "public"], "prosody": PRO.describe()}}
 
     def save_channel(self, channel_id: str, raw: dict, create: bool = False) -> dict:
         d = CH.channel_dir(self.cfg, channel_id)
@@ -711,6 +736,8 @@ class Service:
             raise _err("INVALID_CHANNEL_CONFIG", "Cấu hình kênh phải là object.")
         raw = {k: v for k, v in raw.items() if k not in ("id", "loaded_from")}
         MD.normalize_channel(raw, channel_id)                  # đúng validator của core: sai thì báo ngay, không ghi
+        if (raw.get("preset") or {}).get("prosody"):
+            PRO.resolve_prosody(raw["preset"]["prosody"])                           # nhịp đọc của kênh: kiểm bằng đúng validator của core
         _, terrs = TPL.normalize_section(raw.get("templates"))
         if terrs:
             raise _err("INVALID_CHANNEL_CONFIG", "; ".join(terrs))

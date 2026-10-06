@@ -159,6 +159,9 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     rs.add_argument("--now", action="store_true")
     rt = add("retry", "retry job FAILED tại đúng stage lỗi")
     rt.add_argument("job_id")
+    spn = add("speech-plan", "xem nhịp đọc (speech plan) của job: nhóm tổng hợp, khoảng nghỉ, cảnh báo QC; sửa bằng `update --params`")
+    spn.add_argument("job_id")
+    spn.add_argument("--all", action="store_true", help="gồm cả ranh giới nằm trong nhóm (do engine tự xử lý)")
     pa = add("pause", "tạm dừng AN TOÀN job (hoàn tất đơn vị đang chạy rồi dừng); `resume <job>` để chạy tiếp")
     pa.add_argument("job_id")
     ca = add("cancel", "hủy job (không tự chạy lại; kết quả đã có được giữ)")
@@ -396,6 +399,17 @@ def main(argv: list[str] | None = None) -> int:
                           "locked": [s for s, i in pl.states.items() if i["state"] == "locked"],
                           "provided": [s for s, i in pl.states.items() if i["state"] == "provided"], "errors": pl.errors}, ensure_ascii=False))
         return 1 if pl.errors else 0
+    elif a.cmd == "speech-plan":
+        from .service import Service
+        sp = Service(orc).speech_plan(a.job_id, "all" if a.all else "external")
+        if not sp["available"]:
+            print(sp["reason"])
+            return 1
+        print(f"nhịp đọc: {sp['mode']} / {sp.get('profile')} · nhóm={sp['qc']['groups']} · nghỉ P50/P95/max = {sp['qc']['pause_ms']['p50']}/{sp['qc']['pause_ms']['p95']}/{sp['qc']['pause_ms']['max']} ms")
+        for w in sp["qc"]["warnings"]:
+            print(f"  ! {w['code']}: {w['message']}")
+        for b in sp["boundaries"]:
+            print(f"  {b['key']:16} {b['kind']:10} {b['pause_ms']:5} ms {'[tay]' if b['manual'] else '     '} …{b['text'][-50:]}")
     elif a.cmd == "pause":
         print(f"job {a.job_id}: {orc.pause_job(a.job_id)}")
     elif a.cmd == "cancel":

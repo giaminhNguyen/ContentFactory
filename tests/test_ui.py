@@ -103,6 +103,69 @@ class JobControlViewTest(UiCase):
             self.svc.request_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}, "apply_policy": "now"})
 
 
+# ================================================================================== Prosody (nhịp đọc): thông tin, nghe thử A/B, speech plan của job
+class ProsodyViewTest(UiCase):
+    def setUp(self):
+        super().setUp()
+        write_config(self.root, prosody={"default_profile": "natural"})              # cấu hình mặc định của máy: job mới dùng nhịp đọc Tự nhiên
+        self.o = self.orc()
+        self.svc, self.adm = Service(self.o), AdminService(self.o)
+
+    def preview(self, **payload) -> dict:
+        tid = self.adm.prosody_preview(payload)["task"]
+        wait_until(lambda: self.adm.tasks.get(tid)["state"] != "running", 30, "preview done")
+        t = self.adm.tasks.get(tid)
+        self.assertEqual(t["state"], "done", t.get("error"))
+        return t["result"]
+
+    def test_info_lists_profiles_and_never_claims_llm_available_without_a_labeler(self):
+        info = self.adm.prosody_info()
+        self.assertEqual([p["id"] for p in info["profiles"]], ["natural", "fast", "dramatic", "custom"])
+        self.assertFalse(info["semantic_available"])
+        self.assertIn("scene", {k["id"] for k in info["kinds"]})
+
+    def test_preview_ab_gives_two_cached_variants_and_serves_audio_by_id_only(self):
+        r = self.preview(variants=[{"profile": "natural"}, {"profile": "dramatic"}])
+        a, b = r["variants"]
+        self.assertNotEqual(a["id"], b["id"])
+        self.assertGreater(b["duration_sec"], a["duration_sec"])                   # dramatic nghỉ lâu hơn => dài hơn
+        self.assertGreater(max(b["pauses_ms"]), max(a["pauses_ms"]))
+        raw = self.adm.prosody_preview_file(a["id"])
+        self.assertEqual((raw.ctype, raw.body[:4]), ("audio/wav", b"RIFF"))
+        again = self.preview(variants=[{"profile": "natural"}])
+        self.assertEqual(again["variants"][0]["id"], a["id"])                       # cache theo nội dung
+        for bad in ("../x", "zz", "0" * 15, a["id"].upper()):
+            with self.assertRaises(StageError):
+                self.adm.prosody_preview_file(bad)
+        with self.assertRaises(StageError):
+            self.adm.prosody_preview({"variants": [{"profile": "nope"}]})
+        with self.assertRaises(StageError):
+            self.adm.prosody_preview({"variants": [{}, {}, {}]})
+
+    def test_job_speech_plan_view_and_manual_override_through_a_revision(self):
+        jid = self.svc.create_run({"input": {"value": URL}, "channel": "kenh", "run": "through_tts"})["job_id"]
+        self.assertFalse(self.svc.speech_plan(jid)["available"])                    # chưa tới TTS
+        self.o.run()
+        sp = self.svc.speech_plan(jid)
+        self.assertTrue(sp["available"] and sp["editable"], sp)
+        self.assertEqual(sp["profile"], "natural")
+        self.assertTrue(sp["boundaries"] and all(b["external"] for b in sp["boundaries"]))
+        allb = self.svc.speech_plan(jid, "all")["boundaries"]
+        self.assertGreaterEqual(len(allb), len(sp["boundaries"]))
+        b = sp["boundaries"][0]
+        clone = self.o.clone_job(jid, rerun_from="tts", params_patch={"prosody": {"overrides": {b["key"]: {"pause_ms": 1777}}}})
+        self.o.run()
+        sp2 = self.svc.speech_plan(clone)
+        row = next(x for x in sp2["boundaries"] if x["key"] == b["key"])
+        self.assertEqual((row["pause_ms"], row["manual"]), (1777, True))
+        self.assertEqual(sp2["overrides"], {b["key"]: {"pause_ms": 1777}})
+        # Reset Auto: {"pause_ms": null} bỏ override
+        clone2 = self.o.clone_job(clone, rerun_from="tts", params_patch={"prosody": {"overrides": {b["key"]: {"pause_ms": None}}}})
+        self.o.run()
+        row2 = next(x for x in self.svc.speech_plan(clone2)["boundaries"] if x["key"] == b["key"])
+        self.assertEqual((row2["pause_ms"], row2["manual"]), (b["pause_ms"], False))
+
+
 # ================================================================================== nhận dạng đầu vào
 class DetectTest(UiCase):
     def test_youtube_urls(self):
@@ -536,6 +599,19 @@ class HttpTest(UiCase):
         except urllib.error.HTTPError as e:
             raw_body = e.read()
             return e.code, (json.loads(raw_body) if raw_body else {}), e.headers
+
+    def test_prosody_endpoints(self):
+        code, info, _ = self.call("GET", "/api/tts/prosody")
+        self.assertEqual((code, info["profiles"][0]["id"]), (200, "natural"))
+        code, r, _ = self.call("POST", "/api/tts/prosody/preview", {"variants": [{"profile": "fast"}]})
+        self.assertEqual(code, 200)
+        wait_until(lambda: self.call("GET", f"/api/tasks/{r['task']}")[1]["state"] != "running", 30, "preview")
+        res = self.call("GET", f"/api/tasks/{r['task']}")[1]["result"]
+        code, body, headers = self.call("GET", res["variants"][0]["url"])
+        self.assertEqual((code, headers.get_content_type(), body[:4]), (200, "audio/wav", b"RIFF"))
+        self.assertEqual(self.call("GET", "/api/tts/prosody/preview/" + "0" * 16)[0], 404)
+        self.assertEqual(self.call("POST", "/api/tts/prosody/preview", {"variants": [{"profile": "x"}]})[0], 400)
+        self.assertEqual(self.call("GET", res["variants"][0]["url"], token=False)[0], 401)
 
     def test_job_control_endpoints(self):
         code, r, _ = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "story"})

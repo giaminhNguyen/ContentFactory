@@ -17,7 +17,10 @@ from pathlib import Path
 
 from ..contracts import ErrorClass, StageError
 from ..fsutil import atomic_write_json
+from ..tts import prosody as PRO
 from ..tts import schema as TS
+from ..tts.autotune import make_ctx
+from ..tts.manager import TTSManager
 from . import auto as AU
 from . import doctor as DR
 from . import ops
@@ -327,6 +330,80 @@ class AdminService:
                            "is_fake": name == "fake"},
                 "profiles": profiles, "auto": {"language": language, "selected": sel[0] if sel else None, "why": sel[1] if sel else None},
                 "profiles_dir": str(AU.tts_profiles_dir(self.cfg))}
+
+    # ---- Prosody (nhịp đọc): thông tin cho giao diện + nghe thử nhanh, không cần chạy job
+    def prosody_info(self) -> dict:
+        planner = self.orc.adapters.get("planner")
+        return {**PRO.describe(), "default_profile": (self.cfg.data.get("prosody") or {}).get("default_profile"),
+                "semantic_available": getattr(planner, "semantic_labeler", None) is not None,
+                "preview_text": PRO.PREVIEW_TEXT}
+
+    def prosody_preview(self, payload: dict) -> dict:
+        """Tổng hợp đoạn mẫu ~25s với 1–2 biến thể nhịp đọc (A/B) bằng engine + profile hiện hành; chạy nền (engine có thể chậm). Kết quả cache theo
+        (văn bản mẫu, prosody, engine/profile) và dùng chung cache chunk TTS với job thật."""
+        variants = payload.get("variants") or [payload]
+        if not isinstance(variants, list) or not 1 <= len(variants) <= 2:
+            raise _err("INVALID_PREVIEW", "Nghe thử nhận 1 biến thể, hoặc 2 biến thể để so sánh A/B.")
+        norm = []
+        for v in variants:
+            v = {k: v[k] for k in ("profile", "custom", "scale") if isinstance(v, dict) and k in v}
+            PRO.resolve_prosody(v)                                           # sai thì báo ngay, không mở tác vụ nền
+            norm.append(v)
+        name = payload.get("tts_profile") or None
+        profile = AU.load_tts_profile(self.cfg, name) if name else None
+        if profile is None and self.cfg.data.get("auto", {}).get("tts_profile_selection", True):
+            sel = AU.select_tts_profile(self.cfg, self.cfg.data["job_defaults"].get("language", "vi"), getattr(self.orc.adapters.get("tts"), "engine_id", None))
+            profile = AU.load_tts_profile(self.cfg, sel[0]) if sel else None
+        if self.tasks.running("prosody_preview"):
+            raise _err("PREVIEW_BUSY", "Đang có một bản nghe thử chạy.", "Đợi bản đó xong rồi thử lại.")
+        return {"task": self.tasks.start("prosody_preview", self._prosody_preview, norm, profile)}
+
+    def _prosody_preview(self, variants: list[dict], profile: dict | None) -> dict:
+        import tempfile
+        tts, audio = self.orc.adapters.get("tts"), self.orc.adapters.get("audio")
+        if tts is None or audio is None:
+            raise _err("NO_TTS", "Chưa có adapter TTS/audio để nghe thử.", "Mở Giọng đọc để kiểm tra engine.")
+        base = self.cfg.path("runtime") / "previews" / "prosody"
+        base.mkdir(parents=True, exist_ok=True)
+        ident = TS.stable_hash({"engine": getattr(tts, "engine_id", None), "profile": profile})
+        out = []
+        for v in variants:
+            pr = PRO.resolve_prosody(v)
+            pid = TS.stable_hash({"text": PRO.PREVIEW_TEXT, "pro": pr, "tts": ident})[:16]
+            dest, side = base / f"{pid}.wav", base / f"{pid}.json"
+            info = None
+            if dest.is_file() and side.is_file():
+                try:
+                    info = json.loads(side.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    info = None
+            if info is None:
+                wd = Path(tempfile.mkdtemp(prefix="cf-prosody-"))
+                try:
+                    ctx = make_ctx(wd)
+                    ctx.params = {"prosody": v, "language": self.cfg.data["job_defaults"].get("language", "vi")}
+                    ctx.config = {"tts_cache_dir": str(self.cfg.path("runtime") / "cache" / "tts")}
+                    res = TTSManager(tts, audio, self.orc.adapters.get("planner")).run(ctx, PRO.PREVIEW_TEXT, profile)
+                    plan = json.loads((wd / "speech_plan.json").read_text(encoding="utf-8"))
+                    shutil.copyfile(wd / "audio" / "master.wav", dest)
+                    info = {"duration_sec": res.data["duration_sec"], "groups": len(plan["groups"]), "pauses_ms": [g["pause_after_ms"] for g in plan["groups"][:-1]],
+                            "boundaries": plan["qc"]["boundaries"], "warnings": plan["qc"]["warnings"] + plan["qc"].get("audio", {}).get("warnings", [])}
+                    atomic_write_json(side, info)
+                finally:
+                    shutil.rmtree(wd, ignore_errors=True)
+            out.append({"id": pid, "url": f"/api/tts/prosody/preview/{pid}", "profile": pr["profile"], "label": PRO.resolve_prosody(v)["profile"], **info})
+        return {"variants": out, "text": PRO.PREVIEW_TEXT}
+
+    def prosody_preview_file(self, pid: str):
+        """Âm thanh nghe thử theo mã (chỉ mã hex do chính backend sinh; không nhận đường dẫn từ client)."""
+        import re as _re
+        from .service_templates import Raw
+        if not _re.fullmatch(r"[0-9a-f]{16}", pid or ""):
+            raise _err("PREVIEW_NOT_FOUND", "Không có bản nghe thử này.")
+        f = self.cfg.path("runtime") / "previews" / "prosody" / f"{pid}.wav"
+        if not f.is_file():
+            raise _err("PREVIEW_NOT_FOUND", "Bản nghe thử không còn (đã bị dọn).", "Bấm Nghe thử để tạo lại.")
+        return Raw(f.read_bytes(), "audio/wav")
 
     def tts_profile_detail(self, name: str) -> dict:
         prof = AU.load_tts_profile(self.cfg, name)

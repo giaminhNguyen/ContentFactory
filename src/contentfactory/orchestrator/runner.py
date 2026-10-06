@@ -43,6 +43,7 @@ from . import revisions as REV
 from . import templates as TPL
 from .pools import PoolSyncService
 from .registry import build_adapters
+from ..tts import prosody as PRO
 from .snapshot import (adapters_hash, apply_patch, build_snapshot, config_hash, effective_config)
 from .stages import StageContract
 from .validation import validate_kind
@@ -141,6 +142,8 @@ class Orchestrator:
         preset, decisions = AU.preset_params(self.cfg, channel, params, self.adapters)
         merged = _merge(_merge(copy.deepcopy(self.cfg["job_defaults"]), copy.deepcopy(preset)), copy.deepcopy(params))
         decisions += AU.select_pools(self.cfg, merged, channel, self.adapters)
+        if merged.get("prosody"):
+            PRO.resolve_prosody(merged["prosody"])                                    # sai thì từ chối ngay lúc tạo job (không để lỗi nửa chừng ở stage TTS)
         items = self._prepare_imports(inputs or {}, from_job, merged)
         plan = self._plan(merged, {i["kind"] for i in items}, mode, start_stage, target_stage, pipeline)
         if plan.errors:

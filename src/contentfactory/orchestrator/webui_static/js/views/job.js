@@ -8,6 +8,7 @@ import { jobStatus, stageState, ACTION_LABEL, PART_STATE } from "../status.js";
 import { relTime, duration } from "../format.js";
 import { openOutput, pauseJob, resumeJob, retryJob, setAutoResume } from "../actions.js";
 import { openPipelineDialog, openClone, confirmCancel } from "./_job_control.js";
+import { openProsodyDialog } from "./_prosody.js";
 import * as motion from "../motion.js";
 
 const TONE = { waiting: "wait", attention: "attn", failed: "fail", paused: "wait" };
@@ -93,6 +94,7 @@ export async function mount(root, ctx) {
     }
     const tools = h("div", { class: "row" });
     if (a.update) tools.append(btn({ label: "Cập nhật pipeline…", icon: "layers", size: "sm", onClick: () => openPipelineDialog(d, { after }).catch((e) => toastError(e)) }));
+    if (a.prosody) tools.append(btn({ label: "Nhịp đọc…", icon: "mic", size: "sm", onClick: () => openProsodyDialog(d, { after, navigate: ctx.navigate }).catch((e) => toastError(e)) }));
     if (a.clone) tools.append(btn({ label: "Chạy lại với thay đổi…", icon: "refresh", size: "sm", onClick: () => openClone(d, { navigate: ctx.navigate }).catch((e) => toastError(e)) }));
     if (a.cancel) tools.append(btn({ label: "Hủy job…", icon: "x", size: "sm", kind: "danger", onClick: () => confirmCancel(d, { after }) }));
     if (tools.childElementCount) box.append(disclosure({ label: "Thao tác nâng cao", content: h("div", { class: "stack", style: "padding-top: var(--s-2)" }, h("p", { class: "muted small" }, d.status === "completed" || d.status === "cancelled" || d.status === "failed" ? "Job đã kết thúc: kết quả cũ không bị thay đổi tại chỗ." : `Pipeline hiện tại: bản ${d.pipeline_revision}. Thay đổi chỉ áp dụng ở điểm an toàn và chỉ chạy lại phần bị ảnh hưởng.`), tools) }));

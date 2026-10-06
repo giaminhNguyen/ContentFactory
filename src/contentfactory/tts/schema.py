@@ -30,6 +30,9 @@ CAPABILITY_FIELDS = {          # tên: (kiểu, mặc định)
     "requires_reference_audio": (bool, False), "output_formats": (list, ["wav"]), "sample_rate": ((int, type(None)), None),
     "max_concurrency": (int, 1), "engine_version": (str, ""), "cache_settings": ((list, type(None)), None),
     "device": (list, []),
+    # Khả năng điều khiển nhịp (Prosody Engine, D-100): engine nhận break chính xác trong một lần gọi / dùng ngữ cảnh câu trước-sau thì khai báo ở đây;
+    # mặc định False/False ⇒ ContentFactory gom nhóm hợp lý và chèn khoảng lặng chính xác bên ngoài (không dựa vào dấu câu lặp hay khoảng trắng).
+    "supports_ssml_break": (bool, False), "supports_exact_break_ms": (bool, False), "supports_context": (bool, False),
 }
 
 DEFAULT_FLAT: dict = {
