@@ -68,6 +68,8 @@ Video đăng ở **private**; khai báo "dành cho trẻ em" không bao giờ b�
 </tr>
 </table>
 
+**Năng lực mới (Agent Plan):** chọn **bất kỳ tập bước** nào (vd chỉ TikTok) — phụ thuộc tự suy ra · **tạm dừng/tiếp tục an toàn** và **cập nhật pipeline khi đang chạy** (xem tác động trước, áp dụng ở điểm an toàn) · **nhịp đọc tất định** cho giọng đọc (không dùng AI) · dán **kênh/playlist YouTube** → một Channel Run gồm nhiều job độc lập · **thư mục ảnh** làm nguồn thumbnail (chốt một ảnh cho mỗi job, đổi ảnh có kiểm soát) · **xem trước nhanh** trong Template Studio · **kiểm tra trước khi chạy theo đúng kế hoạch**, timeline từng bước có giải thích, tìm kiếm/lọc/hành động hàng loạt và bảng "có việc gì cần xử lý".
+
 ---
 
 ## 🚀 Bắt đầu nhanh
@@ -291,6 +293,7 @@ Kiểm chứng **thật** trên máy phát triển (chi tiết: [`docs/PRODUCTIO
 
 ```powershell
 python -m unittest discover -s tests -t .                 # toàn bộ test (lõi chỉ cần stdlib)
+node --test tests\ui_js\*.mjs                            # logic thuần của giao diện
 
 # test với công cụ thật (sau khi đã chạy setup)
 $env:CF_TEST_CONTENTFLOW_PYTHON = ".venv\Scripts\python.exe"
@@ -300,7 +303,9 @@ python scripts\validate_real.py "<URL YouTube>"            # kiểm chứng pipe
 
 cd scripts\ui_qa ; npm install ; cd ..\..                  # QA giao diện bằng Chrome + axe-core (một lần)
 python scripts\ui_qa\fixture_server.py --port 8799         # giao diện với dữ liệu mẫu
-node scripts\ui_qa\qa.mjs http://127.0.0.1:8799 <root>\fixture.json
+node scripts\ui_qa\qa.mjs http://127.0.0.1:8799 <root>\fixture.json [--only jobsui,imgpools,...]
+python scripts\ui_qa\fixture_server.py --port 8799 --many 250    # danh sách lớn (phần scale/perf)
+python scripts\ui_qa\real_templates.py --port 8803               # ContentFlow thật cho phần templates/tplprev
 ```
 
 **Nguyên tắc kiến trúc:** các module (`source`, `story`, `tts`, `audio`, `render`, `publish`, `output`) độc lập, chỉ giao tiếp qua artifact + contract — có test AST chặn import chéo; chỉ `orchestrator` nối chúng. Frontend không chứa logic nghiệp vụ; mọi thứ đi qua facade `service.py`.

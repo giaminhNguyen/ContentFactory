@@ -366,7 +366,8 @@ class FfmpegAudio:
                     continue                                                  # im lặng ở đầu/cuối file không phải ranh giới giữa
                 boundaries.append({"t": (s["start"] + s["end"]) / 2 * ratio,
                                    "kind": "paragraph" if s["duration"] >= sp["silence"]["paragraph_s"] else "silence"})
-        plan = plan_split(d_out, boundaries, target_part_sec, sp["min_ratio"], sp["max_ratio"], sp["bonus_sec"], sp.get("min_last_ratio", 0.4))
+        plan = plan_split(d_out, boundaries, target_part_sec, sp["min_ratio"], sp["max_ratio"], sp["bonus_sec"], sp.get("min_last_ratio", 0.4),
+                          min_part_sec=2 * float((prof.get("qa") or {}).get("min_duration_sec", 0.3)))             # sàn tuyệt đối: part cuối không bao giờ ngắn tới mức QA coi là rỗng
         warns += plan["warnings"]
         # --- 3) cắt (lossless, fade ngắn ở điểm cắt)
         for old in out_dir.glob("part_*.wav"):

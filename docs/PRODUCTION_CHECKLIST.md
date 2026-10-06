@@ -59,6 +59,18 @@ Nút thắt là render (CPU). Có NVENC thì nhanh hơn nhiều (chưa đo: máy
 | Render video dài 10–60 phút, nhiều job song song ở quy mô thật | thời gian | chạy `--long-audio-sec 1800` |
 | Linux/macOS | chỉ thử Windows | lõi stdlib portable; script `.ps1/.cmd` là Windows |
 
+## B2. Agent Plan (Phase 1–10) — đã kiểm bằng gì
+
+| Hạng mục | Kiểm bằng | Kết quả |
+|---|---|---|
+| Pipeline spec v2, pause/revision, Prosody, Channel Run (D-98…D-102) | `test_pipeline_v2`, `test_job_control`, `test_prosody`, `test_batches`; `qa.mjs --only pipeline,control,prosody,channelrun` | OK |
+| Vòng đời template + xem trước nhanh (D-103, D-104) | `test_templates_api` (cả ContentFlow thật), `qa.mjs --only tpllife,tplprev,templates` (fixture `real_templates.py`) | OK |
+| Image Pool (D-105) | `test_image_pools*`, `qa.mjs --only imgpools` | OK |
+| Preflight/timeline/lọc/hàng loạt/dashboard (D-106) | `test_phase9`, `qa.mjs --only jobsui,pipeline` | OK |
+| Hardening (D-107): DB cũ mở đồng thời, job cũ hiển thị/chạy như Single Job, pause qua restart, crash giữa chốt ảnh, preview không đụng bản nháp, publish/archive đồng thời, không `shell=True`, không lộ bí mật, không N+1, bundle offline | `test_hardening` | OK |
+| `cf demo` + CLI cũ không hồi quy | `test_hardening.LegacySmokeTest`, `cf demo` | OK (đã sửa hồi quy part TikTok cuối quá ngắn) |
+| **Chưa kiểm** | YouTube thật (discovery/upload), TTS thật + nghe thử Prosody, Story thật, NVENC, Linux/macOS, thông báo trình duyệt trên trình duyệt thật | — |
+
 ## C. Việc còn phải làm tay trên máy mới
 
 Đăng nhập `claude`; video nền; template thumbnail + font; OAuth Google + `yt-uploader login`; onboard TTS. `setup.ps1` + `doctor` liệt kê từng việc.

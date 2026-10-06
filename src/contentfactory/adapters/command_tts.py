@@ -39,6 +39,20 @@ def _get(profile: dict, name: str):
     return cur
 
 
+def _remove_quietly(path) -> None:
+    """Dọn file tạm; KHÔNG BAO GIỜ làm hỏng kết quả/phân loại lỗi của lần gọi. Trên Windows một tiến trình con vừa bị kill (hoặc tiến trình khác thừa kế handle
+    trong lúc tạo process song song) có thể còn giữ file vài chục ms => PermissionError; thử lại ngắn rồi bỏ qua (file tạm sẽ bị ghi đè ở lần gọi sau)."""
+    if not path:
+        return
+    p = Path(path)
+    for attempt in range(20):
+        try:
+            p.unlink(missing_ok=True)
+            return
+        except OSError:
+            time.sleep(0.05)
+
+
 class CommandTTS:
     def __init__(self, spec: dict | None = None) -> None:
         if not spec or not spec.get("command"):
@@ -127,6 +141,5 @@ class CommandTTS:
             os.replace(tmp, out_path)
         finally:
             for f in (tmp, so, se, text_file):
-                if f and Path(f).exists():
-                    Path(f).unlink()
+                _remove_quietly(f)
         return {"index": segment["index"], "duration_sec": 0.0}

@@ -19,7 +19,8 @@ KINDS = ("scene", "paragraph", "sentence", "silence", "cut")
 
 
 def plan_split(total: float, boundaries: list[dict], target: float, min_ratio: float = 0.85, max_ratio: float = 1.15,
-               bonus_sec: dict | None = None, min_last_ratio: float = 0.4) -> dict:
+               bonus_sec: dict | None = None, min_last_ratio: float = 0.4, min_part_sec: float = 0.0) -> dict:
+    """`min_part_sec`: sàn TUYỆT ĐỐI cho part cuối (giây) — phải ≥ ngưỡng audio QA, nếu không với `target` rất nhỏ planner có thể cho ra part mà QA coi là rỗng."""
     bonus = {"scene": 90.0, "paragraph": 45.0, "sentence": 15.0, "silence": 5.0, "cut": 0.0, **(bonus_sec or {})}
     warns: list[str] = []
     if total <= 0:
@@ -29,8 +30,8 @@ def plan_split(total: float, boundaries: list[dict], target: float, min_ratio: f
                 "warnings": warns, "n": 1, "per_part": total, "mode": "single"}
     k = int(total // target)
     rest = total - k * target
-    tail_min = 0.5 * min_last_ratio * target                   # part cuối ngắn nhất chấp nhận được (chế độ tail)
-    if k >= 1 and rest >= min_last_ratio * target:
+    tail_min = max(0.5 * min_last_ratio * target, min_part_sec)     # part cuối ngắn nhất chấp nhận được (chế độ tail)
+    if k >= 1 and rest >= max(min_last_ratio * target, min_part_sec):
         mode, n, ideal_len = "tail", k + 1, target
     else:
         per = total / max(1, k)

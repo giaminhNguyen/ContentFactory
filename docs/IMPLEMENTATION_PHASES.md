@@ -105,6 +105,10 @@ Không bắt đầu Phase 7.
 **Làm:** onboard engine TTS thật đầu tiên và engine thứ hai (kiểm chứng contract tổng quát), nối LLM thật cho `ai_infer` của Analyzer và `AISegmentPlanner` (kiểm chứng chất lượng, chi phí), chạy Auto Tune trên engine thật, human review nghe thử, adapter HTTP tổng quát nếu engine cần, dọn dẹp cache TTS.
 **Xong khi:** thêm một TTS mới chỉ bằng repo/docs reference, không nhập tham số tay, và nghe được kết quả chấp nhận được.
 
+## Agent Plan (CONTENTFACTORY_AGENT_IMPLEMENTATION_PLAN.md) — Phase 1–10 ✅
+
+Mười phase làm tiếp trên nền Phase 0–10 ở trên, mỗi phase một commit: P1 Pipeline Planner v2 (D-98), P2 pause/resume/hủy + pipeline revision + impact planner (D-99), P3 Prosody Engine (D-100), P4 Channel Run/Batch (D-101), P5 giao diện Channel Run + hàng loạt (D-102), P6 vòng đời template (D-103), P7 xem trước nhanh Template Studio (D-104), P8 Image Pool (D-105), P9 preflight/timeline/lọc/hàng loạt/dashboard (D-106), P10 hardening (D-107). Schema DB hiện là **v6**. **Chưa kiểm chứng với tài nguyên thật:** YouTube thật (discovery/upload), engine TTS thật + nghe thử Prosody, Story thật, NVENC, Linux/macOS.
+
 ## Phụ thuộc
 
 ```text

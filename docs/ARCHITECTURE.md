@@ -8,7 +8,7 @@ Thiết kế đầy đủ: `HANDOFF.md`. Quyết định: `docs/DECISIONS.md` (D
 source → story → tts → audio → render_youtube → render_tiktok → output → publish
 ```
 
-Mỗi stage đọc artifact của stage trước (kiểm tra bằng validator theo `kind`), ghi artifact mới (kèm sha256) và checkpoint. Một job có `start_stage` và `target_stage` (mode có tên: FULL, SUBTITLE_ONLY, STORY_ONLY, THROUGH_TTS, TTS_ONLY, VIDEO_ONLY) hoặc một pipeline spec (`requested_stages`, phụ thuộc tự suy ra — D-98: vd chỉ TikTok, hoặc YouTube + đăng không cần TikTok); stage có output hợp lệ thì bị bỏ qua, không chạy lại. `stage_key` băm đúng các tham số/cấu hình mà stage khai báo (`params_deps`/`config_deps`) nên đổi tiêu đề chỉ chạy lại render/output, không chạy lại TTS.
+Mỗi stage đọc artifact của stage trước (kiểm tra bằng validator theo `kind`), ghi artifact mới (kèm sha256) và checkpoint. Một job có `start_stage` và `target_stage` (mode có tên: FULL, SUBTITLE_ONLY, STORY_ONLY, THROUGH_TTS, TTS_ONLY, VIDEO_ONLY) hoặc một pipeline spec (`requested_stages`, phụ thuộc tự suy ra — D-98: vd chỉ TikTok, hoặc YouTube + đăng không cần TikTok); stage có output hợp lệ thì bị bỏ qua, không chạy lại. Ảnh thumbnail của job đến từ Image Pool (D-105: chốt một ảnh vào workspace job lúc tạo) và preflight chỉ kiểm thứ kế hoạch cần (D-106). `stage_key` băm đúng các tham số/cấu hình mà stage khai báo (`params_deps`/`config_deps`) nên đổi tiêu đề chỉ chạy lại render/output, không chạy lại TTS.
 
 | Stage | Việc | Adapter (tên trong config) |
 |---|---|---|

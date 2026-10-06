@@ -143,12 +143,20 @@ class JobStore:
     def __init__(self, db_path: Path) -> None:
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        c = self._connect()
-        try:
-            c.execute("PRAGMA journal_mode=WAL")
-            c.executescript(SCHEMA)
-        finally:
-            c.close()
+        # Nhiều tiến trình (cf ui + cf run) có thể mở cùng một DB cũ cùng lúc: đổi journal_mode sang WAL cần khoá riêng và KHÔNG tôn trọng busy_timeout,
+        # nên thử lại ngắn khi gặp "database is locked" thay vì làm tiến trình thứ hai chết lúc khởi động.
+        for attempt in range(100):
+            c = self._connect()
+            try:
+                c.execute("PRAGMA journal_mode=WAL")
+                c.executescript(SCHEMA)
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or attempt == 99:
+                    raise
+            finally:
+                c.close()
+            time.sleep(0.05 + 0.02 * (attempt % 5))
         self._migrate()
 
     # -- plumbing ---------------------------------------------------------------------------

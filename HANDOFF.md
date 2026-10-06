@@ -871,6 +871,15 @@ Template edits do not silently mutate running/existing jobs.
 - **Tương thích:** layout cũ trong profile vẫn chạy khi chưa chọn template (cảnh báo deprecated); `cf templates migrate` chuyển sang template. Chi tiết: `docs/TEMPLATE_SYSTEM.md` §8.
 - **Template Studio** (trang *Template* trong `cf ui`): danh sách, canvas kéo/thả/đổi cỡ, bảng thuộc tính, lớp (z), thư viện asset, Duplicate, Lưu nháp, Kiểm tra, Xem trước, Render thử, Publish, Archive, undo/redo — trên **cùng schema** ContentFlow render.
 
+### 12B. Mở rộng đã triển khai sau Phase 10 (Agent Plan; chi tiết `docs/DECISIONS.md` D-98…D-107, `docs/MODULE_CONTRACTS.md` §11, §14, §15)
+
+- **Pipeline spec v2:** job có thể mang `requested_stages` (phụ thuộc tự suy ra từ `requires/produces`, không hard-code preset); legacy `mode/start/target` vẫn chạy y như cũ và được quy về spec tương đương một cách tất định.
+- **Điều khiển job:** tạm dừng thủ công (`control_state`) TÁCH khỏi hold tài nguyên; cập nhật pipeline/config của job đang sống đi qua `pipeline_revisions` (impact planner → áp dụng ở điểm an toàn, CAS); job đã xong KHÔNG sửa tại chỗ — Clone.
+- **Prosody:** nhịp đọc tất định (mặc định không gọi LLM) trong `speech_plan.json`; `story.txt` luôn sạch.
+- **Channel Run:** một Channel Run = nhiều job con ĐỘC LẬP (checkpoint/retry/output riêng); `batches`/`batch_items`, idempotency theo `request_id`.
+- **Image Pool:** `params.thumbnail_source` chốt ảnh vào workspace job (retry không chọn lại); schema v6 `image_pool_state`.
+- **Job control UI:** preflight theo pipeline, timeline chuẩn hoá, hàng loạt có kiểm từng job; tất cả quyết định nằm ở backend (`service.py`), frontend chỉ vẽ.
+
 ---
 
 ## 13. Source Sync

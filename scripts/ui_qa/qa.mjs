@@ -56,7 +56,7 @@ async function noOverflow(page, label) {
   check(`không tràn ngang ${label}`, o.sw <= o.iw + 1, `scrollWidth=${o.sw} > ${o.iw}`);
 }
 
-const ROUTES = [["/", "run"], ["/jobs", "jobs"], ["/channels", "channels"], ["/tts", "tts"], ["/pools", "pools"], ["/templates", "templates"], ["/settings", "settings"], ["/settings/storage", "settings-storage"]];
+const ROUTES = [["/", "run"], ["/jobs", "jobs"], ["/channels", "channels"], ["/tts", "tts"], ["/pools", "pools"], ["/pools/images", "pools-images"], ["/templates", "templates"], ["/settings", "settings"], ["/settings/storage", "settings-storage"]];
 
 // ===================================================================== 1. mọi trang: sạch lỗi, a11y, tràn ngang, ảnh chụp ở nhiều cỡ + 2 theme
 if (wanted("pages")) {
@@ -557,6 +557,17 @@ if (wanted("jobsui")) {
   await dlg.waitFor({ timeout: 15000 }).catch(() => {});
   check("hàng loạt: job không áp dụng được (đã xong/lỗi…) được liệt kê kèm lý do", (await dlg.count()) === 1 && (await dlg.locator("li").count()) >= 1);
   if (await dlg.count()) await dlg.getByRole("button", { name: "Đóng" }).click();
+  // hộp thoại hàng loạt: focus vào trong, Esc đóng và trả focus về nút gọi (bàn phím)
+  await page.getByRole("button", { name: "Chọn tất cả đang hiện" }).click();
+  await page.locator(".bulkbar button:has-text('Cập nhật pipeline')").focus();
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog[open] .pick-row");
+  check("hộp thoại cập nhật pipeline hàng loạt: focus nằm trong dialog", await page.evaluate(() => !!document.activeElement?.closest("dialog")));
+  await page.waitForTimeout(600);                                                                 // dialog đang mờ vào làm axe đo sai độ tương phản
+  await axe(page, "dialog cập nhật pipeline hàng loạt");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("dialog[open]", { state: "detached", timeout: 3000 });
+  check("Esc đóng dialog hàng loạt và trả focus về nút gọi", await page.evaluate(() => document.activeElement?.textContent?.includes("Cập nhật pipeline")));
   await page.getByRole("button", { name: "Xong chọn" }).click();
   check("không lỗi console/mạng (trang Job)", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
 

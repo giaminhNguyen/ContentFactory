@@ -10,7 +10,9 @@ Trạng thái: **Phase 6 (gói output có phiên bản + README/project.json, Me
 ```powershell
 # Python >= 3.10, không cần cài gói ngoài để chạy test
 python scripts/run_fake_job.py --temp          # chạy 1 fake job trong thư mục tạm
-python -m unittest discover -s tests -t .      # chạy test (~17 s)
+python -m unittest discover -s tests -t .      # chạy test (~8 phút đủ bộ, gồm ffmpeg/ContentFlow thật khi có biến môi trường)
+node --test tests/ui_js/*.mjs                  # logic thuần của giao diện (không cần trình duyệt)
+# QA trình duyệt thật (Chrome + axe): xem README mục "Phát triển"; phần scale cần fixture `--many 250`, phần templates/tplprev cần `scripts/ui_qa/real_templates.py`
 
 # dùng CLI trên thư mục gốc repo (tạo workspace/, output/, runtime/ — đã gitignore)
 $env:PYTHONPATH = "src"
