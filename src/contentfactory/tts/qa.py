@@ -12,6 +12,7 @@ from pathlib import Path
 from ..fsutil import wav_header
 
 SILENT_AMPLITUDE = 64          # |mẫu| < 64/32768 coi là im lặng (~ -54 dBFS)
+LONG_SLACK_SEC = 1.5           # engine luôn đệm im lặng ~0.3-0.5s + kéo dài từ ngắn ("Ting.") => câu rất ngắn không bị đánh trượt oan
 
 
 def wav_stats(path: Path) -> dict | None:
@@ -57,6 +58,6 @@ def chunk_issues(path: Path, text: str, qa: dict) -> list[str]:
         rate = len(text) / st["duration_sec"]
         if rate > cps[1]:
             issues.append("DURATION_TOO_SHORT_FOR_TEXT")     # đọc nhanh bất thường / thiếu chữ
-        elif rate < cps[0]:
+        elif st["duration_sec"] > len(text) / cps[0] + LONG_SLACK_SEC:
             issues.append("DURATION_TOO_LONG_FOR_TEXT")      # kéo dài / lặp / im lặng chèn vào
     return issues

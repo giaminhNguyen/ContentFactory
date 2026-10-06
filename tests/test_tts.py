@@ -66,6 +66,19 @@ class CountingTTS(FakeTTS):
         return super().synthesize(segment, profile, out_path, ctx)
 
 
+class ChunkQATest(unittest.TestCase):
+    def test_short_text_padding_is_not_too_long_but_dragged_audio_is(self):
+        from contentfactory.tts.qa import chunk_issues
+        qa = {"duration_chars_per_sec": [6.2, 38.5]}
+        loud = b"\xff\x3f" * 8000                                  # 1s ở 8kHz
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.wav"
+            write_wav(p, loud * 1)                               # "Ting." 1s: chỉ do engine đệm => đạt
+            self.assertEqual(chunk_issues(p, "Ting.", qa), [])
+            write_wav(p, loud * 4)                               # 4s cho 5 ký tự => kéo dài thật
+            self.assertEqual(chunk_issues(p, "Ting.", qa), ["DURATION_TOO_LONG_FOR_TEXT"])
+
+
 # =============================================================================== schema / profile
 class SchemaTest(unittest.TestCase):
     def test_fact_validation_requires_evidence_and_caps_ai_confidence(self):
