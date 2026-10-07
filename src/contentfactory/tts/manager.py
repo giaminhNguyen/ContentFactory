@@ -175,6 +175,37 @@ class TTSManager:
             issues = ["AUDIO_QA_FAILED"]
         return issues
 
+    # -- văn bản ngắn (dùng chung với Watermark; không cần story/job) --------------------------------------
+    def describe_text(self, text: str, raw_profile: dict | None, language: str | None = None) -> dict:
+        """Danh tính ngữ nghĩa của một văn bản ngắn nếu được đọc bằng engine + profile này — KHÔNG gọi engine. `fingerprint` phụ thuộc văn bản đã chuẩn hóa +
+        engine/phiên bản/model/voice/ngôn ngữ/settings liên quan/phiên bản profile (đúng khóa cache của chunk) + cách ngắt/ghép; đổi bất kỳ thứ gì làm đổi âm thanh
+        thì khác, còn giữ nguyên thì cùng fingerprint (không cần gọi provider lại)."""
+        caps = normalize_capabilities(self.tts.capabilities())
+        flat = resolve(raw_profile, caps, language, getattr(self.tts, "engine_id", None))
+        norm, _ = normalize_text(text, flat["normalize"])
+        if not norm.strip():
+            raise StageError(ErrorClass.POLICY, "EMPTY_TEXT", "văn bản rỗng sau chuẩn hóa")
+        ident = cache_identity(flat, caps)
+        return {"text": norm, "engine": flat["engine"], "engine_version": caps["engine_version"], "model": flat["model"], "voice": flat["voice"],
+                "language": flat["language"], "profile_version": flat["profile_version"], "settings": ident["settings"],
+                "fingerprint": stable_hash({"text": norm, "identity": ident, "segment": flat["segment"], "pause_ms": flat["pause_ms"], "joiner": flat["joiner"]})}
+
+    def synthesize_text(self, text: str, raw_profile: dict | None, work_dir: Path, *, language: str | None = None, cache_dir: Path | None = None,
+                        cancel=None, log=None) -> dict:
+        """Đọc một văn bản NGẮN thành audio bằng CHÍNH đường TTS của stage (profile → resolve, planner/segmenter nếu quá giới hạn engine, cache chunk dùng chung,
+        retry riêng chunk, QA chunk/master, assemble). Không có story/job: workspace là `work_dir` tạm. Trả {path (master.wav), duration_sec, segments,
+        synthesized, cache_hits, **describe_text()}."""
+        from ..contracts import CancelToken
+        info = self.describe_text(text, raw_profile, language)
+        work_dir = Path(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        ctx = StageContext(job_id="short-text", stage="tts", attempt=1, stage_key="", workspace=work_dir, stage_dir=work_dir,
+                           params={"language": language} if language else {}, inputs={},
+                           config={"tts_cache_dir": str(cache_dir)} if cache_dir else {}, cancel=cancel or CancelToken(), log=log or (lambda *a, **k: None))
+        res = self.run(ctx, text, raw_profile)
+        return {**info, "path": work_dir / "audio" / "master.wav", "duration_sec": res.data["duration_sec"], "segments": res.data["segments"],
+                "synthesized": res.data["synthesized"], "cache_hits": res.data["cache_hits"]}
+
     # -- toàn stage -----------------------------------------------------------------------------------
     def run(self, ctx: StageContext, text: str, raw_profile: dict | None) -> StageResult:
         caps = normalize_capabilities(self.tts.capabilities())
