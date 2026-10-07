@@ -57,6 +57,9 @@ class Stage:
     params_deps: tuple[str, ...] | None = None
     # Các khóa của config snapshot (ngữ nghĩa) ảnh hưởng stage_key; thêm adapters[<tên adapter của stage>] tự động.
     config_deps: tuple[str, ...] = ()
+    # Khóa của params chứa ĐƯỜNG DẪN file mà NỘI DUNG (sha256) ảnh hưởng stage_key — đường dẫn giống nhau nhưng nội dung khác (vd watermark) phải ra khóa khác.
+    # Chỉ thêm vào khóa khi tham số có mặt: job không dùng file đó giữ nguyên stage_key cũ.
+    file_deps: tuple[str, ...] = ()
     # Stage tạo sản phẩm cuối mà người dùng cần (video, output package, publish): luôn chạy khi nằm trong [start, target],
     # dù không stage nào khác tiêu thụ output của nó.
     deliverable: bool = False
@@ -95,7 +98,7 @@ STAGES: tuple[Stage, ...] = (
           ("audio_master",), ("narration_master", "audio_youtube", "audio_tiktok", "audio_report"), "audio", ("audio",),
           checkpoint="Narration Master, bản YouTube, từng part TikTok",
           params_deps=("audio.format", "audio.master", "audio.youtube", "audio.tiktok", "audio.qa", "watermark", "tiktok", "fake"),
-          optional=("audio_timeline",)),
+          file_deps=("watermark",), optional=("audio_timeline",)),
     Stage("render_youtube", YOUTUBE_RENDER_READY, YOUTUBE_RENDERING, TIKTOK_RENDER_READY,
           ("audio_youtube", "metadata"), ("video_youtube", "thumbnail", "youtube_render_report"), "render/youtube", ("render",), "gpu",
           checkpoint="video, thumbnail (trạng thái từng output trong checkpoint)", params_deps=("render", "channel", "project", "templates.youtube", "templates.thumbnail", "thumbnail_source.sha256", "fake"),

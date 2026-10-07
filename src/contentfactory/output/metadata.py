@@ -23,7 +23,7 @@ PUBLISHING_KEYS = {"privacy": str, "tags": list, "category": (str, type(None)), 
 
 def default_channel(channel_id: str) -> dict:
     return {"id": channel_id, "name": channel_id, "title_template": DEFAULT_TITLE_TEMPLATE, "description_template": DEFAULT_DESCRIPTION_TEMPLATE,
-            "thumbnail": {}, "publishing": {}, "sequence": {"last_used": 0}, "watermark": None, "preset": {}, "loaded_from": None}
+            "thumbnail": {}, "publishing": {}, "sequence": {"last_used": 0}, "watermark": None, "watermark_ref": None, "preset": {}, "loaded_from": None}
 
 
 def normalize_channel(raw: dict | None, channel_id: str) -> dict:
@@ -37,6 +37,17 @@ def normalize_channel(raw: dict | None, channel_id: str) -> dict:
                 errs.append(f"{k} phải là chuỗi không rỗng")
             else:
                 out[k] = raw[k]
+    if raw.get("legacy_watermark") is not None:                                         # tên file watermark kiểu cũ (Watermark Library nhớ để chọn lại)
+        if isinstance(raw["legacy_watermark"], str) and raw["legacy_watermark"].strip() and "/" not in raw["legacy_watermark"] and "\\" not in raw["legacy_watermark"]:
+            out["legacy_watermark"] = raw["legacy_watermark"]
+        else:
+            errs.append("legacy_watermark phải là tên file")
+    ref = raw.get("watermark_ref")                                                      # watermark đang dùng trong Watermark Library: {id, revision}
+    if ref is not None:
+        if isinstance(ref, dict) and isinstance(ref.get("id"), str) and ref["id"] and isinstance(ref.get("revision"), int) and not isinstance(ref["revision"], bool) and ref["revision"] >= 1:
+            out["watermark_ref"] = {"id": ref["id"], "revision": ref["revision"]}
+        else:
+            errs.append("watermark_ref phải là {id, revision >= 1}")
     pre = raw.get("preset")
     if pre is not None:
         errs += validate_preset(pre)

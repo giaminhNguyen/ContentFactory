@@ -20,6 +20,25 @@ from ..jobs.db import JobStore
 from .validation import validate_kind
 
 
+_FILE_SHA: dict[tuple[str, int, int], str] = {}
+
+
+def _file_sha(path: str) -> str | None:
+    """sha256 nội dung file (cache theo đường dẫn + mtime + size để stage_key được tính nhiều lần không phải băm lại). None nếu không phải file."""
+    try:
+        st = Path(path).stat()
+    except (OSError, ValueError):
+        return None
+    if not Path(path).is_file():
+        return None
+    k = (path, st.st_mtime_ns, st.st_size)
+    if k not in _FILE_SHA:
+        if len(_FILE_SHA) > 256:
+            _FILE_SHA.clear()
+        _FILE_SHA[k] = sha256_file(Path(path))
+    return _FILE_SHA[k]
+
+
 def _dig(d: dict, dotted: str):
     """params_deps cho phép đường dẫn có dấu chấm (vd "audio.join") để stage chỉ phụ thuộc đúng phần của mình."""
     cur = d
@@ -103,6 +122,9 @@ class StageContract:
         cfg["adapters"] = {a: (sem.get("adapters") or {}).get(a) for a in st.adapters}
         blob = {"stage": st.name, "params": picked, "config": cfg,
                 "inputs": sorted((k, a["sha256"]) for k, v in inputs.items() for a in v)}
+        files = {dep: h for dep in st.file_deps if isinstance(v := _dig(params, dep), str) and v and (h := _file_sha(v))}
+        if files:                                                                      # khóa cũ của job không dùng file đó không đổi
+            blob["files"] = files
         return hashlib.sha256(json.dumps(blob, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
     # -- skip -------------------------------------------------------------------------------

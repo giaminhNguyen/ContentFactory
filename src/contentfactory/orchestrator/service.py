@@ -649,7 +649,7 @@ class Service:
 
     @staticmethod
     def _public_params(p: dict) -> dict:
-        keep = ("input", "channel", "language", "project", "tiktok", "made_for_kids", "source")
+        keep = ("input", "channel", "language", "project", "tiktok", "made_for_kids", "source", "watermark_ref")
         out = {k: p[k] for k in keep if k in p}
         if p.get("templates"):                                       # chỉ phần nhận dạng của snapshot (không đẩy cả tài liệu template ra giao diện)
             out["templates"] = {k: {"id": v.get("id"), "version": v.get("version"), "name": v.get("name"), "checksum": str(v.get("checksum") or "")[:12]}

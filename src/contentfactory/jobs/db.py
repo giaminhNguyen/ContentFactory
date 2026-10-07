@@ -353,6 +353,16 @@ class JobStore:
         """Số job còn ACTIVE (chạy được ngay hoặc đang chạy). Job đã đạt target, FAILED hoặc đang bị giữ không tính."""
         return sum(self.is_active(j) for j in self.list_jobs())
 
+    def jobs_using_watermark(self, wm_id: str) -> dict[int, int]:
+        """revision -> số job chưa xóa tham chiếu watermark thư viện (params.watermark_ref). Revision có job tham chiếu không được xóa vật lý."""
+        rows = self._q("SELECT json_extract(params,'$.watermark_ref.revision') AS rev, COUNT(*) AS n FROM jobs WHERE control_state!='DELETED' "
+                       "AND json_extract(params,'$.watermark_ref.id')=? GROUP BY rev", (wm_id,))
+        return {int(r["rev"]): int(r["n"]) for r in rows if r["rev"] is not None}
+
+    def jobs_using_watermark_path(self, path: str) -> int:
+        """Số job chưa xóa dùng watermark kiểu cũ theo ĐƯỜNG DẪN (params.watermark) — để không xóa file legacy mà job cũ còn trỏ tới."""
+        return int(self._q("SELECT COUNT(*) FROM jobs WHERE control_state!='DELETED' AND json_extract(params,'$.watermark')=?", (path,))[0][0])
+
     def held_jobs(self) -> list[dict]:
         return [self._job(r) for r in self._q("SELECT * FROM jobs WHERE hold_reason IS NOT NULL AND control_state!='DELETED' ORDER BY seq")]
 

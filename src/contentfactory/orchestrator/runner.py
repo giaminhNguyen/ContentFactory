@@ -41,6 +41,7 @@ from . import auto as AU
 from . import cleanup as CL
 from . import channels as CH
 from . import revisions as REV
+from . import watermarks as WM
 from . import templates as TPL
 from .pools import PoolSyncService
 from .registry import build_adapters
@@ -83,6 +84,7 @@ class Orchestrator:
         self.image_pools = IP.ImagePools(cfg, self.store)
         self._batches = None
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
+        self.watermarks = WM.Watermarks(cfg, self.store, self.adapters.get("audio"))     # Watermark Library theo kênh (revision bất biến, active, tham chiếu của job)
 
     def batch_service(self):
         """Channel Run (D-101); tạo lười để import không vòng. Dùng chung một thể hiện (giữ discovery tiêm cho test)."""
@@ -174,8 +176,10 @@ class Orchestrator:
         resolved = bool(self.cfg.data.get("auto_resume_default", True)) if auto_resume is None else bool(auto_resume)
         snap = build_snapshot(self.cfg, auto_resume=resolved, start_stage=plan.start_stage, target_stage=plan.target_stage)
         snap["semantic"]["channel_config"] = channel
-        if not merged.get("watermark") and channel.get("watermark") and Path(channel["watermark"]).is_file():
-            merged["watermark"] = channel["watermark"]                                  # watermark là channel asset (HANDOFF §10)
+        if not merged.get("watermark"):
+            wm = self.watermarks.resolve_active(channel)                                # watermark là channel asset (HANDOFF §10): chốt revision + sha256 vào job, đổi kênh sau đó không đổi job
+            if wm:
+                merged["watermark"], merged["watermark_ref"] = wm["path"], wm["ref"]
         job_id = self.store.create_job(merged, priority, state=P.STAGES[plan.start_idx].queue_state,
                                        start_stage=plan.start_stage, target_stage=plan.target_stage,
                                        auto_resume=resolved, snapshot=snap, config_hash=config_hash(snap["semantic"]), pipeline=spec,
