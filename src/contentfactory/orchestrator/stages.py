@@ -20,23 +20,14 @@ from ..jobs.db import JobStore
 from .validation import validate_kind
 
 
-_FILE_SHA: dict[tuple[str, int, int], str] = {}
-
-
 def _file_sha(path: str) -> str | None:
-    """sha256 nội dung file (cache theo đường dẫn + mtime + size để stage_key được tính nhiều lần không phải băm lại). None nếu không phải file."""
+    """sha256 NỘI DUNG file, hoặc None nếu không phải file. Không cache theo mtime: ghi lại cùng kích thước trong cùng một tick đồng hồ file system vẫn phải ra khóa khác
+    (watermark chỉ vài trăm KB nên băm lại rẻ)."""
     try:
-        st = Path(path).stat()
+        p = Path(path)
+        return sha256_file(p) if p.is_file() else None
     except (OSError, ValueError):
         return None
-    if not Path(path).is_file():
-        return None
-    k = (path, st.st_mtime_ns, st.st_size)
-    if k not in _FILE_SHA:
-        if len(_FILE_SHA) > 256:
-            _FILE_SHA.clear()
-        _FILE_SHA[k] = sha256_file(Path(path))
-    return _FILE_SHA[k]
 
 
 def _dig(d: dict, dotted: str):

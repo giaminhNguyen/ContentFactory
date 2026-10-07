@@ -34,6 +34,7 @@ from . import preflight as PF
 from . import revisions as REV
 from . import templates as TPL
 from .service_jobedit import JobEditService
+from .service_watermarks import WatermarkService
 from .service_templates import Raw
 
 AUDIO_EXT = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
@@ -98,6 +99,7 @@ class Service:
         self._req_file = self.cfg.path("runtime") / "ui_requests.json"
         self._requests: dict[str, str] = self._load_requests()
         self.jobedit = JobEditService(orc, self)
+        self.watermarks = WatermarkService(orc)
 
     # ================================================================================== đầu vào
     def detect_input(self, value: str, kind: str | None = None) -> dict:
@@ -1066,7 +1068,21 @@ class Service:
         if terrs:
             raise _err("INVALID_CHANNEL_CONFIG", "; ".join(terrs))
         d.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(d / "channel.json", raw)
+        with self.orc.watermarks.lock(channel_id):                                  # cùng khóa với Watermark Library: không ghi đè active vừa đổi
+            f = d / "channel.json"
+            cur = {}
+            if f.is_file() and not create:
+                try:
+                    cur = json.loads(f.read_text(encoding="utf-8-sig"))
+                except (OSError, ValueError):
+                    cur = {}
+            for k in ("watermark_ref", "legacy_watermark"):                          # watermark đang dùng do Watermark Library quản lý, không phải form kênh
+                raw.pop(k, None)
+                if cur.get(k) is not None:
+                    raw[k] = cur[k]
+            if cur.get("watermark_ref") and cur.get("watermark") is not None:
+                raw["watermark"] = cur["watermark"]
+            atomic_write_json(f, raw)
         return {"saved": True, "id": channel_id}
 
     def create_channel(self, channel_id: str, name: str | None, kids: bool, last_used: int = 0) -> dict:
@@ -1091,6 +1107,9 @@ class Service:
             raise _err("INVALID_ASSET_NAME", "Tên file không hợp lệ.")
         if Path(safe).suffix.lower() not in AUDIO_EXT | {".png", ".jpg", ".jpeg"}:
             raise _err("INVALID_ASSET_TYPE", "Chỉ nhận file audio (watermark) hoặc ảnh.")
+        if Path(safe).suffix.lower() in AUDIO_EXT:                                    # audio = watermark: đi vào Watermark Library (revision bất biến), không ghi đè file rời
+            r = self.watermarks.create_upload(channel_id, Path(safe).stem, safe, data)
+            return {"name": safe, "bytes": len(data), "watermark_id": r["item"]["id"], "revision": r["item"]["current_revision"]}
         d.mkdir(parents=True, exist_ok=True)
         (d / safe).write_bytes(data)
         return {"name": safe, "bytes": len(data)}

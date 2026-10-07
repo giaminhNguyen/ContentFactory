@@ -127,46 +127,55 @@ class WatermarkService:
             _BUSY.discard(key)
 
     # ------------------------------------------------------------------------------------------ tạo bằng TTS / sửa / tạo lại
-    def create_tts(self, channel_id: str, name: str, text: str, selection: str | None = "auto", *, activate: bool = False, request_id: str | None = None) -> dict:
-        name, text = self._clean_name(name), self._clean_text(text)
-        return self._generate(channel_id, None, name, text, selection or "auto", activate, request_id)
-
-    def update_tts(self, channel_id: str, wm_id: str, *, name: str | None = None, text: str | None = None, selection: str | None = None) -> dict:
-        """Sửa watermark TTS: đổi tên (chỉ metadata) và/hoặc văn bản/giọng (revision MỚI; không đổi gì ảnh hưởng âm thanh ⇒ không tạo bản mới, không gọi engine)."""
-        entry = self.lib.get(channel_id, wm_id)
-        if entry["source"] != "tts":
-            raise _err("WATERMARK_NOT_TTS", "Chỉ watermark tạo bằng giọng đọc mới sửa được nội dung.", "Với watermark tải lên, hãy thay file.")
-        meta = self.lib.revision(channel_id, wm_id, entry["current_revision"])
-        cur = meta.get("tts") or {}
-        new_name = self._clean_name(name, required=False)
-        new_text = self._clean_text(text) if text is not None else cur.get("text", "")
-        sel = selection or cur.get("selection") or "auto"
-        return self._generate(channel_id, wm_id, new_name, new_text, sel, False, None)
-
-    def regenerate(self, channel_id: str, wm_id: str) -> dict:
-        """“Tạo lại”: cùng văn bản + cùng giọng ⇒ nếu engine/profile không đổi thì dùng lại bản hiện tại (không tốn lượt provider); có đổi (vd profile được cập nhật) ⇒ bản mới."""
-        return self.update_tts(channel_id, wm_id)
-
-    def _generate(self, channel_id: str, wm_id: str | None, name: str | None, text: str, selection: str, activate: bool, request_id: str | None) -> dict:
-        profile, decision = self._profile(channel_id, selection)
+    def prepare(self, channel_id: str, wm_id: str | None, name: str | None, text: str | None, selection: str | None) -> dict:
+        """Kiểm đầu vào và tính danh tính ngữ nghĩa MÀ KHÔNG gọi engine: lỗi hiện ngay (văn bản rỗng, profile không có, engine chưa sẵn sàng), và `unchanged` cho biết
+        có cần tổng hợp không — giao diện chạy phần tổng hợp ở tác vụ nền chỉ khi cần."""
+        if wm_id is None:
+            name, text, sel = self._clean_name(name), self._clean_text(text), selection or "auto"
+        else:
+            entry = self.lib.get(channel_id, wm_id)
+            if entry["source"] != "tts":
+                raise _err("WATERMARK_NOT_TTS", "Chỉ watermark tạo bằng giọng đọc mới sửa được nội dung.", "Với watermark tải lên, hãy thay file.")
+            cur = (self.lib.revision(channel_id, wm_id, entry["current_revision"]).get("tts") or {})
+            name = self._clean_name(name, required=False)
+            text = self._clean_text(text) if text is not None else cur.get("source_text", cur.get("text", ""))
+            sel = selection or cur.get("selection") or "auto"
+        profile, decision = self._profile(channel_id, sel)
         mgr, language = self._manager(), self._language(channel_id)
         try:
             info = mgr.describe_text(text, profile, language)
         except StageError as e:
             raise self._map_tts_error(e) from None
+        unchanged = False
         if wm_id is not None:
             item = self.lib.get(channel_id, wm_id)
-            cur = self.lib.revision(channel_id, wm_id, item["current_revision"])
-            if (cur.get("tts") or {}).get("fingerprint") == info["fingerprint"]:            # không đổi gì ảnh hưởng âm thanh: giữ bản hiện tại
-                if name and name != item["name"]:
-                    item = self.lib.rename(channel_id, wm_id, name)
-                return {"result": "unchanged", "item": item}
+            unchanged = (self.lib.revision(channel_id, wm_id, item["current_revision"]).get("tts") or {}).get("fingerprint") == info["fingerprint"]
+        return {"name": name, "text": text, "selection": sel, "profile": profile, "decision": decision, "mgr": mgr, "language": language, "info": info, "unchanged": unchanged}
+
+    def create_tts(self, channel_id: str, name: str, text: str, selection: str | None = "auto", *, activate: bool = False, request_id: str | None = None) -> dict:
+        return self._generate(channel_id, None, self.prepare(channel_id, None, name, text, selection), activate, request_id)
+
+    def update_tts(self, channel_id: str, wm_id: str, *, name: str | None = None, text: str | None = None, selection: str | None = None) -> dict:
+        """Sửa watermark TTS: đổi tên (chỉ metadata) và/hoặc văn bản/giọng (revision MỚI; không đổi gì ảnh hưởng âm thanh ⇒ không tạo bản mới, không gọi engine)."""
+        return self._generate(channel_id, wm_id, self.prepare(channel_id, wm_id, name, text, selection), False, None)
+
+    def regenerate(self, channel_id: str, wm_id: str) -> dict:
+        """“Tạo lại”: cùng văn bản + cùng giọng ⇒ nếu engine/profile không đổi thì dùng lại bản hiện tại (không tốn lượt provider); có đổi (vd profile được cập nhật) ⇒ bản mới."""
+        return self.update_tts(channel_id, wm_id)
+
+    def _generate(self, channel_id: str, wm_id: str | None, p: dict, activate: bool, request_id: str | None) -> dict:
+        info, name, text, selection, decision = p["info"], p["name"], p["text"], p["selection"], p["decision"]
+        if p["unchanged"]:                                                                  # không đổi gì ảnh hưởng âm thanh: giữ bản hiện tại
+            item = self.lib.get(channel_id, wm_id)
+            if name and name != item["name"]:
+                item = self.lib.rename(channel_id, wm_id, name)
+            return {"result": "unchanged", "item": item}
         key = (channel_id, wm_id or f"new:{request_id or info['fingerprint']}")
         self._claim(key)
         work = Path(tempfile.mkdtemp(prefix="cf-watermark-"))
         try:
             try:
-                out = mgr.synthesize_text(text, profile, work, language=language, cache_dir=self.cfg.path("runtime") / "cache" / "tts", cancel=CancelToken())
+                out = p["mgr"].synthesize_text(text, p["profile"], work, language=p["language"], cache_dir=self.cfg.path("runtime") / "cache" / "tts", cancel=CancelToken())
             except StageError as e:
                 raise self._map_tts_error(e) from None
             meta = {"fingerprint": info["fingerprint"],

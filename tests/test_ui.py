@@ -456,10 +456,17 @@ class ChannelsTest(UiCase):
         self.assertEqual({c["id"] for c in self.svc.list_channels()["channels"]}, {"kenh", "chua_khai", "moi"})
 
     def test_asset_upload_is_sanitised_and_typed(self):
-        r = self.svc.save_channel_asset("kenh", "../../watermark của tôi!.wav", b"RIFFxxxx")
+        r = self.svc.save_channel_asset("kenh", "../../watermark của tôi!.wav", write_wav(self.root / "wm.wav", 1.0).read_bytes())
         self.assertRegex(r["name"], r"^[\w.\-]+\.wav$")
-        self.assertTrue((self.root / "channels" / "kenh" / r["name"]).is_file())
+        item = self.svc.watermarks.get("kenh", r["watermark_id"])                                        # audio đi vào Watermark Library, không ghi đè file rời
+        self.assertEqual((item["source"], item["current_revision"], item["active"]), ("upload", 1, False))
+        self.assertFalse((self.root / "channels" / "kenh" / r["name"]).exists())
         self.assertFalse((self.root / "watermark.wav").exists())
+        with self.assertRaises(StageError) as bad_audio:
+            self.svc.save_channel_asset("kenh", "hong.wav", b"RIFFxxxx")                                  # audio hỏng bị từ chối ngay
+        self.assertEqual(bad_audio.exception.code, "WATERMARK_AUDIO_INVALID")
+        img = self.svc.save_channel_asset("kenh", "logo.png", b"PNGxx")                                    # ảnh: giữ cách cũ
+        self.assertTrue((self.root / "channels" / "kenh" / img["name"]).is_file())
         for bad in ("virus.exe", ".htaccess", "x.txt"):
             with self.assertRaises(StageError):
                 self.svc.save_channel_asset("kenh", bad, b"x")
@@ -750,8 +757,8 @@ class HttpTest(UiCase):
     def test_admin_endpoints_respond(self):
         for p in ("/api/channels", "/api/channels/kenh", "/api/channels/kenh/preview?title=A", "/api/tts", "/api/pools", "/api/settings", "/api/config/effective", "/api/doctor", "/api/runtime"):
             self.assertEqual(self.call("GET", p)[0], 200, p)
-        s, b, _ = self.call("PUT", "/api/channels/kenh/asset?name=wm.wav", raw=b"RIFFdata", headers={"Content-Type": "application/octet-stream"})
-        self.assertEqual((s, b["name"]), (200, "wm.wav"))
+        s, b, _ = self.call("PUT", "/api/channels/kenh/asset?name=wm.wav", raw=write_wav(self.root / "up.wav", 1.0).read_bytes(), headers={"Content-Type": "application/octet-stream"})
+        self.assertEqual((s, b["name"], b["revision"]), (200, "wm.wav", 1))                                   # cách tải lên cũ: giờ vào Watermark Library
         self.assertEqual(self.call("POST", "/api/cleanup", {"dry_run": True})[0], 200)
         s, b, _ = self.call("POST", "/api/samples", {})
         self.assertEqual(s, 200)

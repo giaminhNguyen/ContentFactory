@@ -43,6 +43,7 @@ class App:
         self.orc, self.cfg = orc, orc.cfg
         self.service, self.admin = Service(orc), AdminService(orc)
         self.templates = TemplateService(orc)
+        self.watermarks = self.service.watermarks
         self.image_pools = ImagePoolService(orc, self.admin)
         self.token = token or secrets.token_urlsafe(24)
         self.opener = opener
@@ -107,7 +108,7 @@ def _int(q: dict, key: str, default: int, lo: int = 0, hi: int = 1000) -> int:
 
 
 ROUTES: list[tuple[str, re.Pattern, str]] = []
-RAW_BODY = {"channel_asset", "asset_import"}                                 # PUT nhận byte thô (watermark, ảnh asset), không phải JSON
+RAW_BODY = {"channel_asset", "asset_import", "watermark_upload", "watermark_replace"}                                 # PUT nhận byte thô (watermark, ảnh asset), không phải JSON
 
 
 def route(method: str, pattern: str):
@@ -277,6 +278,77 @@ class Api:
     @route("PUT", r"/api/channels/(?P<id>[\w\-]+)/asset")
     def channel_asset(app, m, q, b):
         return app.service.save_channel_asset(m["id"], q.get("name", [""])[0], b)
+
+    # ------------------------------------------------------------------------------------------ Watermark Library (End-to-End Task, Phần A)
+    def _watermark_task(app, channel_id: str, fn) -> dict:
+        """Tổng hợp giọng có thể chậm: chạy ở tác vụ nền (giao diện theo dõi bằng /api/tasks/<id>, tiến trình thật = trạng thái tác vụ). Mỗi kênh một lượt."""
+        kind = f"watermark:{channel_id}"
+        if app.admin.tasks.running(kind):
+            raise StageError(ErrorClass.POLICY, "WATERMARK_BUSY", "Kênh này đang tạo một watermark.", {"hint": "Đợi bản đang tạo xong rồi thử lại."}, resource="input")
+        return {"task": app.admin.tasks.start(kind, fn)}
+
+    @route("GET", r"/api/channels/(?P<id>[\w\-]+)/watermarks")
+    def watermark_list(app, m, q, b):
+        return app.watermarks.overview(m["id"], q.get("archived", ["0"])[0] == "1")
+
+    @route("POST", r"/api/channels/(?P<id>[\w\-]+)/watermarks")
+    def watermark_create(app, m, q, b):
+        cid, svc = m["id"], app.watermarks
+        p = svc.prepare(cid, None, b.get("name"), b.get("text"), b.get("tts"))                # lỗi nhập liệu/profile/engine báo NGAY, không mở tác vụ
+        return Api._watermark_task(app, cid, lambda: svc.create_tts(cid, p["name"], p["text"], p["selection"], activate=bool(b.get("activate")), request_id=b.get("request_id")))
+
+    @route("PUT", r"/api/channels/(?P<id>[\w\-]+)/watermarks/upload")
+    def watermark_upload(app, m, q, b):
+        return app.watermarks.create_upload(m["id"], q.get("name", [""])[0], q.get("filename", [""])[0], b, activate=q.get("activate", ["0"])[0] == "1",
+                                            request_id=q.get("request_id", [None])[0])
+
+    @route("GET", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8}|legacy)")
+    def watermark_get(app, m, q, b):
+        return app.watermarks.get(m["id"], m["wm"])
+
+    @route("PUT", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8})")
+    def watermark_update(app, m, q, b):
+        cid, wm, svc = m["id"], m["wm"], app.watermarks
+        if "text" not in b and "tts" not in b:
+            return {"result": "unchanged", "item": svc.rename(cid, wm, b.get("name"))}
+        p = svc.prepare(cid, wm, b.get("name"), b.get("text"), b.get("tts"))
+        if p["unchanged"]:                                                                      # chỉ đổi tên hoặc không đổi gì ảnh hưởng âm thanh: không cần tổng hợp
+            return svc.update_tts(cid, wm, name=b.get("name"), text=b.get("text"), selection=b.get("tts"))
+        return Api._watermark_task(app, cid, lambda: svc.update_tts(cid, wm, name=b.get("name"), text=b.get("text"), selection=b.get("tts")))
+
+    @route("PUT", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8})/file")
+    def watermark_replace(app, m, q, b):
+        return app.watermarks.replace_upload(m["id"], m["wm"], q.get("filename", [""])[0], b, q.get("name", [None])[0])
+
+    @route("POST", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8})/regenerate")
+    def watermark_regenerate(app, m, q, b):
+        cid, wm, svc = m["id"], m["wm"], app.watermarks
+        p = svc.prepare(cid, wm, None, None, None)
+        if p["unchanged"]:
+            return svc.regenerate(cid, wm)
+        return Api._watermark_task(app, cid, lambda: svc.regenerate(cid, wm))
+
+    @route("POST", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8}|legacy)/activate")
+    def watermark_activate(app, m, q, b):
+        rev = b.get("revision")
+        return app.watermarks.activate(m["id"], m["wm"], int(rev) if rev else None)
+
+    @route("POST", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8})/restore")
+    def watermark_restore(app, m, q, b):
+        return app.watermarks.restore(m["id"], m["wm"])
+
+    @route("POST", r"/api/channels/(?P<id>[\w\-]+)/watermark/deactivate")
+    def watermark_deactivate(app, m, q, b):
+        return app.watermarks.deactivate(m["id"])
+
+    @route("DELETE", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8}|legacy)")
+    def watermark_delete(app, m, q, b):
+        return app.watermarks.delete(m["id"], m["wm"], q.get("unset", ["0"])[0] == "1")
+
+    @route("GET", r"/api/channels/(?P<id>[\w\-]+)/watermarks/(?P<wm>wm_[a-z0-9]{8}|legacy)/audio")
+    def watermark_audio(app, m, q, b):
+        rev = q.get("revision", [None])[0]
+        return app.watermarks.audio(m["id"], m["wm"], int(rev) if rev and rev.isdigit() else None)
 
     # ------------------------------------------------------------------------------------------ Template / asset (Template Studio)
     @route("GET", "/api/templates")

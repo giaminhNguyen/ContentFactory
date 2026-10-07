@@ -218,6 +218,28 @@ class JobSnapshotAndReferenceTest(LibraryCase):
         self.assertTrue((self.d / "watermark.wav").is_file())
 
 
+class PipelineInvalidationTest(LibraryCase):
+    def test_changing_the_active_watermark_reruns_only_audio_for_the_new_job(self):
+        a = self.upload("Intro", 1)
+        self.wm.activate("kenh", a["id"])
+        jid = self.orc_.submit(params(channel="kenh"), pipeline={"requested_stages": ["audio"]})
+        self.orc_.run()
+        first = self.runs(self.orc_, jid)
+        self.assertEqual({k: v for k, v in first.items()}, {"source": ["succeeded"], "story": ["succeeded"], "tts": ["succeeded"], "audio": ["succeeded"]})
+        yt1 = [x for x in self.orc_.store.artifacts(jid) if x["kind"] == "audio_youtube"][0]
+        self.assertTrue(json.loads(yt1["meta"])["watermark"])                                           # YouTube audio dùng watermark
+        self.wm.commit_revision("kenh", wav(self.src / "v2.wav", 6), source="upload", wm_id=a["id"])    # đổi watermark của kênh (active đi theo)
+        kinds = sorted({k for st in P.STAGES[:3] for k in st.produces})                                  # kết quả Source/Story/TTS của job cũ
+        new = self.orc_.submit(params(channel="kenh"), pipeline={"requested_stages": ["audio"]}, from_job={"job_id": jid, "kinds": kinds})
+        self.orc_.run()
+        again = self.runs(self.orc_, new)
+        self.assertEqual(again, {"audio": ["succeeded"]})                                              # Source/Story/TTS KHÔNG chạy lại (kết quả dùng lại từ job cũ)
+        old_ref, new_ref = (self.orc_.store.get_job(x)["params"]["watermark_ref"] for x in (jid, new))
+        self.assertEqual((old_ref["revision"], new_ref["revision"]), (1, 2))                            # job cũ vẫn v1, job mới v2
+        keys = {x: [r["stage_key"] for r in self.orc_.store.stage_runs(x) if r["stage"] == "audio"][0] for x in (jid, new)}
+        self.assertNotEqual(keys[jid], keys[new])                                                        # nội dung watermark đổi ⇒ audio có khóa khác
+
+
 class StageKeyTest(RootCase):
     def key(self, stage, p):
         return StageContract(P.BY_NAME[stage]).stage_key(p, None, {"audio_master": [{"sha256": "x", "path": "p", "kind": "k", "bytes": 1, "meta": {}}]})
