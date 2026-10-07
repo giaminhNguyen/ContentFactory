@@ -207,7 +207,7 @@ Mỗi kênh nhớ cấu hình của chính nó — chỉnh **một lần** ở t
   "name": "Kênh Truyện A",
   "title_template": "[Full Audio {sequence}] | {project_title}",
   "sequence": { "last_used": 26 },                  // tập kế tiếp: 27
-  "watermark": "watermark.wav",
+  "watermark": "watermark.wav",                      // kiểu cũ vẫn chạy; watermark mới quản lý ở Kênh → Watermark (thư viện có bản, tạo bằng giọng đọc hoặc tải lên)
   "publishing": { "privacy": "private", "made_for_kids": false, "tags": ["truyen"] },
   "templates": {                                     // chọn TÊN template — không có toạ độ, kích thước, font…
     "thumbnail":     { "id": "thumb_gold",     "version_policy": "latest_published" },

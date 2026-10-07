@@ -749,7 +749,7 @@ Từ master mới sinh các phiên bản platform.
 
 > **Trạng thái:** **đã triển khai ở Phase 4** (D-66): đổi watermark chỉ chạy lại stage `audio`, trong stage chỉ làm lại bản YouTube; phần truyện ghép nguyên từng mẫu.
 
-Watermark là channel asset riêng, không thuộc story.
+Watermark là channel asset riêng, không thuộc story. **Cập nhật (D-109):** có Watermark Library theo kênh (revision bất biến, tạo bằng TTS dùng chung hoặc tải lên, active tường minh, job chốt `watermark_ref` + sha256); `stage_key` của audio băm nội dung file. **Sửa job (D-108):** đổi đích theo progress floor + xóa job an toàn.
 
 ```text
 channels/
