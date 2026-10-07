@@ -22,6 +22,7 @@ from typing import Iterator
 
 from ..contracts import ArtifactRef, ErrorClass, StageError
 from . import pipeline as P
+from .plan import progress_floor
 from .policy import RetryPolicy, outcome_for
 
 SCHEMA = """
@@ -79,6 +80,13 @@ V3_JOB_COLUMNS = (("pipeline_spec", "TEXT"),)
 # v4 (Agent Plan Phase 2): điều khiển của người dùng TÁCH khỏi hold tài nguyên. control_state RUNNING|PAUSED|CANCELLED; pause_origin USER|BATCH.
 # Revision của pipeline/config: bảng pipeline_revisions (lịch sử + bản đang chờ áp dụng, tối đa một `pending` mỗi job). Mọi job bắt đầu ở revision 1.
 CONTROL_RUNNING, CONTROL_PAUSED, CONTROL_CANCELLED = "RUNNING", "PAUSED", "CANCELLED"
+# Xóa job (Sửa job): tombstone, KHÔNG xóa dòng DB. DELETED giống CANCELLED ở chỗ runner không nhận job và stage đang chạy bị abort; khác ở chỗ job biến
+# khỏi mọi danh sách/chi tiết. Dòng còn để worker đang giữ lease kết thúc an toàn (không ghi vào dòng không tồn tại) và để batch/lịch sử còn nhất quán.
+# Không cần migration: control_state là TEXT tự do, DB cũ không có job DELETED.
+CONTROL_DELETED = "DELETED"
+# pause_origin: USER (bấm Tạm dừng), BATCH (batch tạm dừng), EDIT (Sửa job mở rộng đích của job đã xong: chờ người dùng bấm Chạy tiếp). USER và EDIT đều
+# thuộc người dùng nên batch resume không gỡ được.
+PAUSE_USER_OWNED = ("USER", "EDIT")
 V4_JOB_COLUMNS = (("control_state", "TEXT NOT NULL DEFAULT 'RUNNING'"), ("pause_origin", "TEXT"), ("pause_since", "REAL"),
                   ("pipeline_revision", "INTEGER NOT NULL DEFAULT 1"))
 V4_SQL = (
@@ -308,17 +316,17 @@ class JobStore:
         return self._job(rows[0]) if rows else None
 
     def list_jobs(self) -> list[dict]:
-        return [self._job(r) for r in self._q("SELECT * FROM jobs ORDER BY seq")]
+        return [self._job(r) for r in self._q("SELECT * FROM jobs WHERE control_state!='DELETED' ORDER BY seq")]
 
     def job_index(self) -> list[dict]:
         """Bản nhẹ cho UI: chỉ các cột đủ để phân nhóm trạng thái (không parse params/snapshot), mới nhất trước."""
         return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, batch_id, created_at, updated_at, channel_id, source_key, "
-                                                        "json_extract(params,'$.input.value') AS input_value FROM jobs ORDER BY seq DESC")]
+                                                        "json_extract(params,'$.input.value') AS input_value FROM jobs WHERE control_state!='DELETED' ORDER BY seq DESC")]
 
     def jobs_by_ids(self, ids: list[str]) -> list[dict]:
         if not ids:
             return []
-        rows = self._q(f"SELECT * FROM jobs WHERE id IN ({','.join('?' * len(ids))})", tuple(ids))
+        rows = self._q(f"SELECT * FROM jobs WHERE control_state!='DELETED' AND id IN ({','.join('?' * len(ids))})", tuple(ids))
         by = {r["id"]: self._job(r) for r in rows}
         return [by[i] for i in ids if i in by]
 
@@ -346,7 +354,7 @@ class JobStore:
         return sum(self.is_active(j) for j in self.list_jobs())
 
     def held_jobs(self) -> list[dict]:
-        return [self._job(r) for r in self._q("SELECT * FROM jobs WHERE hold_reason IS NOT NULL ORDER BY seq")]
+        return [self._job(r) for r in self._q("SELECT * FROM jobs WHERE hold_reason IS NOT NULL AND control_state!='DELETED' ORDER BY seq")]
 
     # -- scheduling -------------------------------------------------------------------------
     def claim(self, stage: P.Stage, limit: int, resource_limit: int, owner: str,
@@ -532,14 +540,14 @@ class JobStore:
                        "AND r.apply_policy='pause_and_apply') AS rev FROM jobs WHERE id=?", (job_id,))
         if not rows:
             return "abort"
-        if rows[0]["control_state"] == CONTROL_CANCELLED:
+        if rows[0]["control_state"] in (CONTROL_CANCELLED, CONTROL_DELETED):
             return "abort"
         return "pause" if rows[0]["control_state"] == CONTROL_PAUSED or rows[0]["rev"] else None
 
     def set_control(self, job_id: str, want: str, origin: str | None = None, now: float | None = None) -> str:
         """Đổi control_state (CAS trong một transaction, idempotent). Trả:
         'changed' | 'unchanged' | 'complete' (job đã xong: không đổi lịch sử) | 'failed' (không có gì để tạm dừng) |
-        'cancelled' (đã hủy: không quay lại) | 'not_owner' (resume bởi BATCH khi người dùng tự pause).
+        'cancelled' (đã hủy: không quay lại) | 'deleted' (đã xóa) | 'not_owner' (resume bởi BATCH khi người dùng tự pause).
         Pause của USER thắng pause của BATCH: batch resume không tự chạy tiếp job người dùng đã dừng."""
         if want not in (CONTROL_RUNNING, CONTROL_PAUSED, CONTROL_CANCELLED):
             raise ValueError(f"control_state không hợp lệ: {want!r}")
@@ -549,6 +557,8 @@ class JobStore:
             if j is None:
                 raise ValueError(f"không có job {job_id}")
             cur = j["control_state"] or CONTROL_RUNNING
+            if cur == CONTROL_DELETED:
+                return "deleted"
             if cur == CONTROL_CANCELLED:
                 return "unchanged" if want == CONTROL_CANCELLED else "cancelled"
             if want != CONTROL_RUNNING and P.is_complete(j["state"], j["target_idx"]):
@@ -557,7 +567,7 @@ class JobStore:
                 if j["state"] == P.FAILED:
                     return "failed"
                 if cur == CONTROL_PAUSED:
-                    if origin == "USER" and j["pause_origin"] != "USER":
+                    if origin == "USER" and j["pause_origin"] != "USER":              # USER thắng BATCH và EDIT: người dùng chủ động tạm dừng
                         c.execute("UPDATE jobs SET pause_origin='USER', updated_at=? WHERE id=?", (now, job_id))
                         self._note(c, job_id, j["state"], now, "pause owner -> USER")
                         return "changed"
@@ -569,7 +579,7 @@ class JobStore:
             if want == CONTROL_RUNNING:
                 if cur == CONTROL_RUNNING:
                     return "unchanged"
-                if origin == "BATCH" and j["pause_origin"] == "USER":
+                if origin == "BATCH" and j["pause_origin"] in PAUSE_USER_OWNED:
                     return "not_owner"
                 c.execute("UPDATE jobs SET control_state='RUNNING', pause_origin=NULL, pause_since=NULL, updated_at=? WHERE id=?", (now, job_id))
                 self._note(c, job_id, j["state"], now, "unpaused")
@@ -750,13 +760,13 @@ class JobStore:
     def batch_job_index(self, bid: str) -> list[dict]:
         """Bản nhẹ của các job con (đủ để suy trạng thái/đếm), theo thứ tự tạo."""
         return [dict(r) for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, failed_stage, source_key, updated_at FROM jobs "
-                                         "WHERE batch_id=? ORDER BY seq", (bid,))]
+                                         "WHERE batch_id=? AND control_state!='DELETED' ORDER BY seq", (bid,))]
 
     def batch_jobs_all(self) -> dict[str, list[dict]]:
         """Job con của MỌI batch trong MỘT truy vấn (danh sách job không N+1 theo batch)."""
         out: dict[str, list[dict]] = {}
         for r in self._q("SELECT id, seq, state, hold_reason, needs_user, target_idx, control_state, failed_stage, source_key, batch_id, updated_at FROM jobs "
-                         "WHERE batch_id IS NOT NULL ORDER BY seq"):
+                         "WHERE batch_id IS NOT NULL AND control_state!='DELETED' ORDER BY seq"):
             out.setdefault(r["batch_id"], []).append(dict(r))
         return out
 
@@ -768,7 +778,7 @@ class JobStore:
 
     def find_job_by_source(self, source_key: str, channel_id: str) -> str | None:
         """Job gần nhất đã xử lý cùng video cho cùng kênh xuất bản (bỏ qua job đã hủy)."""
-        rows = self._q("SELECT id FROM jobs WHERE source_key=? AND channel_id=? AND control_state!='CANCELLED' ORDER BY seq DESC LIMIT 1", (source_key, channel_id))
+        rows = self._q("SELECT id FROM jobs WHERE source_key=? AND channel_id=? AND control_state NOT IN ('CANCELLED','DELETED') ORDER BY seq DESC LIMIT 1", (source_key, channel_id))
         return rows[0]["id"] if rows else None
 
     def find_batch_job(self, bid: str, source_key: str) -> str | None:
@@ -825,12 +835,79 @@ class JobStore:
                            json.dumps(a["meta"], ensure_ascii=False), now))
 
     def set_target(self, job_id: str, target_stage: str, now: float | None = None) -> None:
+        """Ghi đích thô, KHÔNG kiểm gì (dùng cho test/hạ tầng). Đường dùng thật là `update_target` (kiểm progress floor + CAS)."""
         now = now or time.time()
         with self._tx() as c:
             j = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
             c.execute("UPDATE jobs SET target_stage=?, target_idx=?, updated_at=? WHERE id=?",
                       (target_stage, P.INDEX[target_stage], now, job_id))
             self._note(c, job_id, j["state"], now, f"target_stage -> {target_stage}")
+
+    def update_target(self, job_id: str, target_stage: str, *, expect_state: str, pipeline: dict | None = None, params: dict | None = None,
+                      hold_completed: bool = False, now: float | None = None) -> dict:
+        """Đổi ĐÍCH của job nguyên tử (Sửa job → Cập nhật pipeline). Trong MỘT transaction: kiểm job còn sống, state vẫn là `expect_state` (CAS: runner
+        có thể vừa chuyển stage), đích không đứng trước progress floor (tính lại ngay trong transaction từ stage_runs), rồi ghi target_stage/target_idx
+        (+ pipeline_spec của job có pipeline tùy chỉnh, + params nếu chốt thêm template) và cả bản chụp config (start/target chỉ để tham chiếu; config_hash không đổi).
+        Job ĐÃ XONG mà đích mở rộng: `hold_completed` giữ nó ở trạng thái tạm dừng (origin EDIT) để lưu pipeline mới KHÔNG tự chạy — người dùng bấm Chạy tiếp.
+        Không đụng state/lease/artifact/lịch sử: stage đang chạy chạy nốt, runner đọc đích mới ở lần nhận stage kế tiếp.
+        Trả {"result": changed|unchanged|conflict, old_target, new_target, held}; lỗi domain ném StageError (JOB_NOT_FOUND, JOB_CANCELLED, PIPELINE_TARGET_BEFORE_PROGRESS)."""
+        now = now or time.time()
+        with self._tx() as c:
+            r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if r is None or r["control_state"] == CONTROL_DELETED:
+                raise StageError(ErrorClass.POLICY, "JOB_NOT_FOUND", f"Không có job {job_id}.", {"hint": "Quay lại danh sách job."}, resource="input")
+            if r["control_state"] == CONTROL_CANCELLED:
+                raise StageError(ErrorClass.POLICY, "JOB_CANCELLED", "Job đã bị hủy nên không đổi được pipeline.",
+                                 {"hint": "Dùng “Chạy lại với thay đổi” để tạo job mới và dùng lại phần còn hợp lệ."}, resource="input")
+            if r["state"] != expect_state:
+                return {"result": "conflict", "old_target": r["target_stage"], "new_target": target_stage, "held": False}
+            runs = [dict(x) for x in c.execute("SELECT stage FROM stage_runs WHERE job_id=?", (job_id,))]
+            floor = progress_floor(dict(r), runs)
+            if P.INDEX[target_stage] < floor:
+                raise StageError(ErrorClass.POLICY, "PIPELINE_TARGET_BEFORE_PROGRESS",
+                                 "Không đặt đích trước bước job đã chạy tới.", {"floor": P.STAGES[floor].name, "target": target_stage,
+                                 "hint": "Chỉ chọn được bước hiện tại hoặc các bước phía sau."}, resource="input")
+            old_idx = r["target_idx"] if r["target_idx"] is not None else len(P.STAGES) - 1
+            old_target = r["target_stage"] or P.STAGES[old_idx].name
+            same_spec = pipeline is None or (r["pipeline_spec"] and json.loads(r["pipeline_spec"]) == pipeline)
+            if old_idx == P.INDEX[target_stage] and same_spec and params is None:
+                return {"result": "unchanged", "old_target": old_target, "new_target": target_stage, "held": False}
+            was_complete = P.is_complete(r["state"], r["target_idx"])
+            cols: dict[str, object] = {"target_stage": target_stage, "target_idx": P.INDEX[target_stage], "updated_at": now}
+            if pipeline is not None:
+                cols["pipeline_spec"] = json.dumps(pipeline, ensure_ascii=False)
+            if params is not None:
+                cols["params"] = json.dumps(params, ensure_ascii=False)
+            if r["config_snapshot"]:
+                snap = json.loads(r["config_snapshot"])
+                snap["target_stage"] = target_stage                                 # top-level chỉ để tham chiếu; semantic/config_hash không đổi
+                cols["config_snapshot"] = json.dumps(snap, ensure_ascii=False)
+            held = bool(hold_completed and was_complete and P.INDEX[target_stage] > old_idx and r["state"] not in P.TERMINAL
+                        and (r["control_state"] or CONTROL_RUNNING) == CONTROL_RUNNING)
+            if held:
+                cols |= {"control_state": CONTROL_PAUSED, "pause_origin": "EDIT", "pause_since": now}
+            c.execute("UPDATE jobs SET " + ", ".join(f"{k}=?" for k in cols) + " WHERE id=?", (*cols.values(), job_id))
+            self._note(c, job_id, r["state"], now, f"target_stage {old_target} -> {target_stage}" + (" (chờ Chạy tiếp)" if held else ""))
+        return {"result": "changed", "old_target": old_target, "new_target": target_stage, "held": held}
+
+    def mark_deleted(self, job_id: str, now: float | None = None) -> str:
+        """Tombstone job (idempotent, nguyên tử): từ lúc này job biến khỏi mọi danh sách, runner không nhận, stage đang chạy bị abort hợp tác. Dòng DB giữ lại
+        tới khi lease được nhả (không worker nào ghi vào dòng không tồn tại). Revision đang chờ bị hủy. Trả 'deleted' | 'already' | 'gone'."""
+        now = now or time.time()
+        with self._tx() as c:
+            j = c.execute("SELECT state, control_state FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if j is None:
+                return "gone"
+            if j["control_state"] == CONTROL_DELETED:
+                return "already"
+            c.execute("UPDATE jobs SET control_state='DELETED', updated_at=? WHERE id=?", (now, job_id))
+            c.execute("UPDATE pipeline_revisions SET status='cancelled' WHERE job_id=? AND status='pending'", (job_id,))
+            self._note(c, job_id, j["state"], now, "deleted by user")
+        return "deleted"
+
+    def deleted_jobs(self) -> list[dict]:
+        """Job đã tombstone: {id, lease_owner} — `lease_owner` None nghĩa là không còn worker nào giữ, dọn workspace được."""
+        return [dict(r) for r in self._q("SELECT id, lease_owner FROM jobs WHERE control_state='DELETED' ORDER BY seq")]
 
     def set_params(self, job_id: str, params: dict, note: str, now: float | None = None) -> None:
         """Ghi lại params của job (hành động explicit, vd chọn lại template); `note` vào lịch sử chuyển trạng thái."""

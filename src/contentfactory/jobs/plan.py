@@ -137,6 +137,21 @@ def plan_spec(spec: dict, provided: set[str], has_input: bool, floor: str | None
     return Plan(start, target, run, skip, errors, requested, states, reuse)
 
 
+def progress_floor(job: dict, runs: list[dict]) -> int:
+    """Chỉ số stage XA NHẤT mà job đã bắt đầu hoặc đã đi qua: đích mới không được đứng trước nó (lịch sử không bị viết lại).
+    Dựa vào máy trạng thái chứ không vào tên stage: stage đang chạy = chính nó; đang xếp hàng ở stage i = stage i-1 đã xong; FAILED = stage lỗi;
+    cộng thêm mọi lần chạy trong lịch sử (stage bị ngắt/lùi vẫn tính là đã bắt đầu) và cận dưới `start_stage`."""
+    start = P.INDEX[job["start_stage"]] if job.get("start_stage") else 0
+    if job["state"] == P.FAILED:
+        now = P.INDEX.get(job.get("failed_stage") or "", start)
+    else:
+        pos = P.position(job["state"])
+        pos = len(P.STAGES) if pos is None else pos
+        now = pos if job["state"] in P.BY_RUNNING else pos - 1
+    hist = max((P.INDEX[r["stage"]] for r in runs if r["stage"] in P.INDEX), default=0)
+    return max(start, now, hist)
+
+
 def plan_job(start_stage: str | None, target_stage: str | None, provided: set[str], has_input: bool) -> Plan:
     """API kiểu cũ (start_stage/target_stage). Chạy qua `plan_spec`."""
     errors: list[str] = []

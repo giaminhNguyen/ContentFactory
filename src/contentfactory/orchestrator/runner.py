@@ -27,8 +27,8 @@ from ..contracts import ArtifactRef, CancelToken, ErrorClass, JobCancelToken, St
 from ..fsutil import atomic_write, atomic_write_json, sha256_file
 from ..jobs import manifest as M
 from ..jobs import pipeline as P
-from ..jobs.db import CONTROL_CANCELLED, CONTROL_PAUSED, CONTROL_RUNNING, Claim, JobStore
-from ..jobs.plan import Plan, plan_job, plan_spec
+from ..jobs.db import CONTROL_CANCELLED, CONTROL_DELETED, CONTROL_PAUSED, CONTROL_RUNNING, Claim, JobStore
+from ..jobs.plan import Plan, plan_job, plan_spec, progress_floor
 from ..jobs.policy import RetryPolicy
 from ..jobs.workspace import ensure_job_dirs, job_dir
 from .config import Config, _merge
@@ -418,6 +418,34 @@ class Orchestrator:
             self._manifest(job_id)
         return res
 
+    def delete_job(self, job_id: str) -> str:
+        """Xóa job (Sửa job → Danger zone). Tombstone nguyên tử: job biến khỏi danh sách, runner không nhận nữa, stage đang chạy bị abort HỢP TÁC (checkpoint đã hoàn tất
+        không bị phá). Workspace nội bộ chỉ bị dọn khi KHÔNG còn worker giữ lease (ngay nếu job không chạy, ở tick sau nếu đang chạy). `output/` của người dùng
+        KHÔNG BAO GIỜ bị xóa. Idempotent. Trả 'deleted' | 'already' | 'gone'."""
+        res = self.store.mark_deleted(job_id)
+        if res == "deleted":
+            self.log.emit("job_deleted", "warning", job_id)
+            tok = self._tokens.get(job_id)
+            if tok:
+                tok.request_abort()
+        if res != "gone":
+            self._guarded(self._finalize_deleted)
+        return res
+
+    def _finalize_deleted(self) -> None:
+        """Dọn workspace nội bộ của job đã xóa khi không còn lease, và nhả số Full Audio nếu chưa đăng. Chỉ đụng workspace/<job>, không đụng output/."""
+        ws = self.cfg.path("workspace")
+        for j in self.store.deleted_jobs():
+            if j["lease_owner"]:
+                continue
+            jd = job_dir(ws, j["id"])
+            if jd.exists():
+                shutil.rmtree(jd, ignore_errors=True)
+                try:
+                    self.sequence.release(j["id"])
+                except ValueError:                                  # đã đăng với số này: giữ nguyên
+                    pass
+
     def rerender_part(self, job_id: str, part: int) -> str:
         """Ép render lại ĐÚNG một part TikTok (xóa output + khóa của part đó): job phải đang xếp hàng/bị giữ/FAILED ở stage render_tiktok.
         Job đã đi qua stage này thì chưa rewind được (D-56). FAILED thì đưa về hàng như `retry`. Trả trạng thái job sau đó."""
@@ -443,35 +471,75 @@ class Orchestrator:
         self._manifest(job_id)
 
     def set_target(self, job_id: str, target_stage: str) -> None:
-        """Mở rộng/đổi đích của job (explicit). Stage đã xong không chạy lại; thiếu input cho đoạn mới thì từ chối."""
-        job = self.store.get_job(job_id)
-        if job is None:
-            raise ValueError(f"không có job {job_id}")
-        if job.get("pipeline") is not None:
-            raise _spec_error("job dùng pipeline tùy chỉnh: không đổi được bằng target_stage (dùng pipeline revision)")
-        have = {a["kind"] for a in self.store.artifacts(job_id)}
-        pos = P.position(job["state"])
-        plan = plan_job(P.STAGES[min(pos, len(P.STAGES) - 1)].name if pos is not None else None, target_stage, have,
-                        bool((job["params"].get("input") or {}).get("value")))
-        if plan.errors:
-            raise _spec_error("; ".join(plan.errors), errors=plan.errors)
-        if P.INDEX[target_stage] >= P.INDEX["render_youtube"] and not job["params"].get("templates"):
-            self._select_templates_for(job)                                             # job tạo khi đích chưa tới render: chốt template lúc mở rộng (sai thì báo, chưa đổi đích)
-        self.store.set_target(job_id, target_stage)
-        self._manifest(job_id)
+        """Mở rộng/đổi đích của job và để nó chạy tiếp (đường của `cf target`, dedupe Channel Run). Là `update_target` không giữ job đã xong."""
+        self.update_target(job_id, target_stage, hold_completed=False)
 
-    def _select_templates_for(self, job: dict) -> None:
+    def update_target(self, job_id: str, target_stage: str, *, hold_completed: bool = True) -> dict:
+        """Thao tác DUY NHẤT đổi đích pipeline của một job (Sửa job → Cập nhật pipeline; UI/API/CLI cùng đi qua đây).
+        Chỉ đổi ĐÍCH TƯƠNG LAI: không lùi qua progress floor (stage đã bắt đầu/đã xong), không đổi start_stage, không xóa artifact/lịch sử, không kill stage đang chạy.
+        Kế hoạch mới được tính bằng planner với artifact đang có (thiếu input cho đoạn mới thì từ chối, chưa đổi gì). Job chạy dở: runner đọc đích mới ở lần nhận
+        stage kế tiếp. Job ĐÃ XONG mà đích mở rộng: lưu pipeline mới nhưng giữ job tạm dừng (origin EDIT) để KHÔNG tự chạy (`hold_completed`).
+        Trả {"result": changed|unchanged, old_target, new_target, held}. Lỗi domain là StageError (JOB_NOT_FOUND, JOB_CANCELLED, PIPELINE_TARGET_INVALID,
+        PIPELINE_TARGET_BEFORE_PROGRESS, JOB_UPDATE_CONFLICT)."""
+        if target_stage not in P.INDEX:
+            raise StageError(ErrorClass.POLICY, "PIPELINE_TARGET_INVALID", f"Bước đích không hợp lệ: {target_stage!r}.", {"valid": [s.name for s in P.STAGES]}, resource="input")
+        for _ in range(5):                                                                  # CAS: runner có thể vừa chuyển stage giữa lúc tính kế hoạch và lúc ghi
+            job = self.store.get_job(job_id)
+            if job is None or job["control_state"] == CONTROL_DELETED:
+                raise StageError(ErrorClass.POLICY, "JOB_NOT_FOUND", f"Không có job {job_id}.", {"hint": "Quay lại danh sách job."}, resource="input")
+            floor = progress_floor(job, self.store.stage_runs(job_id))
+            if P.INDEX[target_stage] < floor:                                                # chặn TRƯỚC khi chốt template/ảnh (store kiểm lại trong transaction)
+                raise StageError(ErrorClass.POLICY, "PIPELINE_TARGET_BEFORE_PROGRESS", "Không đặt đích trước bước job đã chạy tới.",
+                                 {"floor": P.STAGES[floor].name, "target": target_stage, "hint": "Chỉ chọn được bước hiện tại hoặc các bước phía sau."}, resource="input")
+            plan, spec = self.target_plan(job, target_stage)
+            if plan.errors:
+                raise StageError(ErrorClass.POLICY, "PIPELINE_TARGET_INVALID", "; ".join(plan.errors),
+                                 {"errors": plan.errors, "hint": "Bước này cần dữ liệu mà job chưa có."}, resource="input")
+            params = self._params_for_target(job, plan, spec, target_stage)
+            res = self.store.update_target(job_id, target_stage, expect_state=job["state"], pipeline=spec, params=params, hold_completed=hold_completed)
+            if res["result"] == "conflict":
+                continue
+            if res["result"] == "changed":
+                self.log.emit("job_target_updated", job_id=job_id, old=res["old_target"], new=res["new_target"], held=res["held"])
+                self._manifest(job_id)
+            return res
+        raise StageError(ErrorClass.POLICY, "JOB_UPDATE_CONFLICT", "Job vừa đổi trạng thái, thử lại sau giây lát.", {"hint": "Bấm Lưu lại."}, resource="input")
+
+    def target_plan(self, job: dict, target_stage: str, have: set[str] | None = None) -> tuple[Plan, dict | None]:
+        """(kế hoạch, pipeline spec mới) cho job nếu đích là `target_stage`. Job kiểu start/target: spec None (chỉ đổi đích). Job có pipeline tùy chỉnh: giữ các stage
+        đã yêu cầu nằm trước đích và thêm đích — không xóa lựa chọn của người dùng."""
+        if have is None:
+            have = {a["kind"] for a in self.store.artifacts(job["id"])}
+        has_input = bool((job["params"].get("input") or {}).get("value"))
+        start = job.get("start_stage")
+        if job.get("pipeline") is None:
+            return plan_job(start, target_stage, have, has_input), None
+        idx = P.INDEX[target_stage]
+        req = sorted({r for r in job["pipeline"]["requested_stages"] if P.INDEX[r] <= idx} | {target_stage}, key=P.INDEX.__getitem__)
+        plan = plan_spec({"version": 2, "requested_stages": req, "options": job["pipeline"].get("options") or {}}, have, has_input, floor=start)
+        return plan, {"version": 2, "requested_stages": plan.requested, "options": dict(job["pipeline"].get("options") or {}), "run": list(plan.run)}
+
+    def _params_for_target(self, job: dict, plan: Plan, spec: dict | None, target_stage: str) -> dict | None:
+        """Params mới nếu đích mở rộng tới render mà job chưa chốt template/thumbnail (chốt MỘT lần, lúc mở rộng); None nếu không cần đổi. Sai thì báo, chưa đổi đích."""
+        run = spec["run"] if spec else plan.run
+        if spec is not None:
+            return self._templates_for_run(job, job["params"], run, changed=False)
+        if P.INDEX[target_stage] >= P.INDEX["render_youtube"] and not job["params"].get("templates"):
+            return self._legacy_templates(job)
+        return None
+
+    def _legacy_templates(self, job: dict) -> dict | None:
         channel = (job.get("config_snapshot") or {}).get("semantic", {}).get("channel_config") or CH.load_channel(self.cfg, str(job["params"].get("channel") or "default"))
-        tp = self._thumbnail_params(job["id"], job["params"], channel, ["render_youtube"])                  # mở rộng đích tới render: chốt luôn ảnh thumbnail
+        params = job["params"]
+        tp = self._thumbnail_params(job["id"], params, channel, ["render_youtube"])                         # mở rộng đích tới render: chốt luôn ảnh thumbnail
         if tp is not None:
-            self.store.set_params(job["id"], tp, "thumbnail source chốt khi mở rộng đích")
-            job = {**job, "params": tp}
-        tpls, tdec = TPL.select_templates(self.cfg, job["params"], channel, self.adapters)
+            params = tp
+        tpls, tdec = TPL.select_templates(self.cfg, params, channel, self.adapters)
         if tpls:
-            params = {**job["params"], "templates": tpls, "auto": list(job["params"].get("auto") or []) + tdec}
-            self.store.set_params(job["id"], params, "templates chốt khi mở rộng đích: " + ", ".join(f"{k}={v['id']}@v{v['version']}" for k, v in tpls.items()))
+            params = {**params, "templates": tpls, "auto": list(params.get("auto") or []) + tdec}
             for d in tdec:
                 self.log.emit("auto_decision", job_id=job["id"], **d)
+        return params if params is not job["params"] else None
 
     def retemplate(self, job_id: str, kind: str, template_id: str, policy="latest_published") -> dict:
         """Hành động EXPLICIT: chọn lại template cho MỘT kind (thumbnail | youtube | tiktok) của job và chốt snapshot mới. Output cũ của kind đó bị
@@ -698,6 +766,7 @@ class Orchestrator:
         if now - self._last_tick < float(self.cfg.data.get("monitor", {}).get("tick_s", 1.0)):
             return
         self._last_tick = now
+        self._guarded(self._finalize_deleted)
         for job in self.store.held_jobs():
             if job["needs_user"] or job["control_state"] != CONTROL_RUNNING:    # Auto Resume không bao giờ override Tạm dừng/Hủy của người dùng
                 continue
