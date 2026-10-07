@@ -52,8 +52,11 @@ def plan(orc, now: float | None = None) -> list[dict]:
             actions.append({"kind": kind, "path": p, "bytes": p.stat().st_size, "why": why})
         except OSError:
             pass
+    rerunning = orc.store.reruns.active_job_ids()
     for j in orc.store.list_jobs():
         jd = job_dir(ws, j["id"])
+        if j["id"] in rerunning:
+            continue                                              # đang chạy lại thủ công: file của stage đang dựng chưa là artifact
         if not jd.is_dir() or (jd / ".cleaned.json").exists() and not [f for f in _files(jd) if f.name not in KEEP_NAMES]:
             continue
         if j.get("lease_owner") or j["state"] not in P.TERMINAL and not P.is_complete(j["state"], j.get("target_idx")):

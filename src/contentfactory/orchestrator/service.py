@@ -658,6 +658,8 @@ class Service:
                           "prosody": any(a["kind"] == "speech_plan" for a in self.orc.store.artifacts(job_id))})
         s["thumbnail"] = self.thumbnail_info(j)
         s["story_guidance"] = self.story_guidance_view(j, runs)
+        s["rerun"] = self.rerun_summary(j)
+        s["actions"]["rerun"] = j["control_state"] != "CANCELLED"
         pipeline = self._pipeline(j, runs, pend, d.get("human"), cur, imported)
         s["edit"] = self.jobedit.view(j, s, runs, pipeline)
         s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=pipeline, decisions=j["params"].get("auto", []),
@@ -1065,6 +1067,37 @@ class Service:
             raise _err("NOT_FAILED", "Chỉ chạy lại được job đang ở trạng thái lỗi.")
         stage = self.orc.retry(job_id)
         return {"stage": stage, "message": f"Đã xếp lại stage '{DG.STAGE_LABEL.get(stage, stage)}'; các stage trước giữ nguyên."}
+
+    # ---- Selective Manual Rerun (D-113)
+    def rerun_options(self, job_id: str) -> dict:
+        """Stage nào chạy lại được, vì sao không, cần chọn thêm gì, đã chạy lại mấy lần — toàn bộ do backend quyết định."""
+        self._job_or_error(job_id)
+        return self.orc.rerun_service().options(job_id)
+
+    def rerun_plan(self, job_id: str, payload: dict) -> dict:
+        self._job_or_error(job_id)
+        return self.orc.rerun_service().plan(job_id, payload.get("stages"))
+
+    def rerun_start(self, job_id: str, payload: dict) -> dict:
+        self._job_or_error(job_id)
+        r = self.orc.rerun_service().start(job_id, payload.get("stages"), str(payload.get("request_id") or "") or None)
+        names = ", ".join(s["label"] for s in r["stages"])
+        return {**r, "rerun_session_id": r["id"],
+                "message": ("Lượt chạy lại này đã được tạo trước đó." if r.get("deduped") else f"Đã xếp lượt chạy lại #{r['number']}: {names}. Các bước khác giữ nguyên.")}
+
+    def reruns(self, job_id: str) -> dict:
+        self._job_or_error(job_id)
+        return self.orc.rerun_service().history(job_id)
+
+    def rerun_summary(self, j: dict) -> dict | None:
+        """Phần nhẹ cho trang job: phiên đang chạy, số lần chạy lại và cờ stale của từng bước (phụ trợ: lỗi ở đây không được làm hỏng trang job)."""
+        try:
+            svc = self.orc.rerun_service()
+            an = svc.analyze(j)
+            return {"active": svc.view_active(j["id"]), "counts": self.orc.store.reruns.counts(j["id"]), "stale": {n: a["stale"] for n, a in an["stages"].items()},
+                    "stale_by": {n: a["stale_by"] for n, a in an["stages"].items() if a["stale"]}}
+        except Exception:                                                              # noqa: BLE001
+            return None
 
     # ---- Story Guidance (D-112)
     def story_guidance_view(self, j: dict, runs: list[dict] | None = None) -> dict:

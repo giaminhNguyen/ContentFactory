@@ -71,6 +71,17 @@ class Stage:
     # kế hoạch của job (hoặc kind được cung cấp sẵn); các kind này KHÔNG nằm trong `requires` nên "YouTube-only" không bị ép TikTok.
     packages: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
+    # Mặc định MỌI kind một stage sinh ra suy ra từ mọi input của nó. `derives` thu hẹp cho kind chỉ suy ra từ một phần input: dùng để tính "kết quả cũ còn đồng bộ không"
+    # chính xác theo từng kind (vd `publish_metadata` chỉ từ `metadata`, nên dựng lại video không làm tiêu đề/mô tả cũ đi và Publish chọn kèm Gen Video vẫn hợp lệ).
+    derives: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def sources_of(self, kind: str) -> tuple[str, ...]:
+        """Các kind input mà `kind` (do stage này sinh) suy ra từ."""
+        for k, src in self.derives:
+            if k == kind:
+                return src
+        return tuple(sorted(set(self.requires) | set(self.optional) | {x for _, ks in self.packages for x in ks}))
+
     @property
     def required_inputs(self) -> tuple[str, ...]:
         return self.requires
@@ -113,7 +124,8 @@ STAGES: tuple[Stage, ...] = (
           checkpoint="gói output (dựng rồi mới rename; gói đã có không bị ghi đè — phiên bản mới nằm bên cạnh)",
           params_deps=("language", "project", "channel", "fake"), config_deps=("output", "channel_config", "publishing"),
           deliverable=True, optional=("story_text", "tiktok_render_report", "video_youtube", "thumbnail", "video_tiktok"),   # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
-          packages=(("render_youtube", ("video_youtube", "thumbnail")), ("render_tiktok", ("video_tiktok",)))),
+          packages=(("render_youtube", ("video_youtube", "thumbnail")), ("render_tiktok", ("video_tiktok",))),
+          derives=(("publish_metadata", ("metadata",)),)),
     Stage("publish", UPLOAD_READY, UPLOADING, PUBLISHED,
           ("video_youtube", "thumbnail", "publish_metadata"),
           ("publish_result",), "publish", ("publish", "sequence"),

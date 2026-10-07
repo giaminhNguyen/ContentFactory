@@ -24,6 +24,7 @@ from ..contracts import ArtifactRef, ErrorClass, StageError
 from . import pipeline as P
 from .plan import progress_floor
 from .policy import RetryPolicy, outcome_for
+from .rerun_store import V8_RUN_COLUMNS, V8_SQL, RerunStore
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs(
@@ -47,7 +48,7 @@ CREATE TABLE IF NOT EXISTS transitions(
   from_state TEXT, to_state TEXT NOT NULL, stage TEXT, attempt INTEGER, note TEXT);
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 # v1 (Phase 2.9): điều khiển job (start/target stage), hold + auto resume, checkpoint, config snapshot, resource monitor
 V1_JOB_COLUMNS = (
     ("start_stage", "TEXT"), ("target_stage", "TEXT"), ("target_idx", "INTEGER"),
@@ -127,6 +128,8 @@ V6_SQL = (
 # v7 (Story Guidance, D-112): stage_runs.meta = JSON "ngữ cảnh thực thi" của từng lần chạy (vd đề xuất truyện hiệu lực đã chốt lúc chạy). NULL với lần chạy cũ.
 V7_STAGE_RUN_COLUMNS = (("meta", "TEXT"),)
 
+# v8 (Manual Rerun, D-113): bảng rerun_sessions + stage_runs.rerun_session_id (xem jobs/rerun_store.py)
+
 _RUNNING_STATES = tuple(s.running_state for s in P.STAGES)
 
 
@@ -169,6 +172,7 @@ class JobStore:
                 c.close()
             time.sleep(0.05 + 0.02 * (attempt % 5))
         self._migrate()
+        self.reruns = RerunStore(self)
 
     # -- plumbing ---------------------------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
@@ -257,6 +261,13 @@ class JobStore:
                     for name, decl in V7_STAGE_RUN_COLUMNS:
                         if name not in have:
                             c.execute(f"ALTER TABLE stage_runs ADD COLUMN {name} {decl}")
+                if ver < 8:
+                    have = {r["name"] for r in c.execute("PRAGMA table_info(stage_runs)")}
+                    for name, decl in V8_RUN_COLUMNS:
+                        if name not in have:
+                            c.execute(f"ALTER TABLE stage_runs ADD COLUMN {name} {decl}")
+                    for sql in V8_SQL:
+                        c.execute(sql)
                 if ver < SCHEMA_VERSION:
                     c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
@@ -358,8 +369,8 @@ class JobStore:
                     or (job.get("control_state") or CONTROL_RUNNING) != CONTROL_RUNNING)
 
     def nonterminal_count(self) -> int:
-        """Số job còn ACTIVE (chạy được ngay hoặc đang chạy). Job đã đạt target, FAILED hoặc đang bị giữ không tính."""
-        return sum(self.is_active(j) for j in self.list_jobs())
+        """Số job còn ACTIVE (chạy được ngay hoặc đang chạy) + số phiên chạy lại thủ công đang hoạt động. Job đã đạt target, FAILED hoặc đang bị giữ không tính."""
+        return sum(self.is_active(j) for j in self.list_jobs()) + self.reruns.active_count()
 
     def jobs_using_watermark(self, wm_id: str) -> dict[int, int]:
         """revision -> số job chưa xóa tham chiếu watermark thư viện (params.watermark_ref). Revision có job tham chiếu không được xóa vật lý."""
@@ -382,17 +393,21 @@ class JobStore:
         now = now or time.time()
         res = P.resource_of(stage)
         res_states = [s.running_state for s in P.STAGES if P.resource_of(s) == res]
+        res_stages = [s.name for s in P.STAGES if P.resource_of(s) == res]
         out: list[Claim] = []
         with self._tx() as c:
             running = c.execute(
                 f"SELECT COUNT(*) FROM jobs WHERE state IN ({','.join('?' * len(res_states))})", res_states
             ).fetchone()[0]
+            running += c.execute(f"SELECT COUNT(*) FROM stage_runs WHERE status='running' AND rerun_session_id IS NOT NULL AND stage IN ({','.join('?' * len(res_stages))})",
+                                 res_stages).fetchone()[0]                 # lần chạy lại thủ công cũng chiếm chỗ của tài nguyên dùng chung
             n = min(limit, resource_limit - running)
             if n <= 0:
                 return []
             rows = c.execute(
                 "SELECT id, params, config_snapshot, target_idx, pipeline_spec FROM jobs WHERE state=? AND hold_reason IS NULL AND control_state='RUNNING' "
                 "AND (not_before IS NULL OR not_before<=?) AND (target_idx IS NULL OR target_idx>=?) "
+                "AND NOT EXISTS (SELECT 1 FROM rerun_sessions s WHERE s.job_id=jobs.id AND s.state IN ('queued','running')) "
                 "ORDER BY priority DESC, seq LIMIT ?", (stage.queue_state, now, P.INDEX[stage.name], n)).fetchall()
             for r in rows:
                 attempt = c.execute("SELECT COUNT(*) FROM stage_runs WHERE job_id=? AND stage=?",
@@ -410,9 +425,10 @@ class JobStore:
     def heartbeat(self, owner: str, lease_s: float, now: float | None = None) -> int:
         now = now or time.time()
         with self._tx() as c:
-            return c.execute(
+            n = c.execute(
                 f"UPDATE jobs SET lease_until=? WHERE lease_owner=? AND state IN ({','.join('?' * len(_RUNNING_STATES))})",
                 (now + lease_s, owner, *_RUNNING_STATES)).rowcount
+            return n + c.execute("UPDATE rerun_sessions SET lease_until=? WHERE owner=? AND state='running'", (now + lease_s, owner)).rowcount
 
     def recover_expired(self, max_interruptions: int, now: float | None = None) -> list[tuple[str, str]]:
         """Job đang ở running_state mà lease đã hết hạn (tiến trình chết) => xếp lại hàng."""

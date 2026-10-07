@@ -105,21 +105,31 @@ class StageContract:
                                  {"kind": a["kind"], "issues": issues})
 
     # -- stage_key --------------------------------------------------------------------------
-    def stage_key(self, params: dict, snapshot: dict | None, inputs: dict[str, list[ArtifactRef]], extra: dict | None = None) -> str:
-        """`extra` = phần ngữ cảnh quyết định lúc chạy mà không nằm trong params/config (vd đề xuất truyện hiệu lực); chỉ vào khóa khi không rỗng."""
+    def _blob(self, params: dict, snapshot: dict | None, extra: dict | None) -> dict:
+        """Phần của khóa KHÔNG gồm input: tham số + config + file + ngữ cảnh lúc chạy."""
         st = self.stage
         picked = params if st.params_deps is None else {k: _dig(params, k) for k in st.params_deps}
         sem = (snapshot or {}).get("semantic", {})
         cfg = {k: sem.get(k) for k in st.config_deps}
         cfg["adapters"] = {a: (sem.get("adapters") or {}).get(a) for a in st.adapters}
-        blob = {"stage": st.name, "params": picked, "config": cfg,
-                "inputs": sorted((k, a["sha256"]) for k, v in inputs.items() for a in v)}
+        blob = {"stage": st.name, "params": picked, "config": cfg}
         files = {dep: h for dep in st.file_deps if isinstance(v := _dig(params, dep), str) and v and (h := _file_sha(v))}
         if files:                                                                      # khóa cũ của job không dùng file đó không đổi
             blob["files"] = files
         if extra:
             blob["extra"] = extra
+        return blob
+
+    def stage_key(self, params: dict, snapshot: dict | None, inputs: dict[str, list[ArtifactRef]], extra: dict | None = None) -> str:
+        """`extra` = phần ngữ cảnh quyết định lúc chạy mà không nằm trong params/config (vd đề xuất truyện hiệu lực); chỉ vào khóa khi không rỗng."""
+        blob = self._blob(params, snapshot, extra)
+        blob["inputs"] = sorted((k, a["sha256"]) for k, v in inputs.items() for a in v)
         return hashlib.sha256(json.dumps(blob, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
+    def key_parts(self, params: dict, snapshot: dict | None, inputs: dict[str, list[ArtifactRef]], extra: dict | None = None) -> dict:
+        """Khóa tách thành {rest: băm phần tham số/config, inputs: {kind: [sha256]}} — lưu theo từng lần chạy để biết SAU NÀY cái gì đã đổi (đầu vào nào, hay tham số)."""
+        return {"rest": hashlib.sha256(json.dumps(self._blob(params, snapshot, extra), sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest(),
+                "inputs": {k: sorted(a["sha256"] for a in v) for k, v in inputs.items() if v}}
 
     # -- skip -------------------------------------------------------------------------------
     def consumed_outputs(self, target_idx: int | None, pipeline: dict | None = None) -> tuple[str, ...]:

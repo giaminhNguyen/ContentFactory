@@ -267,7 +267,8 @@ class TTSManager:
             chunks.append(out)
             ctx.log("tts_chunk_done", index=idx, total=len(segments), source=row["source"])
             ctx.progress(len(chunks), len(segments), "segments")
-        master = ctx.workspace / "audio" / "master.wav"
+        out_dir = ctx.workspace / "audio" / ctx.extra.get("rerun_dir", "")                 # chạy lại thủ công: thư mục riêng, không ghi đè master hiện hành trước khi commit
+        master = out_dir / "master.wav"
         joined: dict = {}
 
         def build(tmp: Path) -> None:
@@ -277,7 +278,7 @@ class TTSManager:
         audio_qc = PRO.analyze_audio([s["pause_after_ms"] for s in segments], joined, None, joined.get("duration_sec"))
         splan["qc"]["audio"] = audio_qc
         sp_file = atomic_write_json(ctx.stage_dir / "speech_plan.json", splan)                  # bản cuối kèm QC sau ghép (nội dung plan không đổi)
-        tl_file = atomic_write_json(ctx.workspace / "audio" / "timeline.json", timeline)
+        tl_file = atomic_write_json(out_dir / "timeline.json", timeline)
         qa = self.audio.qa(master)
         if not qa["ok"]:
             raise StageError(ErrorClass.TRANSIENT, "MASTER_QA_FAILED", ",".join(qa["issues"]))

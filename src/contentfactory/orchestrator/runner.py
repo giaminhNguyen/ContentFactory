@@ -84,8 +84,16 @@ class Orchestrator:
         self.pool_sync = PoolSyncService(self)
         self.image_pools = IP.ImagePools(cfg, self.store)
         self._batches = None
+        self._reruns = None
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
         self.watermarks = WM.Watermarks(cfg, self.store, self.adapters.get("audio"))     # Watermark Library theo kênh (revision bất biến, active, tham chiếu của job)
+
+    def rerun_service(self):
+        """Selective Manual Rerun (D-113); tạo lười để import không vòng."""
+        if self._reruns is None:
+            from .rerun import RerunService
+            self._reruns = RerunService(self)
+        return self._reruns
 
     def batch_service(self):
         """Channel Run (D-101); tạo lười để import không vòng. Dùng chung một thể hiện (giữ discovery tiêm cho test)."""
@@ -446,8 +454,9 @@ class Orchestrator:
     def _finalize_deleted(self) -> None:
         """Dọn workspace nội bộ của job đã xóa khi không còn lease, và nhả số Full Audio nếu chưa đăng. Chỉ đụng workspace/<job>, không đụng output/."""
         ws = self.cfg.path("workspace")
+        busy = self.store.reruns.active_job_ids()
         for j in self.store.deleted_jobs():
-            if j["lease_owner"]:
+            if j["lease_owner"] or j["id"] in busy:
                 continue
             jd = job_dir(ws, j["id"])
             if jd.exists():
@@ -617,7 +626,7 @@ class Orchestrator:
         job = self.store.get_job(job_id)
         if rev is None or job is None:
             return "none"
-        if job["state"] in P.BY_RUNNING or job.get("lease_owner"):
+        if job["state"] in P.BY_RUNNING or job.get("lease_owner") or self.store.reruns.active(job_id):
             return "pending"
         ch = rev["change"]
         impact = REV.compute_impact(self, job, pipeline=ch.get("pipeline"), config_patch=ch.get("config_patch"), params_patch=ch.get("params_patch"))
@@ -717,6 +726,8 @@ class Orchestrator:
                 for job_id, action in self.store.recover_expired(self.cfg["retry"]["max_interruptions"]):
                     self.log.emit("lease_recovered", "warning", job_id, action=action)
                     self._manifest(job_id)
+                for sid in self.store.reruns.recover_expired():
+                    self.log.emit("rerun_recovered", "warning", session=sid)
                 self._guarded(self._monitor_tick)
                 self._guarded(self._cleanup_tick)
                 self._schedule(executor, futures)
@@ -801,6 +812,10 @@ class Orchestrator:
             for claim in self.store.claim(stage, free, self.cfg.limit(P.resource_of(stage)),
                                           self.owner, self.cfg["lease_s"]):
                 futures.add(executor.submit(self._execute, claim))
+        free = cap - len(futures)
+        if free > 0:                                                # phiên chạy lại thủ công: chạy nền, không đi qua máy trạng thái của job
+            for sess in self.store.reruns.claim(free, self.owner, self.cfg["lease_s"]):
+                futures.add(executor.submit(self.rerun_service().execute, sess["id"]))
 
     def _manifest(self, job_id: str) -> None:
         jd = job_dir(self.cfg.path("workspace"), job_id)
@@ -841,7 +856,7 @@ class Orchestrator:
             ready, _missing = contract.can_run({k for k, v in inputs.items() if v})
             extra = self.stage_extra(stage.name, claim.params)                    # ngữ cảnh quyết định lúc chạy (vd đề xuất truyện hiệu lực), chốt vào lần chạy này
             key = contract.stage_key(claim.params, claim.snapshot, inputs, GD.key_extra(extra.get("story_guidance"))) if ready else None
-            self.store.set_run_key(claim.run_id, key, {"guidance": extra["story_guidance"]} if extra.get("story_guidance") else None)
+            self.store.set_run_key(claim.run_id, key, self.run_meta(contract, claim.params, claim.snapshot, inputs, extra, ready))
             reason = contract.skip_reason(self.store, job_id, jd, key, claim.target_idx, claim.pipeline)
             if reason:                              # output đã hợp lệ (hoặc được cung cấp sẵn): KHÔNG chạy lại
                 if self.store.succeed(claim, self.owner, [], {"skipped": reason}, status="skipped"):
@@ -849,15 +864,9 @@ class Orchestrator:
                 return
             contract.validate_inputs(inputs, jd, also=package_kinds)
             self.monitor.preflight(stage)
-            sem = (claim.snapshot or {}).get("semantic", {})
             ctx = StageContext(job_id=job_id, stage=stage.name, attempt=claim.attempt, stage_key=key or "",
                                workspace=jd, stage_dir=jd / stage.workdir, params=claim.params, inputs=inputs,
-                               config={"output_dir": str(self.cfg.path("output")),
-                                       "tts_cache_dir": str(self.cfg.path("runtime") / "cache" / "tts"),
-                                       "source": sem.get("source", self.cfg.data.get("source", {})),
-                                       "render": sem.get("render", self.cfg.data.get("render", {})),
-                                       "channel_config": sem.get("channel_config"),
-                                       "publishing": sem.get("publishing", self.cfg.data.get("publishing", {}))},
+                               config=self.stage_config(claim.snapshot),
                                cancel=token, log=log, progress=self._progress_fn(job_id, stage.name), extra=extra)
             log("stage_started", stage_key=(key or "")[:12])
             t0 = time.time()
@@ -876,6 +885,26 @@ class Orchestrator:
         finally:
             self._tokens.pop(job_id, None)
             self._manifest(job_id)
+
+    @staticmethod
+    def run_meta(contract: StageContract, params: dict, snapshot: dict | None, inputs: dict, extra: dict, ready: bool = True, **more) -> dict | None:
+        """`stage_runs.meta` của một lần chạy: đề xuất truyện đã chốt + `lineage` (khóa tách phần) để sau này biết đầu vào/tham số nào đã đổi (stale theo từng kind)."""
+        meta = dict(more)
+        if extra.get("story_guidance"):
+            meta["guidance"] = extra["story_guidance"]
+        if ready:
+            meta["lineage"] = contract.key_parts(params, snapshot, inputs, GD.key_extra(extra.get("story_guidance")))
+        return meta or None
+
+    def stage_config(self, snapshot: dict | None) -> dict:
+        """`ctx.config` của stage: phần máy từ cấu hình hiện tại, phần ngữ nghĩa từ snapshot của job (dùng chung cho chạy thường và chạy lại thủ công)."""
+        sem = (snapshot or {}).get("semantic", {})
+        return {"output_dir": str(self.cfg.path("output")),
+                "tts_cache_dir": str(self.cfg.path("runtime") / "cache" / "tts"),
+                "source": sem.get("source", self.cfg.data.get("source", {})),
+                "render": sem.get("render", self.cfg.data.get("render", {})),
+                "channel_config": sem.get("channel_config"),
+                "publishing": sem.get("publishing", self.cfg.data.get("publishing", {}))}
 
     def stage_extra(self, stage: str, params: dict) -> dict:
         """Ngữ cảnh do orchestrator quyết định NGAY TRƯỚC khi chạy một stage (không nằm trong params): hiện chỉ `story` — đề xuất truyện hiệu lực

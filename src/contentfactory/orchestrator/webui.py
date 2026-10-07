@@ -247,6 +247,22 @@ class Api:
     def retry(app, m, q, b):
         return app.service.retry(m["id"])
 
+    @route("GET", r"/api/jobs/(?P<id>[\w\-]+)/rerun-options")
+    def rerun_options(app, m, q, b):
+        return app.service.rerun_options(m["id"])
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/rerun-plan")
+    def rerun_plan(app, m, q, b):
+        return app.service.rerun_plan(m["id"], b)
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/rerun")
+    def rerun_start(app, m, q, b):
+        return app.service.rerun_start(m["id"], b)
+
+    @route("GET", r"/api/jobs/(?P<id>[\w\-]+)/reruns")
+    def reruns(app, m, q, b):
+        return app.service.reruns(m["id"])
+
     @route("PUT", r"/api/jobs/(?P<id>[\w\-]+)/story-guidance")
     def story_guidance(app, m, q, b):
         return app.service.set_story_guidance(m["id"], b)
