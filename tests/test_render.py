@@ -255,6 +255,10 @@ class ContentFlowAdapterTest(FakeCFCase):
             bad.render_video(self.req(), ctx_for(self.root))
         self.assertEqual((e.exception.error_class, e.exception.code, e.exception.resource), (ErrorClass.RESOURCE, "CONTENTFLOW_MISSING", "runtime"))
 
+    def test_render_worker_sees_the_user_asset_root(self):
+        a = ContentFlowRender({"root": FAKE_CF, "base_dir": self.cfbase, "user_root": self.root / "u"})
+        self.assertEqual(a._env()["CONTENTFLOW_USER_ROOT"], str(self.root / "u"))
+
     def test_render_reports_progress_and_replays_a_completed_key_without_rendering_again(self):
         a, ctx, seen = self.adapter(), ctx_for(self.root), []
         r = a.render_video(self.req(on_progress=seen.append), ctx)

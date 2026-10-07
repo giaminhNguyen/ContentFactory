@@ -77,9 +77,12 @@ class ContentFlowRender:
         return subprocess.run([self.python, "-m", "media_worker", *args], cwd=str(cwd or self.root), capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout, env=self._env())
 
-    @staticmethod
-    def _env() -> dict:
-        return {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    def _env(self) -> dict:
+        # worker render phải thấy cùng asset/template của người dùng như TemplateClient (nếu không: "asset 'frame' is not registered")
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        if self.user_root:
+            env["CONTENTFLOW_USER_ROOT"] = str(self.user_root)
+        return env
 
     def health(self) -> dict:
         try:
