@@ -215,6 +215,11 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     rs.add_argument("--now", action="store_true")
     rt = add("retry", "retry job FAILED tại đúng stage lỗi")
     rt.add_argument("job_id")
+    rr = add("rerun", "chạy lại đúng các stage đã chọn của một job (kể cả job đã xong/đã đăng); không nêu stage = liệt kê stage chạy lại được")
+    rr.add_argument("job_id")
+    rr.add_argument("stages", nargs="*", help="id stage (source story tts audio render_youtube render_tiktok output publish)")
+    rr.add_argument("--plan", action="store_true", help="chỉ kiểm tra lựa chọn, không chạy")
+    rr.add_argument("--no-wait", action="store_true", help="chỉ xếp hàng; vòng lặp `cf start`/`cf ui` sẽ chạy")
     ins = add("inspect", "nhận dạng link YouTube (video/kênh/playlist); kênh/playlist có thêm tiêu đề + kênh nguồn (chỉ metadata, không tải media)")
     ins.add_argument("url")
     ins.add_argument("--offline", action="store_true", help="chỉ nhận dạng theo URL, không gọi yt-dlp")
@@ -550,6 +555,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{st['resource']:12} {'OK ' if st['ok'] else 'DOWN'} failures={st['failures']} {st['detail']}")
     elif a.cmd == "run":
         orc.run(until_idle=not a.forever)
+    elif a.cmd == "rerun":
+        from ..contracts import StageError
+        svc = orc.rerun_service()
+        try:
+            if not a.stages or a.plan:
+                print(json.dumps(svc.plan(a.job_id, a.stages) if a.stages else svc.options(a.job_id), ensure_ascii=False, indent=2, default=str))
+                return 0
+            sess = svc.start(a.job_id, a.stages)
+        except StageError as e:
+            print(f"LỖI: {e.message}" + (f"\n  {e.detail['hint']}" if e.detail.get("hint") else ""))
+            return 2
+        print(f"job {a.job_id} -> chạy lại #{sess['number']}: {', '.join(sess['requested'])}")
+        if a.no_wait:
+            return 0
+        orc.run(until_idle=True)
+        res = svc.view(orc.store.reruns.get(sess["id"]))
+        for st in res["stages"]:
+            print(f"  {st['label']}: {st['state']}" + (f" — {st['error'].get('message')}" if st.get("error") and st["error"].get("message") else ""))
+        print(f"kết quả: {res['result']}")
+        return 0 if res["result"] == "succeeded" else 1
     elif a.cmd == "retry":
         print(f"job {a.job_id} -> xếp lại stage {orc.retry(a.job_id)}")
         if orc.store.get_job(a.job_id)["state"] != P.FAILED:

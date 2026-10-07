@@ -457,6 +457,31 @@ class ControlTest(RerunBase):
         self.assertEqual(self.options()["story"]["rerun_count"], 1)                               # tạm dừng/tiếp tục không tăng đếm
 
 
+class CliTest(RerunBase):
+    def cli(self, *argv):
+        import contextlib
+        import io
+        from contentfactory.orchestrator.cli import main
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = main(["--root", str(self.root), *argv])
+        return code, buf.getvalue()
+
+    def test_cli_lists_plans_and_runs(self):
+        code, out = self.cli("rerun", self.jid)
+        self.assertEqual(code, 0)
+        self.assertEqual([x["id"] for x in json.loads(out)["stages"]], ALL)
+        code, out = self.cli("rerun", self.jid, "publish", "--plan")
+        self.assertEqual((code, json.loads(out)["ok"]), (0, True))
+        code, out = self.cli("rerun", self.jid, "publish")
+        self.assertEqual(code, 0, out)
+        self.assertIn("kết quả: succeeded", out)
+        self.assertEqual(self.svc.rerun_options(self.jid)["stages"][-1]["rerun_count"], 1)
+        code, out = self.cli("rerun", self.jid, "nope")
+        self.assertEqual(code, 2)
+        self.assertIn("LỖI", out)
+
+
 class SchemaTest(RootCase):
     def test_old_db_upgrades_and_old_jobs_have_no_rerun_data(self):
         import sqlite3

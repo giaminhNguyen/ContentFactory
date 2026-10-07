@@ -75,6 +75,20 @@ Dùng khi chỉ cần một phần (lệnh nâng cao, `cf --advanced -h`):
 
 Rồi `cf run`. Phần đã làm xong và còn hợp lệ không bao giờ bị làm lại. Muốn đi tiếp tới đích xa hơn: `cf config <job> --target publish`.
 
+## 4A. Đề xuất truyện và Chạy lại từng bước
+
+**Đề xuất truyện** (chỉ dẫn sáng tạo tự do cho agent viết truyện: hướng cốt truyện, không khí, ngôi kể, kết thúc, chi tiết giữ/tránh…):
+- Mặc định cho mọi job: *Cài đặt → Truyện → Cài đặt nâng cao → Đề xuất truyện*.
+- Riêng cho một job: ô *Đề xuất truyện cho job này* khi tạo job, hoặc thẻ *Đề xuất truyện* ở trang job (Dùng đề xuất trong Cài đặt / Dùng đề xuất riêng / Không dùng). Đề xuất riêng **thay hoàn toàn** mặc định, không nối.
+- Đề xuất được đọc **lúc bước Truyện chạy** và ghi lại theo từng lần chạy; sửa Cài đặt về sau không đổi lịch sử. Muốn áp dụng cho truyện đã có: *Chạy lại → Truyện*.
+
+**Chạy lại** (nút ở trang job, dùng được cả với job đã đăng): tích đúng các bước muốn làm lại (Phụ đề, Truyện, Giọng đọc, Audio, Video YouTube/TikTok, Gói output, Đăng YouTube).
+- Chỉ các bước đã chọn chạy, theo thứ tự pipeline; bước không chọn không chạy. Kết quả mới thay kết quả hiện hành khi bước xong; lỗi giữa chừng thì kết quả cũ còn nguyên.
+- Làm lại một bước làm các bước phụ thuộc thành **không đồng bộ** (nhãn “Không đồng bộ”) nhưng không tự chạy chúng. Muốn chạy bước sau mà bước trước đang không đồng bộ, chọn thêm bước trước (hệ thống nói rõ cần chọn thêm gì).
+- *Đăng YouTube* luôn tạo **một video mới** trên YouTube; video đã đăng trước đó không bị xóa hay sửa.
+- Dòng lệnh (nâng cao): `cf rerun <job>` liệt kê bước chạy lại được; `cf rerun <job> story tts --plan` kiểm tra; `cf rerun <job> story tts` chạy.
+- Mỗi bước hiện số lần đã chạy lại (tự thử lại khi lỗi mạng không tính); *Lịch sử chạy lại* liệt kê từng lượt, đề xuất truyện đã dùng và mã/URL video đã đăng.
+
 ## 5. Khi có sự cố
 
 | Thấy | Nghĩa là | Làm gì |

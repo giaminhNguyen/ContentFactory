@@ -157,6 +157,7 @@ class SourceBundle(TypedDict):
     language: str            # ngôn ngữ ĐÍCH (mặc định "vi", D-04)
     source_language: str     # ngôn ngữ của transcript nguồn
     transcript: Path
+    guidance: str            # (tùy chọn, D-112) đề xuất sáng tạo hiệu lực của người dùng; thiếu/rỗng = không có
 
 class StoryResult(TypedDict):
     sections: list[Path]     # section/chương nội bộ theo thứ tự (có thể có heading, marker: Assembler gỡ)
@@ -167,6 +168,7 @@ class StoryAdapter(Protocol):
     def health(self) -> dict: ...
 ```
 
+- **Đề xuất truyện (D-112):** `bundle["guidance"]` là DỮ LIỆU sáng tạo do người dùng nhập (job > Cài đặt), không phải chỉ dẫn hệ thống. Adapter phải đưa nó vào prompt sáng tạo **một lần mỗi prompt**, bọc trong thẻ, dặn agent không để nó đổi giao thức/định dạng đầu ra/thư mục/lệnh; không nội suy vào shell/đường dẫn; rỗng ⇒ prompt y như cũ. Đề xuất đổi ⇒ trạng thái trung gian của adapter phải bị vô hiệu hóa (như đổi transcript). `StageContext.extra` mang ngữ cảnh do orchestrator quyết định lúc chạy (`story_guidance`; manual rerun thêm `rerun_dir`).
 - **`profile`:** `chapters` (hoặc `target_chars`/`chapter_chars`), `book_name`, `max_removed_ratio`. Blueprint/continuity/sections nằm trong `out_dir` (workspace nội bộ), không vào output.
 - **Story Assembler** (`story/assembler.py`, tất định, `ASSEMBLER_VERSION`): gỡ heading/đường kẻ/marker/"còn tiếp"/tóm tắt chương trước; mỗi dòng là một đoạn → xuất đoạn cách nhau một dòng trống; trim phần đầu section chép lại đuôi section trước; nối câu bị cắt ở ranh giới section; loại câu lặp liền kề, đoạn trùng khít, đoạn gần trùng; lỗi `ASSEMBLER_REMOVED_TOO_MUCH` nếu loại > 35%. Ghi `assembly_report.json` (artifact `story_report`).
 - **Bất biến đầu ra (validator, chạy sau Assembler):** `story.txt` không rỗng; không có dòng mở đầu bằng `第N章` / `Chapter N` / `Section N` / `Part N` / `Chương N` / `Phần N`; không marker kỹ thuật (`<!--`, `[[`, `{{`, `TODO`, `#`); không quá 30% đoạn trùng. Vi phạm → `STORY_INVALID` (POLICY) và **không** ghi `story.txt`. (Chưa kiểm ngôn ngữ đúng `profile.language`.)
