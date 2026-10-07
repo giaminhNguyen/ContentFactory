@@ -653,7 +653,7 @@ class TemplateApi:            # = render.templates (ContentFlowRender: TemplateC
     get_template(id, version="latest"|"latest_published"|N) -> {template, scope, checksum, versions, summary, assets, validation}
     resolve(id, policy="latest_published"|N, expect_type=None) -> snapshot       # {schema, id, version, type, name, scope, status, policy, checksum, fingerprint, template, assets{id:{sha256,type,scope,path}}, summary{canvas,fps,source_region}}
     resolve_many([{key, id, policy, expect_type}]) -> {key: snapshot}              # 1 tiến trình cho cả 3 kind; lỗi kèm detail.key
-    create_draft / duplicate / new_draft / save_draft / publish / archive / delete_draft / validate / preview / test_render
+    create_draft / duplicate / new_draft / save_draft / publish / archive / delete_draft / delete_template / validate / preview / test_render
     list_assets / get_asset / validate_asset / asset_path / import_asset / delete_asset / info / migrate_legacy
 ```
 

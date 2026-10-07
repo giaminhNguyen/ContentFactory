@@ -612,6 +612,11 @@
 - **API:** `/api/channels/<id>/watermarks[/<wm>[/activate|restore|regenerate|file|audio]]`, `watermarks/upload`, `watermark/deactivate`. Tạo/sửa/tạo lại bằng TTS: kiểm đầu vào NGAY (400/404), rồi tổng hợp ở tác vụ nền (`/api/tasks/<id>`; mỗi kênh một lượt `WATERMARK_BUSY`); không đổi gì ảnh hưởng âm thanh thì trả kết quả ngay. Nghe thử chỉ phục vụ revision đã quản lý theo mã `wm_xxxxxxxx` + số (không nhận đường dẫn), cần token.
 - **Giới hạn đã biết:** khóa registry chỉ trong một tiến trình (cf ui là tiến trình ghi duy nhất); tiến độ tạo là trạng thái tác vụ + thời gian đã trôi (engine không báo phần trăm); tổng hợp không hủy được giữa chừng.
 
+### D-110 ✅ Xóa template đã publish (xóa cả template)
+- **Thay đổi so với trước:** trước đây published chỉ được “Lưu trữ”. Giờ user có thể **xóa cả template** (mọi version: nháp/published/lưu trữ) bằng `DELETE /api/templates/<id>` → ContentFlow `Service.delete_template` (xóa thư mục `templates/user/<loại>/<id>/`). `delete-draft` giữ nguyên cho từng bản nháp.
+- **An toàn:** builtin ⇒ `TEMPLATE_READONLY`; kênh còn chọn template (kể cả `fallback`) ⇒ `TEMPLATE_IN_USE` nêu kênh + cách xử lý (không để cấu hình kênh trỏ vào template ma); bấm đúp ⇒ `already_deleted`. Job cũ không ảnh hưởng: `params.templates` giữ snapshot đầy đủ (tài liệu + sha256 asset) của version đã dùng. Asset không bị xóa theo (có thể dùng chung).
+- **Giới hạn:** không xóa riêng một version đã publish (chỉ cả template hoặc lưu trữ); không thùng rác/hoàn tác. Cần commit module ContentFlow chứa `delete_template` (xem `modules.lock`).
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:

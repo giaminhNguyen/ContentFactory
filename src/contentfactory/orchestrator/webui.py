@@ -384,6 +384,10 @@ class Api:
     def template_delete_draft(app, m, q, b):
         return app.templates.delete_draft(m["id"], int(m["ver"]))
 
+    @route("DELETE", r"/api/templates/(?P<id>[a-z0-9_]+)")
+    def template_delete(app, m, q, b):
+        return app.templates.delete(m["id"])
+
     @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/(?P<ver>\d+)/publish")
     def template_publish(app, m, q, b):
         return app.templates.publish(m["id"], int(m["ver"]))

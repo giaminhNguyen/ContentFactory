@@ -312,6 +312,13 @@ class FakeTemplateApi:
             del self.t[id]
         return {"deleted": f"{id}@v{version}"}
 
+    def delete_template(self, id: str) -> dict:
+        t = self._tpl(id)
+        if t["scope"] != "user":
+            raise _terr("TEMPLATE_READONLY", "builtin template is read-only")
+        del self.t[id]
+        return {"deleted": id, "versions": sorted(t["versions"])}
+
     def duplicate(self, id: str, new_id: str, name=None, version=None) -> dict:
         base = self._doc(id, version if version is not None else "latest")
         doc = json.loads(json.dumps(base))

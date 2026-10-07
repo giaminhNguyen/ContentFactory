@@ -89,7 +89,7 @@ class TemplateService:
 
     def actions_for(self, r: dict) -> dict:
         """Hành động hợp lệ cho một hàng danh sách — BACKEND quyết định (giao diện chỉ vẽ nút và lý do bị tắt).
-        builtin: chỉ Nhân bản · bản nháp của user: Sửa / Nhân bản / Xoá bản nháp · đã publish: Nhân bản / Bản nháp mới / Lưu trữ (KHÔNG xoá — job cũ cần tái lập) ·
+        builtin: chỉ Nhân bản · template của user: Sửa / Nhân bản / Xoá bản nháp / Lưu trữ / Xoá template (mọi trạng thái, kể cả đã publish; job cũ giữ snapshot nên vẫn render) ·
         đã lưu trữ: Nhân bản / Khôi phục (= bản nháp mới từ version gần nhất, rồi publish lại)."""
         user, used = r["scope"] == "user", r.get("used_by") or []
         pub, draft = r.get("latest_published"), r.get("draft")
@@ -99,7 +99,9 @@ class TemplateService:
         if draft and removes and used:
             blocked = f"Không xoá được: kênh {self._who(used)} đang chọn template này. Đổi template của kênh trước, hoặc nhân bản thay vì xoá."
         warn = f"Còn {len(used)} kênh đang chọn template này; job mới của các kênh đó sẽ báo lỗi cho tới khi chọn template khác." if used else None
+        gone = None if not used else f"Không xoá được: kênh {self._who(used)} đang chọn template này. Đổi template của kênh trước, hoặc nhân bản thay vì xoá."
         return {"open": True, "duplicate": True,
+                "delete": {"enabled": not used, "blocked": gone, "versions": len(r.get("versions", []))} if user else None,
                 "delete_draft": {"enabled": blocked is None, "version": draft, "removes_template": removes, "blocked": blocked} if user and draft else None,
                 "archive": {"enabled": True, "version": pub, "warning": warn} if user and pub else None,
                 "new_draft": {"enabled": True, "from_version": pub} if user and pub and not draft else None,
@@ -183,6 +185,23 @@ class TemplateService:
                 raise _err("TEMPLATE_IN_USE", f"Không xoá được: kênh {self._who(used)} đang chọn template này.",
                            "Mở trang Kênh → Template, chọn template khác (hoặc nhân bản template này), rồi xoá.", used_by=used)
             return self.api.delete_draft(id=template_id, version=version)
+
+    def delete(self, template_id: str) -> dict:
+        """Xoá CẢ template của user (mọi version, kể cả đã publish/lưu trữ). Từ chối khi kênh còn chọn nó (không để cấu hình kênh trỏ vào template ma).
+        Job cũ không bị ảnh hưởng: chúng giữ snapshot đầy đủ của version đã dùng. Bấm đúp an toàn (lần hai: already_deleted)."""
+        with self._busy(template_id):
+            try:
+                got = self.api.get_template(id=template_id, version="latest", validate=False)
+            except StageError as e:
+                if e.code in ("TEMPLATE_NOT_FOUND", "TEMPLATE_VERSION_NOT_FOUND"):
+                    return {"deleted": template_id, "already_deleted": True}
+                raise
+            if got["scope"] != "user":
+                raise _err("TEMPLATE_READONLY", "Template có sẵn chỉ đọc: không xoá được.", "Nhân bản template này nếu bạn muốn một bản riêng.")
+            if used := self.ops.usage(template_id):
+                raise _err("TEMPLATE_IN_USE", f"Không xoá được: kênh {self._who(used)} đang chọn template này.",
+                           "Mở trang Kênh → Template, chọn template khác (hoặc nhân bản template này), rồi xoá.", used_by=used)
+            return self.api.delete_template(id=template_id)
 
     def restore(self, template_id: str) -> dict:
         """Khôi phục template đã lưu trữ = tạo bản nháp mới từ version gần nhất (sửa nếu cần, rồi publish lại để chọn cho kênh)."""

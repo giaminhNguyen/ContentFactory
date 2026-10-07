@@ -73,7 +73,9 @@ export async function mount(root, ctx) {
     const newDraft = act.new_draft ? btn({ label: "Bản nháp mới", icon: "plus", kind: "ghost", size: "sm", onClick: (e) => newDraftFor(r, e.currentTarget) }) : null;
     const restore = act.restore ? btn({ label: "Khôi phục", icon: "undo", size: "sm", title: "Tạo bản nháp mới từ version gần nhất đã lưu trữ; publish lại để chọn cho kênh.", onClick: (e) => restoreFor(r, e.currentTarget) }) : null;
     const del = act.delete_draft ? btn({ label: "Xoá bản nháp", icon: "trash", kind: "danger", size: "sm", disabled: !act.delete_draft.enabled, onClick: (e) => deleteDraft(r, e.currentTarget) }) : null;
-    const blocked = act.delete_draft && !act.delete_draft.enabled ? alertBox({ tone: "wait", title: act.delete_draft.blocked,
+    const delAll = act.delete ? btn({ label: "Xoá template", icon: "trash", kind: "danger", size: "sm", disabled: !act.delete.enabled, onClick: (e) => deleteTemplate(r, e.currentTarget) }) : null;
+    const blockedInfo = act.delete_draft && !act.delete_draft.enabled ? act.delete_draft : act.delete && !act.delete.enabled ? act.delete : null;
+    const blocked = blockedInfo ? alertBox({ tone: "wait", title: blockedInfo.blocked,
       actions: (r.used_by || []).map((u) => btn({ label: `Đổi template của kênh ${u.channel}`, size: "sm", href: `#/channels/${u.channel}` })) }) : null;
     return h("li", { class: "card tpl-card", dataset: { id: r.id } }, mini,
       h("div", { class: "tpl-body" },
@@ -81,7 +83,7 @@ export async function mount(root, ctx) {
         h("span", { class: "mono small muted" }, r.id),
         h("div", { class: "row" }, ...statusBadges(r)),
         r.description ? h("p", { class: "small muted" }, r.description) : null, used, def,
-        h("div", { class: "row tpl-actions" }, open, dup, restore, newDraft, arch, del), blocked));
+        h("div", { class: "row tpl-actions" }, open, dup, restore, newDraft, arch, del, delAll), blocked));
   }
 
   // ---------- Template mới ----------
@@ -148,6 +150,19 @@ export async function mount(root, ctx) {
         toast({ title: "Đã xoá bản nháp", tone: "done" });
       } catch (e) { toastError(e, "Chưa xoá được"); }
       await load();                                                                  // luôn làm mới: danh sách phản ánh ngay trạng thái thật (kể cả khi đã xoá ở nơi khác)
+    });
+  }
+
+  async function deleteTemplate(r, button) {
+    const n = r.actions.delete.versions;
+    const body = `Xoá “${r.name || r.id}” cùng ${n} version (kể cả bản đã publish). Job đã tạo vẫn render được vì giữ bản sao của version đã dùng. Không thể khôi phục.`;
+    if (!(await confirmDialog({ title: "Xoá template?", body, confirmLabel: "Xoá", danger: true }))) return;
+    await busy(button, async () => {
+      try {
+        await api.del(`/api/templates/${r.id}`);
+        toast({ title: "Đã xoá template", tone: "done" });
+      } catch (e) { toastError(e, "Chưa xoá được"); }
+      await load();
     });
   }
 

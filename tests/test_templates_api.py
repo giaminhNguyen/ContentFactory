@@ -166,6 +166,36 @@ class TemplateLifecycleUxTest(_Http):
         self.assertEqual(e["error"]["code"], "TEMPLATE_IMMUTABLE")
         self.assertIn("không sửa hay xoá được", e["error"]["message"])                                      # lỗi ContentFlow được dịch, mã giữ nguyên
 
+    def test_published_and_archived_templates_can_be_deleted_as_a_whole(self):
+        self.call("POST", "/api/templates", {"type": "video", "id": "del_pub", "name": "Pub"})
+        self.call("POST", "/api/templates/del_pub/1/publish")
+        self.call("POST", "/api/templates/del_pub/new-draft", {})
+        self.assertEqual((self.row("del_pub")["actions"]["delete"]["enabled"], self.row("del_pub")["actions"]["delete"]["versions"]), (True, 2))
+        c, r = self.call("DELETE", "/api/templates/del_pub")
+        self.assertEqual((c, r["deleted"]), (200, "del_pub"))
+        self.assertNotIn("del_pub", [t["id"] for t in self.call("GET", "/api/templates?archived=1")[1]["templates"]])
+        self.assertEqual(self.call("DELETE", "/api/templates/del_pub")[1].get("already_deleted"), True)        # bấm đúp an toàn
+        self.call("POST", "/api/templates", {"type": "video", "id": "del_arch", "name": "Arch"})
+        self.call("POST", "/api/templates/del_arch/1/publish")
+        self.call("POST", "/api/templates/del_arch/archive", {})
+        self.assertEqual(self.call("DELETE", "/api/templates/del_arch")[0], 200)
+
+    def test_delete_template_is_refused_for_builtin_and_for_a_template_a_channel_uses(self):
+        self.assertIsNone(self.row("thumb_default")["actions"]["delete"])
+        c, e = self.call("DELETE", "/api/templates/thumb_default")
+        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_READONLY"))
+        self.call("POST", "/api/templates", {"type": "video", "id": "del_used", "name": "Used"})
+        self.call("POST", "/api/templates/del_used/1/publish")
+        self.point_channel_at("del_used")
+        a = self.row("del_used")["actions"]["delete"]
+        self.assertFalse(a["enabled"])
+        self.assertIn("YouTube", a["blocked"])
+        c, e = self.call("DELETE", "/api/templates/del_used")
+        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_IN_USE"))
+        self.assertEqual(self.row("del_used")["latest_published"], 1)
+        self.clear_channel()
+        self.assertEqual(self.call("DELETE", "/api/templates/del_used")[0], 200)
+
     def test_archived_template_can_be_restored_through_a_new_draft(self):
         self.call("POST", "/api/templates", {"type": "video", "id": "old_t", "name": "Old"})
         self.call("POST", "/api/templates/old_t/1/publish")
