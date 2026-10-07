@@ -180,20 +180,21 @@ class ListFilterTest(UiCase):
 
 
 class BulkAndDashboardTest(UiCase):
-    def test_bulk_update_pipeline_reports_each_job_and_blocks_finished_ones(self):
+    def test_bulk_update_pipeline_reports_each_job_and_holds_finished_ones(self):
         live = self.o.submit(params(channel="kenh"), pipeline=spec("render_youtube", "render_tiktok", "output"))
         done = self.svc.create_run({"input": {"value": URL}, "channel": "kenh", "run": "story"})["job_id"]
         self.o.run()
         live2 = self.o.submit(params(channel="kenh", input={"kind": "youtube_url", "value": "https://youtu.be/zzzzzzzzzzz"}), pipeline=spec("render_youtube", "render_tiktok", "output"))
-        r = self.svc.bulk("update_pipeline", [live2, done, "999999"], {"pipeline": {"requested_stages": ["render_tiktok", "output"]}})
+        r = self.svc.bulk("update_pipeline", [live2, done, "999999"], {"target_stage": "render_tiktok"})
         by = {x["job_id"]: x for x in r["results"]}
         self.assertEqual(by[live2]["result"], "done")
-        self.assertEqual(by[done]["result"], "skipped")
-        self.assertIn("Chạy lại với thay đổi", by[done]["reason"])
+        self.assertEqual(by[done]["result"], "done")                                     # job đã xong: lưu đích mới, giữ chờ “Chạy tiếp”
+        self.assertIn("Chạy tiếp", by[done]["reason"])
+        self.assertEqual(self.o.store.get_job(done)["pause_origin"], "EDIT")
         self.assertEqual(by["999999"]["result"], "error")
-        self.assertEqual(self.o.store.get_job(live2)["pipeline"]["requested_stages"], ["render_tiktok", "output"])
-        again = self.svc.bulk("update_pipeline", [live2], {"pipeline": {"requested_stages": ["render_tiktok", "output"]}})
-        self.assertEqual(again["results"][0]["result"], "skipped")                       # đã đúng như vậy: không tạo revision thừa
+        self.assertEqual(self.o.store.get_job(live2)["pipeline"]["requested_stages"], ["render_youtube", "render_tiktok"])
+        again = self.svc.bulk("update_pipeline", [live2], {"target_stage": "render_tiktok"})
+        self.assertEqual(again["results"][0]["result"], "skipped")                       # đã đúng như vậy: không ghi gì thừa
         with self.assertRaises(StageError):
             self.svc.bulk("update_pipeline", [live], {})
 
@@ -240,7 +241,7 @@ class Phase9HttpTest(_Http):
         self.assertEqual(self.call("GET", "/api/jobs?q=khong-khop")[1]["total"], 0)
         self.assertEqual(self.call("GET", "/api/jobs?kind=channel")[1]["total"], 0)
         self.assertEqual(self.call("GET", "/api/jobs?channel=kenh&days=7")[1]["total"], 1)
-        c, b = self.call("POST", "/api/jobs/bulk", {"action": "update_pipeline", "job_ids": [r["job_id"]], "args": {"pipeline": {"requested_stages": ["story"]}}})
+        c, b = self.call("POST", "/api/jobs/bulk", {"action": "update_pipeline", "job_ids": [r["job_id"]], "args": {"target_stage": "story"}})
         self.assertEqual((c, b["results"][0]["result"]), (200, "skipped"))                              # pipeline đã đúng như vậy
         c, e = self.call("POST", "/api/jobs/bulk", {"action": "template", "job_ids": [r["job_id"]], "args": {}})
         self.assertEqual((c, e["error"]["code"]), (400, "BULK_ARGS"))

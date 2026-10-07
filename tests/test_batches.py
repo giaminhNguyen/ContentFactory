@@ -387,17 +387,21 @@ class RunAndStatusTest(BatchCase):
         for i in ids[1:]:
             orc.pause_job(i)
         orc.run()                                                                   # job 0 xong (subtitle)
-        spec = {"requested_stages": ["story"]}
-        r = bs.update_pipeline(d["id"], spec, "unstarted")
+        r = bs.update_pipeline(d["id"], "story", "unstarted")
         self.assertEqual((r["counts"]["applied"], len(r["results"])), (3, 3))        # job đã chạy/xong không thuộc phạm vi 'unstarted'
-        r = bs.update_pipeline(d["id"], {"requested_stages": ["tts"]}, "unfinished")
-        self.assertEqual((r["counts"]["applied"], r["counts"]["skipped"]), (3, 1))   # job hoàn tất không bị đổi tại chỗ
-        self.assertEqual(r["results"][0]["result"], "skipped")
-        sel = bs.update_pipeline(d["id"], {"requested_stages": ["bogus"]}, "selected", [ids[1], ids[0]])
-        self.assertEqual((sel["counts"]["rejected"], sel["counts"]["skipped"]), (1, 1))
+        r = bs.update_pipeline(d["id"], "tts", "unfinished")
+        self.assertEqual((r["counts"]["applied"], r["results"][0]["held"]), (4, True))   # job đã xong: lưu đích mới và giữ chờ “Chạy tiếp”, không tự chạy
+        self.assertEqual(orc.store.get_job(ids[0])["pause_origin"], "EDIT")
+        orc.resume(ids[0])
+        orc.run()                                                                   # chỉ job 0 chạy tiếp (các job khác đang bị batch tạm dừng)
+        sel = bs.update_pipeline(d["id"], "story", "selected", [ids[1], ids[0]])
+        self.assertEqual((sel["counts"]["rejected"], sel["counts"]["applied"]), (1, 1))   # job 0 đã chạy tới tts: không lùi trước tiến độ
+        self.assertEqual(sel["results"][0]["result"], "rejected")
         with self.assertRaises(StageError):
-            bs.update_pipeline(d["id"], spec, "everything")
-        self.assertEqual(orc.store.get_job(ids[1])["pipeline"]["requested_stages"], ["tts"])
+            bs.update_pipeline(d["id"], "bogus", "unfinished")
+        with self.assertRaises(StageError):
+            bs.update_pipeline(d["id"], "story", "everything")
+        self.assertEqual(orc.store.get_job(ids[1])["target_stage"], "story")
 
     def test_rescan_adds_only_new_videos(self):
         fake = FakeYouTube(videos=[entry(i) for i in range(5, 0, -1)])

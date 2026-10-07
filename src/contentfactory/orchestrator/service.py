@@ -33,6 +33,7 @@ from . import ops
 from . import preflight as PF
 from . import revisions as REV
 from . import templates as TPL
+from .service_jobedit import JobEditService
 from .service_templates import Raw
 
 AUDIO_EXT = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
@@ -96,6 +97,7 @@ class Service:
         self._outputs: dict[str, dict] = {}
         self._req_file = self.cfg.path("runtime") / "ui_requests.json"
         self._requests: dict[str, str] = self._load_requests()
+        self.jobedit = JobEditService(orc, self)
 
     # ================================================================================== đầu vào
     def detect_input(self, value: str, kind: str | None = None) -> dict:
@@ -610,10 +612,13 @@ class Service:
     def _matches(q: str, fields: list) -> bool:
         return any(q in " ".join(str(f).lower().split()) for f in fields if f)
 
+    def forget_job(self, job_id: str) -> None:
+        with self._lock:
+            self._titles.pop(job_id, None)
+            self._outputs.pop(job_id, None)
+
     def job_detail(self, job_id: str) -> dict:
-        j = self.orc.store.get_job(job_id)
-        if j is None:
-            raise _err("JOB_NOT_FOUND", f"Không có job {job_id}.", "Quay lại danh sách job.")
+        j = self._job_or_error(job_id)
         runs = self.orc.store.stage_runs(job_id)
         d = DG.explain(self.orc, job_id)
         s = self.summary(j)
@@ -629,11 +634,13 @@ class Service:
                  pending_revision=({"revision": pend["revision"], "apply_policy": pend["apply_policy"], "created_at": pend["created_at"],
                                     "summary": self._impact_summary(pend["impact"] or {})} if pend else None),
                  actions={"pause": j["control_state"] == "RUNNING" and status not in ("completed", "failed", "cancelled"), "unpause": j["control_state"] == "PAUSED",
-                          "cancel": j["control_state"] != "CANCELLED" and status != "completed", "update": status not in ("completed", "cancelled"),
+                          "cancel": j["control_state"] != "CANCELLED" and status != "completed", "edit": j["control_state"] != "CANCELLED", "delete": True,
                           "clone": status in ("completed", "cancelled", "failed"), "reroll_thumbnail": bool((j["params"].get("thumbnail_source")) and status not in ("completed", "cancelled")),
                           "prosody": any(a["kind"] == "speech_plan" for a in self.orc.store.artifacts(job_id))})
         s["thumbnail"] = self.thumbnail_info(j)
-        s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=self._pipeline(j, runs, pend, d.get("human"), cur, imported), decisions=j["params"].get("auto", []),
+        pipeline = self._pipeline(j, runs, pend, d.get("human"), cur, imported)
+        s["edit"] = self.jobedit.view(j, s, runs, pipeline)
+        s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=pipeline, decisions=j["params"].get("auto", []),
                  mode={"start": j.get("start_stage"), "target": j.get("target_stage")}, params_public=self._public_params(j["params"]),
                  timeline_legend=TIMELINE_LABEL,
                  output=(lambda o: o if o.get("project_dir") else None)(self.output_info(job_id)),
@@ -848,8 +855,8 @@ class Service:
         if len(ids) > 500:
             raise _err("TOO_MANY_SELECTED", "Chọn tối đa 500 job mỗi lần.")
         args = args or {}
-        if action == "update_pipeline" and not (args.get("pipeline") or {}).get("requested_stages"):
-            raise _err("BULK_ARGS", "Thiếu danh sách bước (pipeline.requested_stages).")                 # lỗi tham số chung: báo một lần, không lặp cho từng job
+        if action == "update_pipeline" and args.get("target_stage") not in P.INDEX:
+            raise _err("BULK_ARGS", "Thiếu hoặc sai bước đích (target_stage).")                          # lỗi tham số chung: báo một lần, không lặp cho từng job
         if action == "template" and not (args.get("kind") and args.get("template_id")):
             raise _err("BULK_ARGS", "Thiếu loại template hoặc mã template.")
         results = []
@@ -890,16 +897,14 @@ class Service:
         return {"action": action, "counts": counts, "results": results}
 
     def _bulk_update(self, jid: str, j: dict, args: dict) -> tuple[bool, str | None]:
-        """Cập nhật pipeline cho MỘT job trong lô: dùng đúng impact planner/revision của từng job (job đã xong/hủy bị impact chặn kèm lý do)."""
-        stages = (args.get("pipeline") or {}).get("requested_stages")
-        imported = {a["kind"] for a in self.orc.store.artifacts(jid) if a["stage"] == "import"}
-        if set(REV.current_pipeline(j, imported)["requested_stages"]) == set(stages):
-            return False, "Pipeline của job này đã đúng như vậy."
+        """Cập nhật pipeline cho MỘT job trong lô: đúng thao tác `update_target` của Sửa job (progress floor kiểm TỪNG job; job đã xong được lưu và giữ, không tự chạy)."""
         try:
-            r = self.orc.request_update(jid, pipeline={"requested_stages": list(stages)}, apply_policy=args.get("apply_policy") or "after_current_safe_point")
+            r = self.orc.update_target(jid, args["target_stage"])
         except StageError as e:
-            return False, e.message + (" Dùng “Chạy lại với thay đổi”." if (e.detail or {}).get("clone_suggested") else "")
-        return True, {"applied": "Đã áp dụng.", "pending": "Sẽ áp dụng ở điểm an toàn kế tiếp."}.get(r["status"], r["status"])
+            return False, e.message
+        if r["result"] == "unchanged":
+            return False, "Pipeline của job này đã đúng như vậy."
+        return True, "Đã lưu; job xong sẽ chờ “Chạy tiếp”." if r["held"] else "Đã cập nhật."
 
     def _bulk_template(self, jid: str, j: dict, args: dict) -> tuple[bool, str | None]:
         """Đổi template (thumbnail | youtube | tiktok) cho job CHƯA kết thúc; job đã xong/hủy giữ nguyên (không sửa tại chỗ)."""
@@ -915,7 +920,7 @@ class Service:
 
     def _job_or_error(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)
-        if j is None:
+        if j is None or j["control_state"] == "DELETED":
             raise _err("JOB_NOT_FOUND", f"Không có job {job_id}.", "Quay lại danh sách job.")
         return j
 
@@ -936,8 +941,12 @@ class Service:
 
     # ---- cập nhật pipeline/config + chạy lại với thay đổi
     @staticmethod
-    def _update_args(payload: dict) -> dict:
+    def _update_args(payload: dict, clone: bool = False) -> dict:
+        """Revision của job chỉ còn dành cho config/params (nhịp đọc, thumbnail, template). Đổi PIPELINE của job đang sống đi qua `Sửa job` (đổi đích, progress floor);
+        chỉ “Chạy lại với thay đổi” (job MỚI) còn nhận `pipeline`."""
         pl = payload.get("pipeline")
+        if pl is not None and not clone:
+            raise _err("PIPELINE_USE_TARGET", "Đổi pipeline của job qua “Sửa job → Cập nhật pipeline”.", "Dùng PUT /api/jobs/<id>/target với target_stage.")
         return {"pipeline": {"requested_stages": pl.get("requested_stages")} if isinstance(pl, dict) else None,
                 "config_patch": payload.get("config_patch") or None, "params_patch": payload.get("params_patch") or None}
 
@@ -999,9 +1008,15 @@ class Service:
 
     def clone(self, job_id: str, payload: dict) -> dict:
         self._job_or_error(job_id)
-        new = self.orc.clone_job(job_id, rerun_from=payload.get("rerun_from") or None, pipeline=self._update_args(payload)["pipeline"],
+        new = self.orc.clone_job(job_id, rerun_from=payload.get("rerun_from") or None, pipeline=self._update_args(payload, clone=True)["pipeline"],
                                  params_patch=payload.get("params_patch") or None)
         return {"job_id": new, "message": f"Đã tạo job #{new} từ kết quả còn hợp lệ của job #{job_id}; job cũ không bị thay đổi."}
+
+    def update_target(self, job_id: str, payload: dict) -> dict:
+        return self.jobedit.update_target(job_id, payload)
+
+    def delete_job(self, job_id: str) -> dict:
+        return self.jobedit.delete(job_id)
 
     def retry(self, job_id: str) -> dict:
         j = self.orc.store.get_job(job_id)

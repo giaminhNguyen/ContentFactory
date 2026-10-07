@@ -164,10 +164,9 @@ class Api:
     def batch_action(app, m, q, b):
         return getattr(app.orc.batch_service(), m["action"].replace("-", "_"))(m["id"])
 
-    @route("POST", r"/api/batches/(?P<id>B\d+)/pipeline-revisions")
-    def batch_pipeline(app, m, q, b):
-        return app.orc.batch_service().update_pipeline(m["id"], {"requested_stages": ((b.get("pipeline") or {}).get("requested_stages"))}, b.get("scope") or "unfinished",
-                                                       b.get("job_ids"), b.get("apply_policy") or "after_current_safe_point")
+    @route("POST", r"/api/batches/(?P<id>B\d+)/target")
+    def batch_target(app, m, q, b):
+        return app.orc.batch_service().update_pipeline(m["id"], str(b.get("target_stage") or ""), b.get("scope") or "unfinished", b.get("job_ids"))
 
     @route("POST", "/api/preview")
     def preview(app, m, q, b):
@@ -218,6 +217,14 @@ class Api:
     @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/pipeline-revisions")
     def pipeline_revisions(app, m, q, b):
         return app.service.request_update(m["id"], b)
+
+    @route("PUT", r"/api/jobs/(?P<id>[\w\-]+)/target")
+    def job_target(app, m, q, b):
+        return app.service.update_target(m["id"], b)
+
+    @route("DELETE", r"/api/jobs/(?P<id>[\w\-]+)")
+    def job_delete(app, m, q, b):
+        return app.service.delete_job(m["id"])
 
     @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/clone")
     def clone(app, m, q, b):

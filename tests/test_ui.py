@@ -79,29 +79,33 @@ class JobControlViewTest(UiCase):
         j2 = self.svc.create_run({"input": {"value": URL + "x"}, "channel": "kenh", "run": "story"})["job_id"]
         self.assertEqual(self.svc.cancel(j2)["result"], "changed")
         d = self.svc.job_detail(j2)
-        self.assertEqual((d["status"], d["actions"]["cancel"], d["actions"]["clone"], d["actions"]["update"]), ("cancelled", False, True, False))
+        self.assertEqual((d["status"], d["actions"]["cancel"], d["actions"]["clone"], d["actions"]["edit"]), ("cancelled", False, True, False))
         self.assertEqual(self.svc.resume(j2)["result"], "cancelled")
         with self.assertRaises(StageError):
             self.svc.pause("999999")
 
-    def test_impact_preview_and_revision_service_messages(self):
+    def test_job_pipeline_goes_through_edit_target_not_revisions(self):
         jid = self.svc.create_run({"input": {"value": URL}, "channel": "kenh", "pipeline": {"mode": "custom", "requested_stages": ["render_youtube", "render_tiktok"]}, "kids": False})["job_id"]
         self.svc.pause(jid)
-        imp = self.svc.preview_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}})
-        acts = {s["id"]: (s["action"], s["action_label"], s["role"]) for s in imp["stages"]}
-        self.assertEqual(acts["render_youtube"][0], "REMOVE_FROM_PLAN")
-        self.assertEqual(acts["audio"][2], "locked")
-        self.assertIn("Video YouTube", imp["summary_text"]["removed"])
-        r = self.svc.request_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}})
-        self.assertEqual(r["status"], "applied")
+        with self.assertRaises(StageError) as cm:                                      # revision của job không còn nhận pipeline
+            self.svc.preview_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}})
+        self.assertEqual(cm.exception.code, "PIPELINE_USE_TARGET")
+        with self.assertRaises(StageError):
+            self.svc.request_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}})
         d = self.svc.job_detail(jid)
-        self.assertEqual((d["pipeline_revision"], d["requested_stages"], d["pending_revision"]), (2, ["render_tiktok"], None))
-        blocked = self.svc.preview_update(jid, {})
-        self.assertFalse(blocked["ok"])
+        edit = d["edit"]
+        by = {s["id"]: s for s in edit["stages"]}
+        self.assertEqual((edit["floor"], edit["target"], d["actions"]["edit"], d["actions"]["delete"]), ("source", "render_tiktok", True, True))
+        self.assertTrue(by["output"]["selectable"] and "Chạy tiếp" not in by["output"]["effect"])
+        self.assertIn("rồi dừng", by["render_youtube"]["effect"])
+        r = self.svc.update_target(jid, {"target_stage": "render_youtube"})
+        self.assertEqual((r["result"], r["held"]), ("changed", False))
+        d = self.svc.job_detail(jid)
+        self.assertEqual((d["edit"]["target"], d["mode"]["target"]), ("render_youtube", "render_youtube"))
         with self.assertRaises(StageError):
-            self.svc.request_update(jid, {"pipeline": {"requested_stages": ["bogus"]}})
+            self.svc.update_target(jid, {"target_stage": "nope"})
         with self.assertRaises(StageError):
-            self.svc.request_update(jid, {"pipeline": {"requested_stages": ["render_tiktok"]}, "apply_policy": "now"})
+            self.svc.update_target(jid, {})
 
 
 # ================================================================================== Prosody (nhịp đọc): thông tin, nghe thử A/B, speech plan của job
@@ -620,9 +624,9 @@ class HttpTest(UiCase):
         self.assertEqual(self.call("POST", f"/api/batches/{bid}/pause")[1]["paused"], 10)
         self.assertEqual(self.call("GET", f"/api/batches/{bid}")[1]["status"], "PAUSED")
         self.assertEqual(self.call("POST", f"/api/batches/{bid}/resume")[1]["resumed"], 10)
-        code, u, _ = self.call("POST", f"/api/batches/{bid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}, "scope": "unfinished"})
+        code, u, _ = self.call("POST", f"/api/batches/{bid}/target", {"target_stage": "tts", "scope": "unfinished"})
         self.assertEqual((code, u["counts"]["applied"]), (200, 10))
-        self.assertEqual(self.call("POST", f"/api/batches/{bid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}, "scope": "x"})[0], 400)
+        self.assertEqual(self.call("POST", f"/api/batches/{bid}/target", {"target_stage": "tts", "scope": "x"})[0], 400)
         self.assertEqual(self.call("POST", f"/api/batches/{bid}/cancel-queued")[1]["cancelled_jobs"], 10)
         kids = [x["job_id"] for x in self.call("GET", f"/api/batches/{bid}?limit=3")[1]["items"]]
         code, bk, _ = self.call("POST", "/api/jobs/bulk", {"action": "resume", "job_ids": kids + ["999999"]})
@@ -654,11 +658,14 @@ class HttpTest(UiCase):
         jid = r["job_id"]
         self.assertEqual(self.call("POST", f"/api/jobs/{jid}/pause")[1]["result"], "changed")
         self.assertEqual(self.call("GET", f"/api/jobs/{jid}")[1]["status"], "paused")
-        code, imp, _ = self.call("POST", f"/api/jobs/{jid}/pipeline-impact", {"pipeline": {"requested_stages": ["tts"]}})
-        self.assertEqual((code, imp["ok"], imp["pipeline"]["run"]), (200, True, ["source", "story", "tts"]))
-        code, rev, _ = self.call("POST", f"/api/jobs/{jid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}})
-        self.assertEqual((code, rev["status"]), (200, "applied"))
-        self.assertEqual(self.call("POST", f"/api/jobs/{jid}/pipeline-revisions", {"pipeline": {"requested_stages": ["nope"]}})[0], 400)
+        code, e, _ = self.call("POST", f"/api/jobs/{jid}/pipeline-revisions", {"pipeline": {"requested_stages": ["tts"]}})
+        self.assertEqual((code, e["error"]["code"]), (400, "PIPELINE_USE_TARGET"))                     # đường pipeline cũ đã bỏ: chỉ còn Sửa job
+        code, t, _ = self.call("PUT", f"/api/jobs/{jid}/target", {"target_stage": "tts"})
+        self.assertEqual((code, t["result"], t["new_target"]), (200, "changed", "tts"))
+        self.assertEqual(self.call("PUT", f"/api/jobs/{jid}/target", {"target_stage": "tts"})[1]["result"], "unchanged")      # lặp lại: idempotent
+        self.assertEqual(self.call("PUT", f"/api/jobs/{jid}/target", {"target_stage": "nope"})[0], 400)
+        self.assertEqual(self.call("PUT", "/api/jobs/999999/target", {"target_stage": "tts"})[0], 404)
+        self.assertEqual(self.call("PUT", f"/api/jobs/{jid}/target", {"target_stage": "tts"}, token=False)[0], 401)
         self.assertEqual(self.call("POST", f"/api/jobs/{jid}/resume")[1]["result"], "unpaused")
         self.assertEqual(self.call("POST", f"/api/jobs/{jid}/cancel")[1]["result"], "changed")
         self.assertEqual(self.call("POST", f"/api/jobs/{jid}/clone", {})[0], 200)

@@ -176,7 +176,7 @@ class BatchService:
             c[self._ui(j)] += 1
         c["pending_creation"] = sum(1 for i in items if i["status"] == "pending")
         c["error"] = sum(1 for i in items if i["status"] == "error")
-        c["total"] = len(items)
+        c["total"] = sum(1 for i in items if i["status"] != "removed")                      # video có job đã bị xóa (Sửa job) không còn tính vào Channel Run
         return c
 
     @staticmethod
@@ -272,6 +272,8 @@ class BatchService:
         by_job = {j["id"]: j for j in self._jobs(bid)}
         rows = []
         for it in items:
+            if it["status"] == "removed":
+                continue
             j = by_job.get(it["job_id"]) if it["job_id"] else None
             st = self._ui(j) if j else ("pending" if it["status"] == "pending" else it["status"])
             if status and status != "all" and st not in TAB_GROUPS.get(status, {status}):
@@ -380,12 +382,13 @@ class BatchService:
         self.orc.log.emit("batch_cancelled", "warning", batch_id=bid, **res)
         return {"batch": self.summary(self._batch(bid)), **res}
 
-    def update_pipeline(self, bid: str, pipeline: dict, scope: str = "unfinished", job_ids: list[str] | None = None,
-                        apply_policy: str = "after_current_safe_point") -> dict:
-        """Đổi pipeline cho nhiều job con theo phạm vi. Mỗi job tự kiểm (impact/revision riêng); báo kết quả TỪNG job (thành công một phần là bình thường).
-        Job đã hoàn tất/hủy không bị đổi tại chỗ (dùng clone)."""
+    def update_pipeline(self, bid: str, target_stage: str, scope: str = "unfinished", job_ids: list[str] | None = None) -> dict:
+        """Đổi ĐÍCH pipeline cho nhiều job con theo phạm vi, bằng đúng thao tác `update_target` của Sửa job (progress floor kiểm từng job; job đã xong được lưu và giữ chờ
+        “Chạy tiếp”). Báo kết quả TỪNG job (thành công một phần là bình thường). Job đã hủy không đổi được."""
         if scope not in SCOPES:
             raise _err("INVALID_SCOPE", f"scope không hợp lệ: {scope!r}; hợp lệ: {list(SCOPES)}")
+        if target_stage not in P.INDEX:
+            raise _err("PIPELINE_TARGET_INVALID", f"Bước đích không hợp lệ: {target_stage!r}.")
         self._batch(bid)
         jobs = self._jobs(bid)
         if scope == "selected":
@@ -395,16 +398,16 @@ class BatchService:
             jobs = [j for j in jobs if self._unstarted(j)]
         results = []
         for j in jobs:
-            if self._ui(j) in ("completed", "cancelled"):
-                results.append({"job_id": j["id"], "result": "skipped", "reason": "Job đã kết thúc: dùng “Chạy lại với thay đổi”."})
+            if self._ui(j) == "cancelled":
+                results.append({"job_id": j["id"], "result": "skipped", "reason": "Job đã bị hủy."})
                 continue
             try:
-                r = self.orc.request_update(j["id"], pipeline=pipeline, apply_policy=apply_policy, created_by="batch")
-                results.append({"job_id": j["id"], "result": r["status"], "revision": r["revision"], "rewind_to": r["impact"]["rewind_to"]})
+                r = self.orc.update_target(j["id"], target_stage)
+                results.append({"job_id": j["id"], "result": "applied" if r["result"] == "changed" else "unchanged", "held": r["held"]})
             except StageError as e:
                 results.append({"job_id": j["id"], "result": "rejected", "reason": e.message})
-        n = {k: sum(1 for r in results if r["result"] == k) for k in ("applied", "pending", "rejected", "skipped")}
-        self.orc.log.emit("batch_pipeline_update", batch_id=bid, scope=scope, **n)
+        n = {k: sum(1 for r in results if r["result"] == k) for k in ("applied", "unchanged", "rejected", "skipped")}
+        self.orc.log.emit("batch_pipeline_update", batch_id=bid, scope=scope, target=target_stage, **n)
         return {"batch": self.summary(self._batch(bid)), "scope": scope, "counts": n, "results": results}
 
     def rescan(self, bid: str) -> dict:
