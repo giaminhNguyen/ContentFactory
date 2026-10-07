@@ -1266,6 +1266,98 @@ if (wanted("guidance")) {
   await mob.context().close();
 }
 
+if (wanted("rerun")) {
+  console.log("\n# Chạy lại có chọn bước (D-113)");
+  const page = await newPage();
+  await go(page, "/settings/story");
+  const g = page.getByLabel("Đề xuất truyện", { exact: true });
+  await g.fill(`Kết thúc bi kịch. (QA rerun ${Date.now() % 100000})`);
+  await g.blur();
+  await page.waitForSelector("text=Đã lưu", { timeout: 10000 });
+  await go(page, "/jobs");
+  await page.locator("a:has-text('Truyện đã hoàn tất')").first().click();
+  await page.waitForSelector("#pipe-h");
+  const open = async () => { await page.locator("button:has-text('Chạy lại')").first().click(); await page.waitForSelector("dialog.dlg .rr-list input", { timeout: 10000 }); };
+  const go_ = page.locator("dialog.dlg button:has-text('Chạy lại các bước đã chọn')");
+  const sum = page.locator("dialog.dlg .rr-summary");
+  check("job đã hoàn tất vẫn có nút Chạy lại", await page.locator("button:has-text('Chạy lại')").first().isVisible());
+  await open();
+  const n = await page.locator("dialog.dlg .rr-list input[type=checkbox]").count();
+  check("danh sách checkbox lấy từ backend (8 bước), tất cả chọn được", n === 8 && (await page.locator("dialog.dlg .rr-list input:disabled").count()) === 0, String(n));
+  check("mỗi bước có nhãn + số lần chạy lại", (await page.locator("dialog.dlg").innerText()).includes("Chưa chạy lại lần nào"));
+  check("chưa chọn: nút Chạy lại bị khóa", await go_.isDisabled());
+  await page.locator("#rr-story").check();
+  await page.waitForFunction(() => document.querySelector("dialog.dlg .rr-summary")?.innerText.includes("Sẽ chạy lại 1 bước"), null, { timeout: 10000 });
+  check("tóm tắt thực thi theo thứ tự backend", (await sum.innerText()).includes("Truyện"));
+  check("chọn Truyện: ghi chú đề xuất truyện hiệu lực", (await page.locator("dialog.dlg").innerText()).includes("Kết thúc bi kịch"));
+  check("hợp lệ: nút Chạy lại bật", await go_.isEnabled());
+  await page.locator("#rr-publish").check();
+  await page.waitForFunction(() => document.querySelector("dialog.dlg")?.innerText.includes("Video đã đăng trước đó sẽ không bị xóa"), null, { timeout: 10000 });
+  await page.waitForTimeout(500);
+  check("chọn Đăng YouTube: cảnh báo + phải xác nhận mới gửi được", await go_.isDisabled());
+  await page.locator("#rr-story").uncheck();                                    // Truyện + Đăng: video cũ sẽ lệch Truyện mới => backend từ chối; Đăng riêng thì hợp lệ
+  await page.locator("#rr-confirm-publish").check();
+  await page.waitForFunction(() => !document.querySelector("dialog.dlg button.primary")?.disabled, null, { timeout: 10000 });
+  check("Đăng riêng + đã xác nhận: nút Chạy lại bật", await go_.isEnabled());
+  await page.locator("#rr-story").check();
+  await page.waitForTimeout(700);
+  check("Truyện + Đăng: backend từ chối (video lệch Truyện mới), nút khóa", await go_.isDisabled());
+  await noOverflow(page, "rerun dialog");
+  await axe(page, "rerun dialog");
+  await shot(page, "rerun_dialog");
+  await page.locator("#rr-publish").uncheck();
+  await page.waitForTimeout(600);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("dialog.dlg", { state: "detached" });
+  check("Esc đóng hộp thoại, focus về nút Chạy lại", await page.evaluate(() => document.activeElement?.textContent.includes("Chạy lại")));
+  await open();
+  await page.locator("#rr-story").check();
+  await page.waitForFunction(() => !document.querySelector("dialog.dlg button.primary")?.disabled, null, { timeout: 10000 });
+  await go_.click();
+  await page.waitForSelector("dialog.dlg", { state: "detached" });
+  await page.waitForSelector(".stage-row[data-name=story] .chip:has-text('Rerun ×1')", { timeout: 60000 });
+  check("sau khi chạy xong: Truyện hiện 'Rerun ×1' (cập nhật sống, không tải lại trang)", true);
+  await page.waitForFunction(() => document.querySelectorAll(".stage-row[data-name=tts] .chip.warn").length === 1, null, { timeout: 20000 });
+  check("bước hạ nguồn (Giọng đọc) hiện 'Không đồng bộ'", true);
+  check("tên bước không còn chữ 'null'", !(await page.locator(".stage-row[data-name=story] .name").innerText()).includes("null"));
+  await open();
+  check("stale hiển thị trong hộp thoại", (await page.locator("dialog.dlg").innerText()).includes("Cũ · không đồng bộ"));
+  await page.locator("#rr-render_youtube").check();
+  await page.waitForFunction(() => document.querySelector("dialog.dlg .rr-summary")?.innerText.includes("Chọn các bước cần thiết"), null, { timeout: 10000 });
+  check("chọn riêng Video YouTube: không gửi được, có lý do + gợi ý", await go_.isDisabled() && (await page.locator("dialog.dlg").innerText()).includes("không còn đồng bộ"));
+  await page.locator("dialog.dlg button:has-text('Chọn các bước cần thiết')").click();
+  await page.waitForFunction(() => document.querySelector("#rr-tts")?.checked && document.querySelector("#rr-audio")?.checked, null, { timeout: 10000 });
+  await page.waitForFunction(() => !document.querySelector("dialog.dlg button.primary")?.disabled, null, { timeout: 10000 });
+  check("Chọn các bước cần thiết thêm TTS + Audio (hiển thị rõ), rồi gửi được", await go_.isEnabled());
+  await go_.click();
+  await page.waitForSelector("dialog.dlg", { state: "detached" });
+  await page.waitForSelector(".stage-row[data-name=render_youtube] .chip:has-text('Rerun ×1')", { timeout: 90000 });
+  check("chuỗi Giọng đọc → Audio → Video YouTube chạy xong, mỗi bước Rerun ×1", (await page.locator(".stage-row[data-name=tts] .chip:has-text('Rerun ×1')").count()) === 1);
+  await page.locator("button:has-text('Lịch sử chạy lại')").click();
+  await page.waitForSelector("section[aria-label='Chạy lại #2']", { timeout: 10000 });
+  const hist = await page.locator("section[aria-label='Lịch sử chạy lại']").innerText();
+  check("lịch sử: Chạy lại #1, #2 và lần chạy ban đầu", hist.includes("Chạy lại #1") && hist.includes("Lần chạy ban đầu"));
+  check("lịch sử: snapshot đề xuất truyện trong Chi tiết kỹ thuật", (await page.locator("section[aria-label='Chạy lại #1'] details").first().textContent()).includes("Kết thúc bi kịch"));
+  await page.waitForSelector(".toast", { state: "detached", timeout: 15000 }).catch(() => {});
+  await noOverflow(page, "job rerun");
+  await axe(page, "job rerun");
+  await shot(page, "rerun_job");
+  check("không lỗi console/mạng (chạy lại)", page.problems.filter((p) => !/http 4/.test(p)).length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+  for (const [scheme, w] of [["dark", 1280], ["light", 390]]) {
+    const p = await newPage({ width: w, height: 844, scheme });
+    await go(p, "/jobs");
+    await p.locator("a:has-text('Truyện đã hoàn tất')").first().click();
+    await p.waitForSelector("#pipe-h");
+    await p.locator("button:has-text('Chạy lại')").first().click();
+    await p.waitForSelector("dialog.dlg .rr-list input");
+    await noOverflow(p, `rerun dialog ${w} ${scheme}`);
+    await axe(p, `rerun dialog ${w} ${scheme}`);
+    await shot(p, `rerun_dialog_${scheme}_${w}`);
+    await p.context().close();
+  }
+}
+
 await browser.close();
 console.log(`\n${results.length - failures}/${results.length} đạt`);
 fs.writeFileSync(path.join(shotsDir || ".", "qa-results.json"), JSON.stringify(results, null, 1));

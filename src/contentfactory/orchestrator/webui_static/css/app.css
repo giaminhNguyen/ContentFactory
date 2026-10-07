@@ -372,3 +372,29 @@ dialog.dlg.wide { width: min(760px, calc(100vw - 2 * var(--s-4))); }
 .setting.setting-wide { grid-template-columns: minmax(0, 1fr); align-items: start; }
 .setting.setting-wide .s-ctl { align-items: stretch; width: 100%; }
 .setting.setting-wide .s-ctl .textarea { max-width: none; min-height: 168px; }
+
+/* Chạy lại (D-113) */
+.rr-dialog { min-width: 0; }
+.rr-list { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--s-1); }
+.rr-list legend { padding: 0; margin-bottom: var(--s-2); }
+.rr-item { border: 1px solid var(--border); border-radius: var(--r-2); padding: var(--s-2) var(--s-3); background: var(--surface); }
+.rr-item[data-disabled="1"] { background: var(--surface-2); }
+.rr-row { display: flex; align-items: flex-start; gap: var(--s-3); cursor: pointer; min-height: 32px; font-weight: 500; }
+.rr-item[data-disabled="1"] .rr-row { cursor: not-allowed; color: var(--text-muted, inherit); }
+.rr-row input { margin-top: 3px; flex: none; }
+.rr-main { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-3); align-items: center; min-width: 0; }
+.rr-chips { display: inline-flex; gap: var(--s-2); }
+.rr-msg { margin: 2px 0 0 calc(var(--s-3) + 16px); overflow-wrap: anywhere; }
+.rr-msg:empty { display: none; }
+.rr-msg[data-tone="warn"] { color: var(--st-wait-fg); }
+.rr-msg[data-tone="off"] { color: var(--text-muted, inherit); }
+.rr-summary { display: flex; flex-direction: column; gap: var(--s-2); }
+.rr-sum-title { font-weight: 600; }
+.rr-confirm { display: inline-flex; gap: var(--s-2); align-items: center; font-weight: 500; }
+.rr-hist { display: flex; flex-direction: column; gap: var(--s-2); padding-top: var(--s-3); }
+.rr-hist h3 { margin: 0; }
+.rr-hist-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-2); }
+.rr-hist-stage { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-3); align-items: center; }
+.rr-hist-stage details { flex-basis: 100%; }
+.rr-hist-err { color: var(--st-fail-fg); flex-basis: 100%; }
+@media (max-width: 640px) { .rr-msg { margin-left: 0; } }

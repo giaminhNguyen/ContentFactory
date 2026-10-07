@@ -11,6 +11,8 @@ import { openClone, confirmCancel, openRerollThumbnail } from "./_job_control.js
 import { openEditJob } from "./_job_edit.js";
 import { openProsodyDialog } from "./_prosody.js";
 import { storyGuidanceCard } from "./_story_guidance.js";
+import { openRerunDialog, rerunBanner, rerunHistoryCard } from "./_rerun.js";
+import { countBadge, countLabel, finishedSession, RESULT_LABEL } from "../rerun_logic.js";
 import { externalLink } from "./_batch_ui.js";
 import * as motion from "../motion.js";
 
@@ -27,12 +29,15 @@ export async function mount(root, ctx) {
   const controlHost = h("div", null);
   const thumbHost = h("div", null);
   const guidanceHost = h("div", null);
+  const rerunHost = h("div", { "aria-live": "polite" });
+  const history = rerunHistoryCard(id);
+  let lastActive = null;
   let thumbUrl = null;
   const stagesList = h("ul", { class: "stages", "aria-label": "Các bước của pipeline" });
   const stagesCard = h("section", { class: "card", "aria-labelledby": "pipe-h" }, h("div", { class: "card-title" }, h("h2", { id: "pipe-h" }, "Pipeline")), stagesList);
   const outputHost = h("div", null);
   const techHost = h("div", null);
-  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, controlHost, thumbHost, guidanceHost, stagesCard, outputHost, techHost));
+  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, rerunHost, controlHost, thumbHost, guidanceHost, stagesCard, history.el, outputHost, techHost));
   head.append(skeleton(2));
 
   // ---------- tải ----------
@@ -48,7 +53,7 @@ export async function mount(root, ctx) {
     data = d;
     paint(d);
     if (logOpen && (d.status === "running" || d.status === "queued")) await loadLog(true, signal);
-    return d.status === "running" || d.status === "queued" || d.control?.pausing || d.pending_revision ? "fast" : "idle";
+    return d.status === "running" || d.status === "queued" || d.control?.pausing || d.pending_revision || d.rerun?.active ? "fast" : "idle";
   });
 
   const after = () => poller.poke();
@@ -62,9 +67,18 @@ export async function mount(root, ctx) {
     sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
     sig("thumb", [JSON.stringify(d.thumbnail), d.pending_revision?.revision], () => paintThumb(d));
     sig("guidance", [JSON.stringify(d.story_guidance)], () => { clear(guidanceHost); const c = storyGuidanceCard(d, { after }); if (c) guidanceHost.append(c); });
-    paintStages(d);
+    sig("rerun", [JSON.stringify(d.rerun?.active)], () => { clear(rerunHost); const b = rerunBanner(d); if (b) rerunHost.append(b); });
+    const done = finishedSession(lastActive, d.rerun?.active);                       // phiên vừa kết thúc: báo kết quả + làm mới lịch sử
+    lastActive = d.rerun?.active || null;
+    if (done) { history.reload(); api.get(`/api/jobs/${id}/reruns`).then((r) => { const s = r.sessions.find((x) => x.id === done.id); if (s) toast({ title: `Chạy lại #${s.number}: ${RESULT_LABEL[s.result] || s.result}`, tone: s.result === "succeeded" ? "done" : "wait" }); }).catch(() => {}); }
+    paintStages(withRerun(d));
     sig("output", [JSON.stringify(d.output)], () => paintOutput(d));
     sig("tech", [d.decisions.length, d.attempts.length, d.mode.start, d.mode.target], () => paintTech(d));
+  }
+  // Gắn số lần chạy lại + cờ "không đồng bộ" (backend tính) vào từng hàng của pipeline để updateStage vẽ badge.
+  function withRerun(d) {
+    const r = d.rerun || {}, lab = Object.fromEntries(d.pipeline.map((s) => [s.name, s.label])), run = (r.active?.stages || []).find((x) => x.state === "running")?.id;
+    return d.pipeline.map((s) => ({ ...s, rerun_count: r.counts?.[s.name] || 0, stale: !!r.stale?.[s.name], stale_by: (r.stale_by?.[s.name] || []).map((x) => lab[x] || x), rerunning: run === s.name }));
   }
   function sig(key, parts, fn) { const s = JSON.stringify(parts); if (sigs[key] !== s) { sigs[key] = s; fn(); } }
 
@@ -75,7 +89,7 @@ export async function mount(root, ctx) {
       h("div", { class: "grow" }, h("h1", { id: "page-title" }, d.title), h("p", { class: "muted" }, `Job #${d.id} · Kênh ${d.channel} · tạo ${relTime(d.created_at)}`),
         d.batch ? h("p", { class: "small" }, icon("tv", { size: 14 }), " Thuộc ", h("a", { href: `#/batches/${d.batch.id}` }, `Channel Run ${d.batch.title}`), d.batch.position ? ` (video #${d.batch.position})` : "") : null,
         linkRow(d.links)),
-      h("div", { class: "row" }, bd, live, controlBtn(d), editBtn(d), d.output?.project_dir ? openBtn(d) : null)));
+      h("div", { class: "row" }, bd, live, controlBtn(d), rerunBtn(d), editBtn(d), d.output?.project_dir ? openBtn(d) : null)));
   }
   // Nút điều khiển chính theo ngữ cảnh: Tạm dừng (job đang sống) hoặc Tiếp tục (đã tạm dừng). Hủy nằm ở "Thao tác nâng cao" vì không hoàn tác được.
   function controlBtn(d) {
@@ -90,6 +104,14 @@ export async function mount(root, ctx) {
       return b;
     }
     return null;
+  }
+
+  // “Chạy lại”: chọn các bước muốn chạy lại (kể cả job đã xong/đã đăng); mọi quyết định do backend.
+  function rerunBtn(d) {
+    if (!d.actions?.rerun) return null;
+    const b = btn({ label: "Chạy lại", icon: "refresh", title: "Chọn các bước muốn chạy lại; bước khác giữ nguyên" });
+    b.addEventListener("click", () => openRerunDialog(d, { after }).catch((e) => toastError(e)));
+    return b;
   }
 
   // “Sửa job”: Cập nhật pipeline (đổi đích theo progress floor) + Xóa job. Một lối vào duy nhất — không còn nút “Cập nhật pipeline” riêng.
@@ -194,8 +216,8 @@ export async function mount(root, ctx) {
     autoHost.append(h("div", { class: "card row spread" }, sw, h("p", { class: "muted small", id: hid }, d.auto_resume ? "Khi gặp sự cố tạm thời (mạng, quota…), hệ thống tự chạy tiếp từ chỗ dừng." : "Khi gặp sự cố tạm thời, job chờ bạn bấm Tiếp tục.")));
   }
 
-  function paintStages(d) {
-    const added = patchList(stagesList, d.pipeline, (s) => s.name, (s) => {
+  function paintStages(rows) {
+    const added = patchList(stagesList, rows, (s) => s.name, (s) => {
       const li = h("li", { class: "stage-row" });
       const why = h("p", { class: "small muted", hidden: true, id: `why-${s.name}` });
       const whyBtn = h("button", { type: "button", class: "btn ghost sm", "aria-expanded": "false", "aria-controls": `why-${s.name}` }, "Vì sao?");
@@ -219,7 +241,10 @@ export async function mount(root, ctx) {
     li.dataset.timeline = s.timeline || "";
     p.ico.replaceChildren(icon(meta.icon, { size: 20, cls: meta.spin ? "spin" : "" }));
     p.ico.style.color = `var(--st-${{ done: "done", running: "running", wait: "wait", fail: "fail", queue: "queue", off: "queue" }[meta.tone] || "queue"}-fg)`;
-    p.name.replaceChildren(s.label, BRANCH_LABEL[s.branch] && s.name !== "publish" ? h("span", { class: "chip branch-chip" }, BRANCH_LABEL[s.branch]) : null);
+    p.name.replaceChildren(...[s.label, BRANCH_LABEL[s.branch] && s.name !== "publish" ? h("span", { class: "chip branch-chip" }, BRANCH_LABEL[s.branch]) : null,
+      s.rerun_count > 0 ? h("span", { class: "chip branch-chip", title: countLabel(s.rerun_count) }, countBadge(s.rerun_count)) : null,
+      s.rerunning ? h("span", { class: "chip branch-chip" }, "Đang chạy lại") : null,
+      s.stale ? h("span", { class: "chip warn branch-chip", title: s.stale_by?.length ? `Không còn đồng bộ với: ${s.stale_by.join(", ")}` : "Kết quả không còn đồng bộ với đầu vào/tham số hiện tại" }, "Không đồng bộ") : null].filter(Boolean));
     p.why.textContent = s.why || "";
     p.whyBtn.hidden = !s.why;
     const bits = [];
