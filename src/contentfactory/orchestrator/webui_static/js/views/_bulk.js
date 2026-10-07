@@ -7,7 +7,7 @@ import { openTargetDialog } from "./_job_edit.js";
 
 export const BULK = {
   pause: ["Tạm dừng", "pause"], resume: ["Tiếp tục", "play"], retry: ["Chạy lại", "refresh"],
-  update_pipeline: ["Cập nhật pipeline…", "layers"], template: ["Đổi template…", "layout"], cancel: ["Hủy…", "x"],
+  update_pipeline: ["Cập nhật pipeline…", "layers"], template: ["Đổi template…", "layout"], cancel: ["Hủy…", "x"], delete: ["Xóa…", "trash"],
 };
 const KIND_LABEL = { thumbnail: "Thumbnail", youtube: "Video YouTube", tiktok: "Video TikTok" };
 

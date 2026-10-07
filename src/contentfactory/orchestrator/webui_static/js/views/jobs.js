@@ -90,15 +90,15 @@ export async function mount(root, ctx) {
   // ---- chọn nhiều + hàng loạt ----
   function decorate(li, j) {
     let cb = li._cb;
-    const want = selecting && j.type !== "batch";
+    const want = selecting;
     if (want && !cb) {
-      cb = h("input", { type: "checkbox", class: "job-pick", "aria-label": `Chọn job ${j.title || j.id}` });
+      cb = h("input", { type: "checkbox", class: "job-pick", "aria-label": `Chọn ${j.title || j.id}` });
       cb.addEventListener("change", () => { if (cb.checked) picked.add(j.id); else picked.delete(j.id); paintSel(); });
       li._cb = cb;
       li.prepend(cb);
       li.classList.add("selectable");
     } else if (!want && cb) { cb.remove(); li._cb = null; li.classList.remove("selectable"); }
-    if (li._cb) { li._cb.checked = picked.has(j.id); li._cb.setAttribute("aria-label", `Chọn job ${j.title || j.id}`); }
+    if (li._cb) { li._cb.checked = picked.has(j.id); li._cb.setAttribute("aria-label", `Chọn ${j.title || j.id}`); }
     return li;
   }
   const repaintRows = () => { for (const li of list.children) { const j = last?.jobs.find((x) => rowKey(x) === li.dataset.key) || null; if (j) decorate(li, j); } };
@@ -107,19 +107,24 @@ export async function mount(root, ctx) {
     selBtn.setAttribute("aria-pressed", String(selecting));
     bulkBar.hidden = !selecting;
     if (!selecting) return;
-    const n = picked.size;
-    bulkBar.replaceChildren(h("strong", null, n ? `Đã chọn ${n} job` : "Chọn job bằng ô tích bên trái"),
-      btn({ label: "Chọn tất cả đang hiện", size: "sm", kind: "ghost", onClick: () => { for (const j of last?.jobs || []) if (j.type !== "batch") picked.add(j.id); decorateAll(); paintSel(); } }),
-      ...Object.entries(BULK).map(([action, [label, ic]]) => btn({ label, icon: ic, size: "sm", disabled: !n, kind: action === "cancel" ? "danger" : "", onClick: (e) => runBulk(action, e.currentTarget) })),
+    const n = picked.size, hasBatch = [...picked].some(isBatch);
+    bulkBar.replaceChildren(h("strong", null, n ? `Đã chọn ${n} mục` : "Chọn job bằng ô tích bên trái"),
+      btn({ label: "Chọn tất cả đang hiện", size: "sm", kind: "ghost", onClick: () => { for (const j of last?.jobs || []) picked.add(j.id); decorateAll(); paintSel(); } }),
+      ...Object.entries(BULK).map(([action, [label, ic]]) => btn({ label, icon: ic, size: "sm", disabled: !n || (hasBatch && action !== "delete"), title: hasBatch && action !== "delete" ? "Channel Run chỉ xóa được ở đây; bỏ chọn Channel Run để dùng thao tác này." : undefined, kind: action === "cancel" || action === "delete" ? "danger" : "", onClick: (e) => runBulk(action, e.currentTarget) })),
       n ? btn({ label: "Bỏ chọn", size: "sm", kind: "ghost", onClick: () => { picked.clear(); decorateAll(); paintSel(); } }) : null);
   }
   const decorateAll = repaintRows;
+  const isBatch = (id) => /^B\d+$/.test(id);
   async function runBulk(action, button) {
     const ids = [...picked];
     let args;
     if (action === "update_pipeline") { args = await openBulkPipeline(ids); if (!args) return; }
     else if (action === "template") { args = await openBulkTemplate(ids); if (!args) return; }
     else if (action === "cancel" && !(await confirmDialog({ title: `Hủy ${ids.length} job?`, body: "Kết quả đã có được giữ lại, nhưng các job sẽ không tự chạy lại. Job đã hoàn tất không bị đổi.", confirmLabel: "Hủy job", danger: true }))) return;
+    else if (action === "delete") {
+      const runs = ids.filter(isBatch).length, running = (last?.jobs || []).filter((j) => picked.has(j.id) && j.status === "running").length;
+      if (!(await confirmDialog({ title: `Xóa ${ids.length} mục?`, body: `${runs ? `${runs} Channel Run sẽ bị xóa cùng TẤT CẢ job con bên trong. ` : ""}Thư mục output đã tạo được giữ nguyên.${running ? ` ${running} job đang chạy sẽ được dừng ở điểm an toàn rồi xóa.` : ""}${runs ? " Job con của Channel Run đang chạy cũng được dừng." : ""}`, confirmLabel: "Xóa", danger: true }))) return;
+    }
     await busy(button, async () => {
       const r = await sendBulk(action, ids, args);
       if (r) { picked.clear(); paintSel(); version = null; poller.poke(); }

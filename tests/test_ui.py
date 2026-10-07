@@ -195,7 +195,7 @@ class DetectTest(UiCase):
         d = self.svc.detect_input(str(srt))
         self.assertEqual((d["kind"], [m["id"] for m in d["modes"]]), ("transcript_file", ["full", "through_tts", "story"]))   # đã có phụ đề: không có "chỉ lấy phụ đề"
         d = self.svc.detect_input(str(self.story_file()))
-        self.assertEqual((d["kind"], d["needs_title"], d["ambiguous"]), ("story_text", True, True))
+        self.assertEqual((d["kind"], d["needs_title"], d["ambiguous"]), ("story_text", False, True))
         self.assertEqual([m["id"] for m in d["modes"]], ["story_full", "tts_only", "video_after_tts"])
         self.assertEqual(d["alternatives"], ["transcript_file"])
         plain = self.root / "ghi-chu.txt"
@@ -204,7 +204,7 @@ class DetectTest(UiCase):
         self.assertEqual((d["kind"], d["ambiguous"], d["alternatives"]), ("transcript_file", True, ["story_text"]))
         self.assertEqual(self.svc.detect_input(str(plain), "story_text")["kind"], "story_text")                                # người dùng đổi cách hiểu
         d = self.svc.detect_input(str(write_wav(self.root / "a.wav")))
-        self.assertEqual((d["kind"], d["needs_title"]), ("audio", True))
+        self.assertEqual((d["kind"], d["needs_title"], d["auto_title"]), ("audio", False, True))
         self.assertEqual([m["id"] for m in d["modes"]], ["audio_full", "audio_package", "audio_video", "audio_youtube"])
 
     def test_project_folder(self):
@@ -237,7 +237,7 @@ class RunTest(UiCase):
                                                                                  "render_tiktok": "off", "output": "off", "publish": "off"})
         self.assertIn("tts_profile", {a["what"] for a in pv["auto"]})
         pv = self.svc.preview_run({"input": {"value": str(self.story_file())}, "channel": "kenh", "run": "tts_only"})
-        self.assertEqual((pv["can_run"], pv["problems"][0]["field"]), (False, "title"))
+        self.assertNotIn("title", [x.get("field") for x in pv["problems"]])                         # để trống tên truyện: tự đặt, không còn là vấn đề
         pv = self.svc.preview_run({"input": {"value": URL}, "channel": "khong_co_kenh_nay_va_loi", "run": "full", "kids": False})
         self.assertTrue(pv["can_run"])                                                              # kênh chưa có file => cấu hình mặc định
         write_channel(self.root, "hong", {"preset": {"nope": 1}})
@@ -290,9 +290,22 @@ class RunTest(UiCase):
         e = self.svc.create_run({"request_id": "r4", "input": {"value": URL}, "channel": "kenh", "run": "full"})
         self.assertFalse(e["deduped"])                                                          # job cũ đã xong: chạy lại có chủ ý thì tạo job mới
 
+    def test_blank_title_is_auto_generated_from_file_or_folder(self):
+        named = self.root / "Đêm_mưa_ở_làng.txt"
+        named.write_text(self.story_file().read_text(encoding="utf-8"), encoding="utf-8")
+        for path, want in ((named, "Đêm mưa ở làng"), (self.story_file(), self.root.name)):                     # story.txt quá chung chung ⇒ tên thư mục
+            params, _ = self.svc._spec(self.svc.detect_input(str(path), "story_text"), "tts_only", "  ", "kenh", None, None)
+            self.assertEqual((params["project"]["title"], params["project"]["title_source"]), (want, "auto"))
+        params, _ = self.svc._spec(self.svc.detect_input(str(named), "story_text"), "tts_only", "Tên tôi đặt", "kenh", None, None)
+        self.assertEqual(params["project"], {"title": "Tên tôi đặt"})                                           # người dùng đặt thì giữ nguyên
+        self.svc.cfg.data["publishing"]["title_policy"] = "require"
+        with self.assertRaises(StageError) as e:
+            self.svc._spec(self.svc.detect_input(str(named), "story_text"), "tts_only", "", "kenh", None, None)
+        self.assertEqual(e.exception.code, "MISSING_TITLE")                                                    # cấu hình "Bắt buộc" vẫn được tôn trọng
+
     def test_validation_errors_create_no_job(self):
         story = str(self.story_file())
-        bad = [({"input": {"value": story}, "run": "tts_only"}, "MISSING_TITLE"), ({"input": {"value": URL}, "run": "tts_only"}, "INVALID_RUN_MODE"),
+        bad = [({"input": {"value": URL}, "run": "tts_only"}, "INVALID_RUN_MODE"),
                ({"input": {"value": "https://example.com/x"}, "run": "full"}, "INVALID_INPUT"), ({"input": {"value": URL}, "run": "full", "channel": "chua_khai"}, "MISSING_MADE_FOR_KIDS")]
         for payload, code in bad:
             with self.assertRaises(StageError) as e:

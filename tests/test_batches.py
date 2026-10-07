@@ -601,6 +601,30 @@ class BulkActionsTest(BatchCase):
             with self.assertRaises(StageError):
                 svc.bulk(*bad_args)
 
+    def test_bulk_delete_soft_deletes_and_is_idempotent(self):
+        orc, bs, _ = self.make()
+        d = bs.create(self.payload(selection={"mode": "newest", "n": 2}, run="subtitle"))
+        ids = [j["id"] for j in orc.store.batch_job_index(d["id"])]
+        svc = Service(orc)
+        r = svc.bulk("delete", ids)
+        self.assertEqual(r["counts"]["done"], 2)
+        self.assertTrue(all(orc.store.get_job(i)["control_state"] == "DELETED" for i in ids))
+        self.assertEqual(svc.bulk("delete", ids)["counts"]["unchanged"], 2)            # xóa lặp lại là no-op
+
+    def test_bulk_delete_channel_run_removes_children_and_batch(self):
+        orc, bs, _ = self.make()
+        d = bs.create(self.payload(selection={"mode": "newest", "n": 3}, run="subtitle"))
+        bid = d["id"]
+        ids = [j["id"] for j in orc.store.batch_job_index(bid)]
+        svc = Service(orc)
+        r = svc.bulk("delete", [bid])
+        self.assertEqual(r["counts"]["done"], 1)
+        self.assertTrue(all(orc.store.get_job(i)["control_state"] == "DELETED" for i in ids))
+        self.assertIsNone(orc.store.get_batch(bid))
+        self.assertNotIn(bid, [b["id"] for b in orc.store.list_batches()])
+        self.assertEqual(orc.store.pending_batch_items(), [])                           # không tạo lại job con cho batch đã xóa
+        self.assertEqual(svc.bulk("delete", [bid])["counts"]["unchanged"], 1)           # xóa lặp lại là no-op
+
     def test_bulk_retry_only_touches_failed_jobs(self):
         orc, bs, _ = self.make()
         d = bs.create(self.payload(selection={"mode": "newest", "n": 2}, run="story"))

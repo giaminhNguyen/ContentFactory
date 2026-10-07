@@ -161,7 +161,7 @@ export async function mount(root, ctx) {
     titleField.querySelector("label").lastChild?.nodeName === "SPAN" && titleField.querySelector("label").lastChild.remove();
     if (needs) titleField.querySelector("label").append(h("span", { class: "muted", "aria-hidden": "true" }, " *"));
     titleIn.required = needs;
-    titleIn.placeholder = needs ? "Bắt buộc: tên truyện của bạn" : "Không bắt buộc — để trống thì dùng tiêu đề video nguồn đã làm sạch";
+    titleIn.placeholder = needs ? "Bắt buộc: tên truyện của bạn" : d?.auto_title ? "Không bắt buộc — để trống thì tự đặt theo tên file" : "Không bắt buộc — để trống thì dùng tiêu đề video nguồn đã làm sạch";
     // chế độ
     const hasModes = !!(d && d.ok && d.modes.length);
     modesField.hidden = !hasModes || s.custom;

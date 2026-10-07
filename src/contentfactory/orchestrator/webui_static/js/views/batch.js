@@ -15,7 +15,7 @@ const PAGE = 50;
 const TABS = [["all", "Tất cả"], ["running", "Đang chạy"], ["queued", "Chờ"], ["paused", "Tạm dừng"], ["attention", "Cần xử lý"], ["completed", "Hoàn tất"]];
 const TAB_COUNT = { all: (c) => c.total, running: (c) => c.running, queued: (c) => c.queued + c.pending_creation, paused: (c) => c.paused + c.waiting, attention: (c) => c.attention + c.failed, completed: (c) => c.completed };
 const SCOPES = [["unfinished", "Mọi video chưa hoàn tất (khuyên dùng)"], ["unstarted", "Chỉ video chưa bắt đầu"], ["selected", "Chỉ các video đang chọn"], ["all_compatible", "Tất cả video tương thích"]];
-const BULK = { pause: ["Tạm dừng", "pause"], resume: ["Tiếp tục", "play"], retry: ["Chạy lại", "refresh"] };
+const BULK = { pause: ["Tạm dừng", "pause"], resume: ["Tiếp tục", "play"], retry: ["Chạy lại", "refresh"], delete: ["Xóa…", "trash"] };
 
 function selectionText(s) {
   if (s.mode === "newest") return `${s.n} video mới nhất chưa xử lý`;
@@ -173,10 +173,11 @@ export async function mount(root, ctx) {
     bulkBar.hidden = picked.size === 0;
     if (!picked.size) return;
     bulkBar.replaceChildren(h("strong", null, `Đã chọn ${picked.size} video`),
-      ...Object.entries(BULK).map(([action, [label, ic]]) => btn({ label, icon: ic, size: "sm", onClick: (e) => bulk(action, e.currentTarget) })),
+      ...Object.entries(BULK).map(([action, [label, ic]]) => btn({ label, icon: ic, size: "sm", kind: action === "delete" ? "danger" : "", onClick: (e) => bulk(action, e.currentTarget) })),
       btn({ label: "Bỏ chọn", size: "sm", kind: "ghost", onClick: () => { picked.clear(); paintRows(data); } }));
   }
   async function bulk(action, button) {
+    if (action === "delete" && !(await openDialog({ title: `Xóa ${picked.size} video?`, describe: "Job của các video này bị xóa khỏi Channel Run; thư mục output đã tạo được giữ nguyên. Job đang chạy sẽ được dừng ở điểm an toàn rồi xóa.", content: null, actions: [{ label: "Không xóa", value: null }, { label: "Xóa video", kind: "danger solid", value: "ok" }] }))) return;
     await busy(button, async () => {
       try {
         const r = await api.post("/api/jobs/bulk", { action, job_ids: [...picked] });

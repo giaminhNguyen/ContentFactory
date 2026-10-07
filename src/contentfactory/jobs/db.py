@@ -738,11 +738,11 @@ class JobStore:
         return self._batch(rows[0]) if rows else None
 
     def get_batch(self, bid: str) -> dict | None:
-        rows = self._q("SELECT * FROM batches WHERE id=?", (bid,))
+        rows = self._q("SELECT * FROM batches WHERE id=? AND control_state!='DELETED'", (bid,))
         return self._batch(rows[0]) if rows else None
 
     def list_batches(self) -> list[dict]:
-        return [self._batch(r) for r in self._q("SELECT * FROM batches ORDER BY seq DESC")]
+        return [self._batch(r) for r in self._q("SELECT * FROM batches WHERE control_state!='DELETED' ORDER BY seq DESC")]
 
     def batch_items(self, bid: str) -> list[dict]:
         out = []
@@ -759,13 +759,18 @@ class JobStore:
     def pending_batch_items(self) -> list[dict]:
         """Item chưa có job (batch còn sống): dùng để hoàn tất việc tạo job sau crash."""
         return [dict(r) for r in self._q(
-            "SELECT i.* FROM batch_items i JOIN batches b ON b.id=i.batch_id WHERE i.status='pending' AND b.control_state!='CANCELLED' ORDER BY b.seq, i.position")]
+            "SELECT i.* FROM batch_items i JOIN batches b ON b.id=i.batch_id WHERE i.status='pending' AND b.control_state NOT IN ('CANCELLED','DELETED') ORDER BY b.seq, i.position")]
 
     def set_batch_control(self, bid: str, control_state: str, now: float | None = None) -> bool:
         now = now or time.time()
         with self._tx() as c:
             cur = c.execute("UPDATE batches SET control_state=?, updated_at=? WHERE id=? AND control_state!=? AND control_state!='CANCELLED'", (control_state, now, bid, control_state))
             return cur.rowcount > 0
+
+    def delete_batch(self, bid: str, now: float | None = None) -> bool:
+        """Xóa mềm Channel Run (tombstone như job: không migration, biến khỏi mọi danh sách, không tạo thêm job con). False nếu đã xóa/không có."""
+        with self._tx() as c:
+            return c.execute("UPDATE batches SET control_state='DELETED', updated_at=? WHERE id=? AND control_state!='DELETED'", (now or time.time(), bid)).rowcount > 0
 
     def batch_job_index(self, bid: str) -> list[dict]:
         """Bản nhẹ của các job con (đủ để suy trạng thái/đếm), theo thứ tự tạo."""

@@ -82,6 +82,7 @@ KIND_VI = {"subtitle_raw": "phụ đề thô", "transcript_structured": "phụ �
            "video_tiktok": "video TikTok", "tiktok_render_report": "báo cáo render TikTok", "output_package": "gói output", "publish_metadata": "tiêu đề/mô tả đăng",
            "publish_result": "kết quả đăng"}
 NEEDS_TITLE = {"story_text", "audio"}                 # không có nguồn tiêu đề nào khác ⇒ người dùng phải đặt tên truyện
+GENERIC_NAMES = {"story", "audio", "narration", "master", "audio_master", "transcript", "text", "untitled", "output", "input"}
 MAX_LOG_BYTES = 256 * 1024
 
 
@@ -167,7 +168,7 @@ class Service:
         return out
 
     def _finish(self, out: dict, kind: str, details: dict) -> dict:
-        out.update(kind=kind, label=KIND_LABEL[kind], ok=True, details=details, needs_title=kind in NEEDS_TITLE,
+        out.update(kind=kind, label=KIND_LABEL[kind], ok=True, details=details, needs_title=kind in NEEDS_TITLE and self._title_required(), auto_title=kind in NEEDS_TITLE and not self._title_required(),
                    modes=[{"id": m, "label": RUN_MODES[m][0], "description": RUN_MODES[m][1]} for m in KIND_MODES.get(kind, [])])
         return out
 
@@ -207,12 +208,15 @@ class Service:
             inputs["story_text"] = str(Path(value).expanduser().resolve())
         elif kind == "audio":
             inputs["audio_master"] = str(Path(value).expanduser().resolve())
+        title_source = "user"
         if kind in NEEDS_TITLE:
             if not title:
-                raise _err("MISSING_TITLE", "Cần đặt tên truyện (project.title) cho đầu vào này.", "Điền ô 'Tên truyện': nó dùng cho thumbnail, tiêu đề YouTube và tên thư mục output.")
+                if self._title_required():
+                    raise _err("MISSING_TITLE", "Cần đặt tên truyện (project.title) cho đầu vào này.", "Điền ô 'Tên truyện': nó dùng cho thumbnail, tiêu đề YouTube và tên thư mục output.")
+                title, title_source = self._auto_title(value), "auto"                              # để trống: lấy từ tên file/thư mục
             inputs["metadata"] = {"title": title}
         if title:
-            params["project"] = {"title": title}
+            params["project"] = {"title": title, **({"title_source": title_source} if title_source != "user" else {})}
         if inputs:
             kw["inputs"] = inputs
         if kids is not None:
@@ -221,6 +225,16 @@ class Service:
             kw["auto_resume"] = bool(auto_resume)
         kw["_extend"] = spec.get("extend")
         return params, kw
+
+    def _title_required(self) -> bool:
+        return (self.cfg.data.get("publishing") or {}).get("title_policy") == "require"          # cấu hình "Bắt buộc": không tự đặt tên
+
+    @staticmethod
+    def _auto_title(path: str) -> str:
+        """Tên truyện tự tạo từ tên file; tên chung chung (story.txt, audio.wav…) thì dùng tên thư mục chứa nó."""
+        p = Path(path)
+        name = p.stem if p.stem.lower() not in GENERIC_NAMES else p.parent.name or p.stem
+        return clean_title(name)
 
     @staticmethod
     def _require_kids(ch: dict, params: dict, reaches_publish: bool) -> None:
@@ -844,7 +858,7 @@ class Service:
         return {"available": True, "mode": plan["mode"], "editable": plan["mode"] == "prosody", "profile": plan.get("profile"), "qc": plan["qc"], "warnings": plan.get("warnings", []),
                 "overrides": overrides, "boundaries": rows[:2000], "truncated": len(rows) > 2000}
 
-    BULK_ACTIONS = ("pause", "resume", "retry", "cancel", "update_pipeline", "template")
+    BULK_ACTIONS = ("pause", "resume", "retry", "cancel", "update_pipeline", "template", "delete")
 
     def bulk(self, action: str, job_ids: list[str], args: dict | None = None) -> dict:
         """Hành động hàng loạt trên các job ĐÃ CHỌN. Backend kiểm TỪNG job (không tin giao diện); trả kết quả từng job + đếm để UI báo thành công một phần
@@ -864,6 +878,10 @@ class Service:
         results = []
         for jid in ids:
             r = None
+            if action == "delete" and re.fullmatch(r"B\d+", jid):                                  # Channel Run: xóa hết job con rồi xóa chính nó
+                gone = not self._delete_batch(jid)
+                results.append({"job_id": jid, "result": "unchanged" if gone else "done", **({"reason": "Channel Run đã được xóa từ trước."} if gone else {})})
+                continue
             j = self.orc.store.get_job(jid)
             if j is None:
                 results.append({"job_id": jid, "result": "error", "reason": "Không có job này."})
@@ -887,6 +905,11 @@ class Service:
                     ok, why = self._bulk_update(jid, j, args or {})
                 elif action == "template":
                     ok, why = self._bulk_template(jid, j, args or {})
+                elif action == "delete":                                                 # đúng thao tác Xóa job: job đang chạy dừng ở điểm an toàn, output giữ nguyên
+                    r = self.jobedit.delete(jid)["result"]
+                    ok = r == "deleted"
+                    r = "unchanged" if r == "already" else r
+                    why = None if ok else "Job đã được xóa từ trước."
                 else:
                     r = self.orc.cancel_job(jid)
                     ok = r == "changed"
@@ -897,6 +920,18 @@ class Service:
             results.append({"job_id": jid, "result": "done" if ok else ("unchanged" if r == "unchanged" else "skipped"), **({"reason": why} if why else {})})
         counts = {k: sum(1 for r in results if r["result"] == k) for k in ("done", "unchanged", "skipped", "error")}
         return {"action": action, "counts": counts, "results": results}
+
+    def _delete_batch(self, bid: str) -> bool:
+        """Xóa Channel Run: đóng batch trước (không tạo thêm job con), rồi xóa từng job con đúng như Xóa job (output giữ nguyên). False nếu đã xóa/không có."""
+        if not self.orc.store.delete_batch(bid):
+            return False
+        for it in self.orc.store.batch_items(bid):
+            if it["status"] == "pending":
+                self.orc.store.set_batch_item(bid, it["source_video_id"], status="removed")
+        for j in self.orc.store.batch_job_index(bid):
+            self.jobedit.delete(j["id"])
+        self.orc.log.emit("batch_deleted", "warning", batch_id=bid)
+        return True
 
     def _bulk_update(self, jid: str, j: dict, args: dict) -> tuple[bool, str | None]:
         """Cập nhật pipeline cho MỘT job trong lô: đúng thao tác `update_target` của Sửa job (progress floor kiểm TỪNG job; job đã xong được lưu và giữ, không tự chạy)."""
