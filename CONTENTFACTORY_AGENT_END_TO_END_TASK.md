@@ -10,31 +10,35 @@
 
 # TIẾN ĐỘ (cập nhật 2026-10-07)
 
-Trạng thái thật so với §47 (kiểm tra bằng code, không suy đoán). `[x]` = đã commit, `[ ]` = chưa làm.
+Trạng thái thật so với §47 (kiểm bằng code + test, không suy đoán). `[x]` = đã commit.
 
-| Phase | Trạng thái | Ghi chú |
+| Phase | Trạng thái | Commit / ghi chú |
 |---|---|---|
-| 1 — Inspect | một phần | Đã xác nhận: `Runner.set_target` (`orchestrator/runner.py`) + `JobStore.set_target` (`jobs/db.py`) đã có nhưng **chưa có progress floor**, chưa chặn target lùi; chưa có API/UI `Sửa job`, chưa có xóa job. Watermark hiện chỉ là `channel.watermark` (1 file mutable) + upload trong `channels.py`/`channels.js`. Chưa đọc skill UI Pro Max / GSAP. |
-| 2 — Watermark domain/storage | [ ] | Chưa có registry/revision/active ref. |
-| 3 — Watermark TTS/upload service | [ ] | Chưa có primitive synth đoạn ngắn dùng chung. |
-| 4 — Tích hợp pipeline watermark | [ ] | Stage key vẫn theo path; chưa snapshot revision/hash. |
-| 5 — Job edit core | [ ] | Cần: progress floor, ngữ nghĩa running/completed/held/failed, xóa job an toàn. |
-| 6 — API | [ ] | |
-| 7 — UI/UX | [ ] | |
-| 8–11 — Test, fix loop, UI QA, docs | [ ] | |
+| 1 — Inspect | [x] | Đã đọc code/skill UI Pro Max + GSAP; quyết định giữ engine revision cho config/params, đổi pipeline job sang `update_target` (D-108) |
+| 2 — Watermark domain/storage | [x] | `71a4c23` registry + revision bất biến + active + legacy + bảo vệ tham chiếu |
+| 3 — Watermark TTS/upload | [x] | `bf8e436` `TTSManager.describe_text/synthesize_text` dùng chung, fingerprint/cache, upload, edit/regenerate |
+| 4 — Tích hợp pipeline | [x] | `71a4c23` job snapshot `watermark_ref`; `Stage.file_deps` băm nội dung (stage_key); TTS/Story không chạy lại |
+| 5 — Job edit core | [x] | `abca93e` progress floor, `update_target`, hold-completed (không tự chạy), xóa mềm + abort hợp tác |
+| 6 — API | [x] | `132cd0b` job target/delete + batch/bulk dùng target; `618d0f7` Watermark API |
+| 7 — UI/UX | [x] | `aca901c` Sửa job; Watermark Library UI (dialog, thư viện, nghe thử, GSAP qua `motion.js`, reduced-motion) |
+| 8 — Test | [x] | `tests/test_job_edit*.py`, `test_watermarks.py`, `test_watermark_tts.py`, `test_watermark_api.py`, `tests/ui_js/logic.test.mjs` |
+| 9 — Fix loop | [x] | lỗi thật đã sửa: chữ `null` trong mọi `openDialog`, cache hash theo mtime làm stage_key cũ |
+| 10 — UI QA | [x] | `scripts/ui_qa/qa.mjs` (control, jobedit, watermark + regression) trên Chrome thật + axe; xem ảnh light/dark/mobile |
+| 11 — Docs + verify | [x] | D-108, D-109, MODULE_CONTRACTS, UI_GUIDE, README, HANDOFF |
+
+Kiểm chứng: `python -m unittest discover -s tests -t .` (PYTHONPATH=src) → 804 test OK (13 skipped sẵn có); `node --test tests/ui_js/*.mjs` OK; `qa.mjs` 177/177 (+ `pages`).
 
 ## Đã làm & commit
 
-- [x] **WorkerTTS** — adapter TTS worker sống lâu (nạp model một lần, tái dùng giữa các segment) + `scripts/tts_worker.py` + `tests/test_worker_tts.py` (pass). Commit `128e79d`. Đây là nền cho "TTS dùng chung" (§11.2) nhưng **chưa** có phần watermark nào dùng nó.
+- [x] **WorkerTTS** — `128e79d`.
+- [x] **Job edit core** — `abca93e`; **API** `132cd0b`; **UI** `aca901c`; **docs** `0e7c17a`.
+- [x] **Watermark Library** — domain `71a4c23`, TTS/service `bf8e436`, API `618d0f7`, UI + docs (commit kế tiếp).
 
-## Việc kế tiếp (đề xuất thứ tự commit)
+## Giới hạn còn lại (thật sự, không phải việc chưa làm)
 
-1. Job edit core: progress floor + validate trong `Runner.set_target`, lỗi domain, test §41.
-2. Xóa job an toàn (soft-delete + cancel hợp tác, không xóa output).
-3. API `target` / `DELETE job` + UI `Sửa job`.
-4. Watermark domain/storage (registry, revision, legacy adopt) + test §40.1–40.3.
-5. Watermark TTS/upload service, cache/fingerprint, snapshot job, fix stage key.
-6. Watermark Library UI, docs, QA cuối.
+- Khóa registry watermark chỉ trong một tiến trình ghi (`cf ui`); tiến độ tạo watermark là trạng thái tác vụ + thời gian đã trôi (engine không báo %); tổng hợp không hủy được giữa chừng.
+- `STAGES` tuyến tính ⇒ “đích” là một bước trên chuỗi; bỏ riêng nhánh TikTok khi job đang chạy YouTube không còn là thao tác của giao diện.
+- Chưa kiểm chứng với engine TTS thật (mọi test dùng engine giả).
 
 ---
 
