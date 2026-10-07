@@ -5,6 +5,7 @@ import { icon } from "../icons.js";
 import { btn, busy, field, input, select, alertBox, emptyState, errorState, skeleton, pageHead, toast, confirmDialog, openDialog, disclosure } from "../components.js";
 import * as motion from "../motion.js";
 import { templateBlock } from "./channel_templates.js";
+import { watermarkSection } from "./_watermarks.js";
 
 // ---------- tiện ích đường dẫn trên model (xóa khóa rỗng, dọn object rỗng) ----------
 const clone = (o) => JSON.parse(JSON.stringify(o ?? {}));
@@ -27,7 +28,6 @@ function setp(o, p, v) {
 }
 const withCurrent = (opts, cur, tag = "") => (cur && !opts.some(([v]) => v === cur) ? [...opts, [cur, `${cur}${tag}`]] : opts);
 const csv = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
-const AUDIO_EXT = /\.(wav|mp3|m4a|flac|ogg|aac)$/i;
 const YT_RES = [["", "Mặc định của hệ thống"], ["1920x1080", "1920×1080 (Full HD)"], ["1280x720", "1280×720 (HD)"]];
 const TT_RES = [["", "Mặc định của hệ thống"], ["1080x1920", "1080×1920 (Full HD dọc)"], ["720x1280", "720×1280 (HD dọc)"]];
 
@@ -141,7 +141,7 @@ export async function mount(root, ctx) {
 function createEditor(host, id, { scope, onSaved }) {
   let model = {}, base = "", data = null, alive = true, previewTitle = "Tên truyện mẫu", previewTimer = null, previewSeq = 0;
   const invalid = new Set();
-  let formHost, saveBtn, savedNote, errHost, previewBox, rawArea, rawErr;
+  let formHost, saveBtn, savedNote, errHost, previewBox, rawArea, rawErr, wm = null;
 
   host.append(skeleton(5));
   load();
@@ -227,6 +227,8 @@ function createEditor(host, id, { scope, onSaved }) {
   const sec = (title, ...kids) => h("section", { class: "form-section", "aria-label": title }, h("h3", null, title), ...kids);
 
   function build() {
+    wm?.destroy();
+    wm = null;
     clear(host);
     invalid.clear();
     const o = data.options;
@@ -250,7 +252,7 @@ function createEditor(host, id, { scope, onSaved }) {
           text("title_template", { label: "Mẫu tiêu đề YouTube", hint: "Biến: {sequence} {project_title} {channel_name}. Để trống = dùng mẫu mặc định.", textarea: false, placeholder: data.channel.title_template }),
           num("sequence.last_used", { label: "Số Full Audio đã đăng", placeholder: "0", hint: "Số tập đã đăng trước đó; job kế tiếp lấy số +1.", min: 0, int: true })),
         text("description_template", { label: "Mẫu mô tả YouTube", hint: "Cùng các biến như trên. Để trống = dùng mẫu mặc định.", textarea: true, placeholder: data.channel.description_template })),
-      sec("Watermark", watermarkBlock()),
+      sec("Watermark", (wm = watermarkSection({ channelId: id, scope, onSync: syncWatermark })).el),
       sec("Giọng đọc & render",
         pick("preset.tts_profile", { label: "Giọng đọc (TTS profile)", empty: "Tự chọn (khuyên dùng)", options: ttsOpts, hint: "Tự chọn: hệ thống chọn profile hợp ngôn ngữ nhất." }),
         pick("preset.prosody.profile", { label: "Nhịp đọc", empty: "Mặc định của máy",
@@ -298,42 +300,19 @@ function createEditor(host, id, { scope, onSaved }) {
     refreshPreview(0);
   }
 
-  // ---- watermark ----
-  function watermarkBlock() {
-    const cur = h("p", null);
-    const paint = () => {
-      const w = model.watermark;
-      cur.replaceChildren(icon("mic", { size: 16 }), " ", w ? h("strong", null, String(w).split(/[\\/]/).pop()) : h("span", { class: "muted" }, "Chưa có watermark"));
-    };
-    paint();
-    const audio = (data.assets || []).filter((a) => AUDIO_EXT.test(a));
-    const sel = select({ options: [["", "— chọn file có sẵn trong thư mục kênh —"], ...audio.map((a) => [a, a])], value: audio.includes(model.watermark) ? model.watermark : "" });
-    const refillSel = (name) => { if (name && !audio.includes(name)) { audio.push(name); sel.append(h("option", { value: name }, name)); } sel.value = name || ""; };
-    sel.addEventListener("change", () => { if (sel.value) { model.watermark = sel.value; paint(); changed(); } });
-    const fileIn = h("input", { type: "file", accept: "audio/*,.wav,.mp3,.m4a,.flac", class: "input", id: "wm-file" });
-    const upErr = h("div", { class: "error", role: "alert" });
-    const upBtn = btn({ label: "Tải lên", icon: "upload", disabled: true });
-    fileIn.addEventListener("change", () => { upErr.textContent = ""; upBtn.disabled = !fileIn.files.length; });
-    upBtn.addEventListener("click", () => busy(upBtn, async () => {
-      const f = fileIn.files[0];
-      if (!f) return;
-      if (f.size > 60 * 1024 * 1024) { upErr.textContent = "File quá lớn (tối đa 60 MB)."; return; }
-      try {
-        const r = await api.upload(`/api/channels/${id}/asset?name=${encodeURIComponent(f.name)}`, await f.arrayBuffer());
-        model.watermark = r.name;
-        refillSel(r.name);
-        fileIn.value = "";
-        paint();
-        changed();
-        toast({ title: "Đã tải watermark lên", message: "Bấm Lưu để áp dụng cho kênh.", tone: "done" });
-      } catch (e) { upErr.textContent = [e.message, e.hint].filter(Boolean).join(" "); }
-    }));
-    const clearBtn = btn({ label: "Bỏ watermark", icon: "x", kind: "ghost", size: "sm", onClick: () => { delete model.watermark; sel.value = ""; paint(); changed(); } });
-    return h("div", { class: "stack" }, cur,
-      field({ label: "Chọn từ thư mục kênh", control: sel }),
-      h("div", { class: "field" }, h("label", { for: "wm-file" }, "Hoặc tải file audio mới"), h("div", { class: "input-row" }, fileIn, upBtn), upErr,
-        h("div", { class: "hint" }, "Watermark là audio ngắn gắn vào cuối bản YouTube; âm lượng tự cân với giọng đọc.")),
-      h("div", null, clearBtn));
+  // Watermark do Watermark Library quản lý và lưu NGAY bằng API riêng: sau mỗi thao tác đồng bộ các khóa của kênh vào model VÀ base để form không báo “chưa lưu” sai
+  // (và để JSON thô hiển thị đúng watermark đang dùng).
+  async function syncWatermark() {
+    try {
+      const d = await api.get(`/api/channels/${id}`);
+      const b = JSON.parse(base || "{}");
+      for (const k of ["watermark", "watermark_ref", "legacy_watermark"]) {
+        for (const o of [model, b]) { if (d.raw[k] === undefined) delete o[k]; else o[k] = d.raw[k]; }
+      }
+      base = canonStr(b);
+      if (rawArea && document.activeElement !== rawArea) rawArea.value = JSON.stringify(model, null, 2);
+      if (saveBtn) updateDirty();
+    } catch { /* đồng bộ chỉ là phụ trợ: lỗi mạng sẽ hiện ở lần tải sau */ }
   }
 
   // ---- khai báo trẻ em ----
@@ -412,6 +391,6 @@ function createEditor(host, id, { scope, onSaved }) {
   return {
     dirty,
     discard() { base = canonStr(model); if (saveBtn) updateDirty(); },
-    destroy() { alive = false; clearTimeout(previewTimer); previewSeq++; },
+    destroy() { alive = false; clearTimeout(previewTimer); previewSeq++; wm?.destroy(); },
   };
 }

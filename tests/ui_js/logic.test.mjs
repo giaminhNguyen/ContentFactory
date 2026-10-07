@@ -139,3 +139,34 @@ test("job_edit_logic: Lưu chỉ bật khi chọn bước hợp lệ KHÁC đíc
   assert.equal(m.deleteReady({ running: true }, false), false);
   assert.equal(m.deleteReady({ running: true }, true), true);
 });
+
+test("watermark_logic: nhãn, hậu quả xóa/lưu trữ, loại thao tác sửa, kiểm nhập liệu", async () => {
+  const m = await load("watermark_logic.js");
+  assert.equal(m.sourceLabel("tts"), "Giọng đọc (TTS)");
+  assert.equal(m.ttsSummary({ profile: "giong_a", engine: "fake", voice: null }), "giong_a · fake");
+  assert.equal(m.ttsSummary(null), "");
+  assert.equal(m.durationText(3.25), "3,3 giây");
+  assert.equal(m.durationText(12.4), "12 giây");
+  assert.equal(m.durationText(null), "—");
+  // xóa: active ⇒ bỏ khỏi kênh trước; có job tham chiếu ⇒ lưu trữ; còn lại xóa hẳn
+  assert.equal(m.deleteMode({ name: "A", active: true, in_use_by_jobs: 0 }).mode, "unset_delete");
+  assert.equal(m.deleteMode({ name: "A", active: true, in_use_by_jobs: 0 }).unset, true);
+  assert.match(m.deleteMode({ name: "A", active: true, in_use_by_jobs: 2 }).note, /2 job/);
+  assert.equal(m.deleteMode({ name: "A", active: false, in_use_by_jobs: 3 }).mode, "archive");
+  assert.equal(m.deleteMode({ name: "A", active: false, in_use_by_jobs: 0 }).mode, "delete");
+  // sửa: đổi tên = metadata; đổi nội dung/giọng = bản mới
+  const it = { name: "Intro", source: "tts", text: "Xin chào.", tts: { selection: "auto", profile: "giong_a" } };
+  assert.equal(m.editKind(it, { name: "Intro", text: " Xin chào. ", tts: "auto" }), "none");
+  assert.equal(m.editKind(it, { name: "Tên khác", text: "Xin chào.", tts: "auto" }), "rename");
+  assert.equal(m.editKind(it, { name: "Intro", text: "Chào bạn.", tts: "auto" }), "revision");
+  assert.equal(m.editKind(it, { name: "Intro", text: "Xin chào.", tts: "giong_b" }), "revision");
+  assert.equal(m.EDIT_LABEL.revision, "Lưu & tạo bản mới");
+  assert.equal(m.editKind({ name: "U", source: "upload" }, { name: "V", text: "x" }), "rename");
+  // nhập liệu
+  assert.deepEqual(Object.keys(m.createErrors({ name: " ", source: "tts", text: "" })).sort(), ["name", "text"]);
+  assert.deepEqual(m.createErrors({ name: "A", source: "tts", text: "Xin chào" }), {});
+  assert.ok(m.createErrors({ name: "A", source: "upload" }).file);
+  assert.ok(m.createErrors({ name: "A", source: "tts", text: "x".repeat(1001) }).text);
+  assert.equal(m.FIELD_OF_CODE.WATERMARK_TEXT_EMPTY, "text");
+  assert.equal(m.activeItem({ items: [{ id: "a" }, { id: "b", active: true }] }).id, "b");
+});

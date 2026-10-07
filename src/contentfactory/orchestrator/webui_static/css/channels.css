@@ -6,4 +6,18 @@
 .chan-desc { white-space: pre-wrap; }
 .chan-thumb { display: inline-flex; flex-direction: column; gap: 2px; padding: var(--s-3) var(--s-4); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); max-width: 360px; }
 .chan-thumb span { color: var(--muted); }
-#wm-file { padding: var(--s-1) var(--s-2); }
+
+/* Watermark Library: thẻ watermark, lưới thư viện, trình phát nghe thử, tiến trình tạo. Chỉ token chung của app.css. */
+.wm h3 { margin: 0; } .wm h4 { margin: 0; font-size: var(--fs-md); }
+.wm-active { display: flex; flex-direction: column; gap: var(--s-2); }
+.wm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: var(--s-4); }
+.wm-card { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-4); border: 1px solid var(--border); border-radius: var(--r-2); background: var(--surface); min-width: 0; }
+.wm-card[data-active="true"] { border-color: var(--accent); background: var(--st-running-bg); }
+.wm-name { overflow-wrap: anywhere; }
+.wm-text { margin: 0; padding: var(--s-2) var(--s-3); border-left: 3px solid var(--border-strong); background: var(--surface-2); border-radius: var(--r-1); font-size: var(--fs-sm); overflow-wrap: anywhere; white-space: pre-wrap; max-height: 7.5em; overflow: auto; }
+.wm-player { min-height: 32px; display: flex; align-items: center; }
+.wm-player audio { width: 100%; max-width: 100%; }
+.wm-rev { align-items: center; padding: var(--s-2) 0; border-top: 1px solid var(--border); }
+.wm-rev-text { flex: 1 1 100%; overflow-wrap: anywhere; }
+.wm-progress { display: flex; gap: var(--s-2); align-items: center; padding: var(--s-3); border-radius: var(--r-1); background: var(--st-running-bg); color: var(--st-running-fg); font-weight: 600; }
+.wm-progress[hidden] { display: none; }

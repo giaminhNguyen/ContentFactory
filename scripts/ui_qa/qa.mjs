@@ -280,6 +280,92 @@ if (wanted("jobedit")) {
   await page.context().close();
 }
 
+// ===================================================================== 3c3. Watermark Library: tạo bằng TTS, nghe thử, sửa -> bản mới, tải lên, chọn, xóa; bàn phím, a11y, reduced-motion, 2 theme
+if (wanted("watermark")) {
+  console.log("\n# Watermark Library");
+  for (const [scheme, reduced] of [["light", "no-preference"], ["dark", "reduce"]]) {
+    const page = await newPage({ scheme, reduced });
+    await go(page, "/channels/kenh_a");
+    await page.evaluate(async () => {                                                                  // mỗi vòng bắt đầu từ thư viện trống (không rò trạng thái giữa hai theme)
+      const h = { "X-CF-Token": document.querySelector('meta[name="cf-token"]').content };
+      const r = await (await fetch("/api/channels/kenh_a/watermarks?archived=1", { headers: h })).json();
+      for (const i of r.items) await fetch(`/api/channels/kenh_a/watermarks/${i.id}?unset=1`, { method: "DELETE", headers: h });
+    });
+    await page.reload();                                                                               // goto cùng hash không tải lại: reload để thấy thư viện đã dọn
+    await page.waitForSelector("#page-title", { timeout: 15000 });
+    await page.waitForSelector(".wm .empty, .wm .wm-card", { timeout: 20000 });
+    check(`[${scheme}] thư viện trống hiện trạng thái trống có nút Tạo`, (await page.locator(".wm .empty").count()) === 1);
+    await page.locator(".wm button:has-text('Tạo watermark')").first().click();
+    await page.waitForSelector("dialog[open]:has-text('Tạo watermark')");
+    await page.waitForTimeout(500);
+    check(`[${scheme}] dialog tạo: focus ở trong dialog`, await page.evaluate(() => !!document.activeElement?.closest("dialog")));
+    await axe(page, `dialog tạo watermark ${scheme}`);
+    await shot(page, `wm_create_${scheme}`);
+    await page.locator("dialog[open] button:has-text('Tạo watermark')").click();                    // rỗng: lỗi cạnh ô, không gọi API
+    check(`[${scheme}] bỏ trống: lỗi hiện cạnh ô tên và nội dung`, (await page.locator("dialog[open] .error:not(:empty)").count()) >= 2);
+    await page.locator("dialog[open] input[placeholder^='Ví dụ']").fill(`Intro ${scheme}`);
+    await page.locator("dialog[open] textarea").fill("Bạn đang nghe truyện tại kênh Truyện A.");
+    await page.locator("dialog[open] button:has-text('Tạo watermark')").click();
+    await page.waitForSelector("dialog[open] audio, dialog[open] .wm-player button", { timeout: 60000 });
+    await page.waitForSelector("dialog[open]:has-text('Đã tạo')", { timeout: 60000 });
+    check(`[${scheme}] tạo xong: kết quả + trình nghe thử trong dialog`, (await page.locator("dialog[open] audio").count()) >= 0 && (await page.locator("dialog[open]:has-text('Đã tạo')").count()) === 1);
+    await page.locator("dialog[open] button:has-text('Xong')").click();
+    await page.waitForSelector("dialog[open]", { state: "detached", timeout: 3000 });
+    await page.waitForSelector(".wm-active .wm-card");
+    check(`[${scheme}] watermark mới là watermark đang dùng (có chữ, không chỉ màu)`, (await page.locator(".wm-active .wm-card").innerText()).includes("Đang dùng"));
+    await page.locator(".wm-active button:has-text('Nghe thử')").click();
+    await page.waitForSelector(".wm-active audio");
+    check(`[${scheme}] nghe thử tải audio bằng token (blob)`, await page.evaluate(() => document.querySelector(".wm-active audio")?.src.startsWith("blob:")));
+    // sửa: đổi nội dung -> nút đổi nhãn thành “Lưu & tạo bản mới”
+    await page.locator(".wm-active button:has-text('Sửa')").click();
+    await page.waitForSelector("dialog[open]:has-text('Sửa')");
+    await page.waitForTimeout(400);
+    check(`[${scheme}] sửa: chưa đổi gì thì Lưu bị tắt`, await page.locator("dialog[open] button:has-text('Lưu')").first().isDisabled());
+    await page.locator("dialog[open] textarea").fill("Chào mừng bạn quay lại với truyện đêm.");
+    check(`[${scheme}] đổi nội dung: nút ghi rõ tạo bản mới`, (await page.locator("dialog[open] .actions button").last().innerText()).includes("tạo bản mới"));
+    await page.locator("dialog[open] .actions button").last().click();
+    await page.waitForSelector("dialog[open]", { state: "detached", timeout: 60000 });
+    await page.locator(".wm-active button:has-text('Các bản')").click();
+    await page.waitForSelector(".wm-active .wm-rev");
+    check(`[${scheme}] có 2 bản, bản cũ vẫn còn`, (await page.locator(".wm-active .wm-rev").count()) === 2);
+    // tải lên + chọn + xóa
+    await page.locator(".wm button:has-text('Tạo watermark')").first().click();
+    await page.waitForSelector("dialog[open]:has-text('Tạo watermark')");
+    await page.locator("dialog[open] input[type=radio][value=upload]").check();
+    await page.locator("dialog[open] input[placeholder^='Ví dụ']").fill("Tải lên " + scheme);
+    await page.locator("dialog[open] input[type=file]").setInputFiles(fx.wav);
+    await page.locator("dialog[open] #wm-activate").uncheck();
+    await page.locator("dialog[open] button:has-text('Tạo watermark')").click();
+    await page.waitForSelector("dialog[open]:has-text('Đã tạo')", { timeout: 30000 });
+    await page.locator("dialog[open] button:has-text('Xong')").click();
+    await page.waitForSelector(".wm-grid .wm-card");
+    await page.locator(".wm-grid .wm-card button:has-text('Dùng cho kênh')").first().click();
+    await page.waitForFunction(() => document.querySelector(".wm-active .wm-name")?.textContent.includes("Tải lên"), null, { timeout: 10000 });
+    check(`[${scheme}] chọn watermark khác: thẻ đang dùng đổi, cái cũ về thư viện`, (await page.locator(".wm-grid .wm-card").count()) === 1);
+    await page.waitForTimeout(700);                                                                    // đợi hết hiệu ứng vào thẻ (axe đo contrast khi đang mờ sẽ sai)
+    await axe(page, `trang kênh + watermark ${scheme}`);
+    await noOverflow(page, `trang kênh + watermark ${scheme}`);
+    await shot(page, `wm_library_${scheme}`);
+    await page.locator(".wm-grid .wm-card button:has-text('Xóa…')").click();
+    await page.waitForSelector("dialog[open]:has-text('Xóa')");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector("dialog[open]", { state: "detached", timeout: 3000 });
+    check(`[${scheme}] Esc đóng hộp xác nhận xóa và không xóa`, (await page.locator(".wm-grid .wm-card").count()) === 1);
+    await page.locator(".wm-grid .wm-card button:has-text('Xóa…')").click();
+    await page.locator("dialog[open] button:has-text('Xóa watermark')").click();
+    await page.waitForFunction(() => document.querySelectorAll(".wm-grid .wm-card").length === 0, null, { timeout: 10000 });
+    check(`[${scheme}] xóa watermark không dùng: biến khỏi thư viện`, true);
+    check(`[${scheme}] không lỗi console/mạng`, page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+    await page.context().close();
+  }
+  const m = await newPage({ width: 390, height: 844 });
+  await go(m, "/channels/kenh_a");
+  await m.waitForSelector(".wm .wm-card, .wm .empty", { timeout: 20000 });
+  await noOverflow(m, "watermark trên điện thoại");
+  await shot(m, "wm_library_390");
+  await m.context().close();
+}
+
 // ===================================================================== 3d. Nhịp đọc (Prosody): nghe thử A/B ở trang Giọng đọc + chỉnh nhịp của job
 if (wanted("prosody")) {
   console.log("\n# Nhịp đọc");
