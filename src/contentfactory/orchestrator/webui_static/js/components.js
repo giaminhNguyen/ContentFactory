@@ -79,6 +79,14 @@ export function input(opts = {}) {
   return el;
 }
 
+export function textarea(opts = {}) {
+  const { onInput, value, ...rest } = opts;
+  const el = h("textarea", { class: "textarea prose", spellcheck: false, ...rest });
+  if (value != null) el.value = value;
+  if (onInput) el.addEventListener("input", () => onInput(el.value));
+  return el;
+}
+
 export function select({ options, value, onChange, id, disabled }) {
   const el = h("select", { class: "select", id, disabled });
   for (const o of options) { const [v, l] = Array.isArray(o) ? o : [o, o]; el.append(h("option", { value: v }, l)); }

@@ -1193,6 +1193,79 @@ if (wanted("templates")) {
   }
 }
 
+if (wanted("guidance")) {
+  console.log("\n# Đề xuất truyện (D-112)");
+  const page = await newPage();
+  // --- Cài đặt > Truyện > Cài đặt nâng cao
+  await go(page, "/settings/story");
+  const ta = page.getByLabel("Đề xuất truyện", { exact: true });
+  await ta.waitFor();
+  check("tab Truyện có textarea 'Đề xuất truyện' trong vùng Cài đặt nâng cao", (await ta.evaluate((e) => e.tagName)) === "TEXTAREA" && await page.locator("button:has-text('Cài đặt nâng cao')").isVisible());
+  const text = `Viết theo hướng bí ẩn và căng thẳng hơn.\nKhông tiết lộ ngay nguyên nhân cái chết.\nKết thúc mở. (QA ${Date.now() % 100000})`;
+  await ta.fill(text);
+  await ta.blur();
+  await page.waitForSelector("text=Đã lưu", { timeout: 10000 });
+  check("lưu đề xuất mặc định (nhiều dòng, tiếng Việt)", true);
+  await page.locator("a[href='#/jobs'], nav a:has-text('Job')").first().click().catch(() => {});
+  await go(page, "/settings/story");
+  check("đổi tab/tải lại vẫn giữ nội dung và xuống dòng", (await page.getByLabel("Đề xuất truyện", { exact: true }).inputValue()) === text);
+  const big = page.getByLabel("Đề xuất truyện", { exact: true });
+  await big.fill("x".repeat(8001));
+  await big.blur();
+  await page.waitForSelector(".s-err:not(:empty)", { timeout: 10000 });
+  check("quá 8000 ký tự: báo lỗi, không lưu âm thầm", (await page.locator(".s-err").first().innerText()).includes("8000"));
+  await big.fill(text);
+  await big.blur();
+  await page.waitForTimeout(800);
+  await noOverflow(page, "settings story");
+  await axe(page, "settings story");
+  await shot(page, "guidance_settings");
+  // --- tạo job: mặc định inherit, đề xuất riêng
+  await go(page, "/");
+  await page.locator("#run-input").fill(fx.youtube);
+  await page.waitForSelector(".mode-list .mode");
+  await page.locator(".mode:has-text('Chỉ viết truyện')").click();
+  await page.waitForSelector(".sg-editor", { state: "visible", timeout: 15000 });
+  check("mặc định là 'Dùng đề xuất trong Cài đặt' và xem trước nội dung mặc định", await page.locator(".sg-editor input[value=inherit]").isChecked() && (await page.locator(".sg-preview").innerText()).includes("Kết thúc mở"));
+  await page.locator(".sg-editor input[value=custom]").check();
+  const jt = page.locator(".sg-editor textarea");
+  check("chọn đề xuất riêng: hiện textarea", await jt.isVisible());
+  await page.locator("button.primary.lg").click();
+  await page.waitForTimeout(500);
+  check("đề xuất riêng rỗng bị chặn ngay tại ô nhập", (await page.locator(".sg-editor .error").innerText()).length > 0 && page.url().includes("#/jobs/") === false);
+  await jt.fill("Truyện tập trung vào mối quan hệ cha con.\nNhân vật người cha không được chết.");
+  await shot(page, "guidance_run");
+  await noOverflow(page, "run guidance");
+  await page.locator("button.primary.lg").click();
+  await page.waitForURL(/#\/jobs\/\d+/, { timeout: 15000 });
+  await page.waitForSelector("#sg-h", { timeout: 15000 });
+  check("job mới: thẻ Đề xuất truyện cho biết đang dùng đề xuất riêng của job", (await page.locator("section:has(#sg-h)").innerText()).includes("Đang dùng đề xuất riêng của job"));
+  // --- job detail: đổi lại sang Cài đặt rồi sang 'không dùng'
+  await page.locator("section:has(#sg-h) input[value=inherit]").check();
+  await page.locator("section:has(#sg-h) button:has-text('Lưu đề xuất')").click();
+  await page.waitForFunction(() => document.querySelector("#sg-h")?.closest("section")?.innerText.includes("Đang dùng đề xuất từ Cài đặt"), null, { timeout: 15000 });
+  check("lưu về 'Dùng đề xuất trong Cài đặt' cập nhật nhãn nguồn", true);
+  await page.locator("section:has(#sg-h) input[value=none]").check();
+  await page.locator("section:has(#sg-h) button:has-text('Lưu đề xuất')").click();
+  await page.waitForFunction(() => document.querySelector("#sg-h")?.closest("section")?.innerText.includes("Không dùng đề xuất."), null, { timeout: 15000 });
+  check("chế độ 'Không dùng đề xuất' lưu được", (await page.locator("section:has(#sg-h)").innerText()).includes("Không dùng đề xuất"));
+  await page.waitForSelector(".toast", { state: "detached", timeout: 15000 }).catch(() => {});        // toast đang mờ dần làm axe đo sai tương phản
+  await noOverflow(page, "job guidance");
+  await axe(page, "job guidance");
+  await shot(page, "guidance_job");
+  // --- job đã chạy Truyện: hiện snapshot lần chạy gần nhất
+  await go(page, "/jobs");
+  await page.locator("a:has-text('Truyện đã hoàn tất')").first().click();
+  await page.waitForSelector("#sg-h");
+  check("job đã chạy Truyện: hiện đề xuất hiệu lực của lần chạy gần nhất", (await page.locator("section:has(#sg-h)").innerText()).includes("lần chạy Truyện gần nhất"));
+  check("không lỗi console/mạng (đề xuất truyện)", page.problems.filter((p) => !/http 4/.test(p)).length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+  const mob = await newPage({ width: 390, height: 844 });
+  await go(mob, "/settings/story");
+  await noOverflow(mob, "settings story 390");
+  await mob.context().close();
+}
+
 await browser.close();
 console.log(`\n${results.length - failures}/${results.length} đạt`);
 fs.writeFileSync(path.join(shotsDir || ".", "qa-results.json"), JSON.stringify(results, null, 1));

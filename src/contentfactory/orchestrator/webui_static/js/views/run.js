@@ -10,6 +10,8 @@ import { disclosure } from "../components.js";
 import * as motion from "../motion.js";
 import { makeRow, updateRow, rowKey } from "./_batch_ui.js";
 import { channelRun } from "./_channel_run.js";
+import { guidanceEditor } from "./_story_guidance.js";
+import { createPayload } from "../story_guidance_logic.js";
 
 const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* bỏ qua */ } } };
 
@@ -51,6 +53,9 @@ export async function mount(root, ctx) {
   const autoSw = switchCtl({ label: "Auto Resume", checked: s.autoResume, onChange: (v) => { s.autoResume = v; } });
   const autoHint = h("p", { class: "muted small" }, "Khi mất mạng, hết quota… job tự chạy tiếp thay vì chờ bạn bấm Tiếp tục.");
   const previewBox = h("div", { class: "sub-card stack", hidden: true, "aria-live": "polite" });
+  const guidance = guidanceEditor({ onChange: () => { s.rid = null; } });                       // Đề xuất truyện cho job này (mặc định: dùng đề xuất trong Cài đặt)
+  const guidanceBox = h("div", { class: "sub-card", hidden: true }, guidance.el);
+  api.get("/api/settings").then((st) => guidance.setDefault(st.items.find((i) => i.key === "story.guidance")?.value || "")).catch(() => { /* chỉ là phần xem trước */ });
   const problems = h("div", { class: "stack", "aria-live": "polite" });
   const runBtn = btn({ label: "RUN", icon: "play", kind: "primary lg", type: "button", disabled: true });
   const runNote = h("span", { class: "muted small", id: "run-note" });
@@ -65,7 +70,7 @@ export async function mount(root, ctx) {
   const panel = channelRun({ getChannel: () => s.channel, onChange: () => { s.rid = null; schedule(0); } });
   const card = h("div", { class: "card run-card stack" },
     h("div", { class: "field" }, h("label", { for: "run-input" }, "Đầu vào"), h("div", { class: "input-row" }, valueIn, pickBtn), detectLine),
-    panel.el, titleField, channelField, modesField, customField, kidsBox, previewBox, problems,
+    panel.el, titleField, channelField, modesField, customField, guidanceBox, kidsBox, previewBox, problems,
     h("div", { class: "stack" }, autoSw, autoHint),
     h("div", { class: "run-actions" }, runBtn, runNote));
   valueIn.id = "run-input";
@@ -168,6 +173,8 @@ export async function mount(root, ctx) {
     customField.hidden = !hasModes;
     if (!modesField.hidden) patchModes(d.modes);
     paintStages(pv);
+    // đề xuất truyện: chỉ khi kế hoạch có chạy bước Truyện (Channel Run tạo job con theo Cài đặt nên không hiện)
+    guidanceBox.hidden = s.isColl || !(pv?.plan?.stages || []).some((x) => x.name === "story" && x.state === "run");
     // kids
     paintKids(pv);
     // preview kế hoạch + tự chọn
@@ -315,6 +322,7 @@ export async function mount(root, ctx) {
   // ---------- RUN ----------
   runBtn.addEventListener("click", async () => {
     if (runBtn.disabled || s.running) return;
+    if (!guidanceBox.hidden && !guidance.validate()) return;                          // đề xuất riêng rỗng/quá dài: báo ngay tại ô nhập, không gửi
     s.running = true;
     s.rid = s.rid || newRequestId();
     await busy(runBtn, async () => {
@@ -328,7 +336,8 @@ export async function mount(root, ctx) {
           return;
         }
         const r = await api.post("/api/runs", { request_id: s.rid, input: { value: s.value, kind: s.kindOverride }, channel: s.channel, run: s.run, title: s.title, kids: s.kids,
-                                                remember_kids: s.remember, auto_resume: s.autoResume, pipeline: pipelineBody() });
+                                                remember_kids: s.remember, auto_resume: s.autoResume, pipeline: pipelineBody(),
+                                                ...(guidanceBox.hidden ? {} : ((g) => { const p = createPayload(g.mode, g.text); return p ? { story_guidance: p } : {}; })(guidance.get())) });
         toast(r.deduped ? { title: "Đã có job cùng nội dung đang chạy", message: "Chuyển tới job đó thay vì tạo thêm.", tone: "info" } : { title: `Đã xếp hàng job ${r.job_id}`, message: "Bạn có thể theo dõi tiến độ ở đây.", tone: "done" });
         navigate(`/jobs/${r.job_id}`);
       } catch (e) {

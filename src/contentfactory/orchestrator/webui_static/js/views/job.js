@@ -10,6 +10,7 @@ import { openOutput, pauseJob, resumeJob, retryJob, setAutoResume } from "../act
 import { openClone, confirmCancel, openRerollThumbnail } from "./_job_control.js";
 import { openEditJob } from "./_job_edit.js";
 import { openProsodyDialog } from "./_prosody.js";
+import { storyGuidanceCard } from "./_story_guidance.js";
 import { externalLink } from "./_batch_ui.js";
 import * as motion from "../motion.js";
 
@@ -25,12 +26,13 @@ export async function mount(root, ctx) {
   const autoHost = h("div", null);
   const controlHost = h("div", null);
   const thumbHost = h("div", null);
+  const guidanceHost = h("div", null);
   let thumbUrl = null;
   const stagesList = h("ul", { class: "stages", "aria-label": "Các bước của pipeline" });
   const stagesCard = h("section", { class: "card", "aria-labelledby": "pipe-h" }, h("div", { class: "card-title" }, h("h2", { id: "pipe-h" }, "Pipeline")), stagesList);
   const outputHost = h("div", null);
   const techHost = h("div", null);
-  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, controlHost, thumbHost, stagesCard, outputHost, techHost));
+  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, controlHost, thumbHost, guidanceHost, stagesCard, outputHost, techHost));
   head.append(skeleton(2));
 
   // ---------- tải ----------
@@ -59,6 +61,7 @@ export async function mount(root, ctx) {
     sig("auto", [d.auto_resume, d.status], () => paintAuto(d));
     sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
     sig("thumb", [JSON.stringify(d.thumbnail), d.pending_revision?.revision], () => paintThumb(d));
+    sig("guidance", [JSON.stringify(d.story_guidance)], () => { clear(guidanceHost); const c = storyGuidanceCard(d, { after }); if (c) guidanceHost.append(c); });
     paintStages(d);
     sig("output", [JSON.stringify(d.output)], () => paintOutput(d));
     sig("tech", [d.decisions.length, d.attempts.length, d.mode.start, d.mode.target], () => paintTech(d));

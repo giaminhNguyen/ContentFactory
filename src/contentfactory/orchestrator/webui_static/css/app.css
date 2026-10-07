@@ -361,3 +361,14 @@ dialog.dlg.wide { width: min(760px, calc(100vw - 2 * var(--s-4))); }
 .job-thumb { display: grid; grid-template-columns: minmax(160px, 260px) 1fr; gap: var(--s-4); align-items: start; }
 .job-thumb img { width: 100%; border-radius: var(--r-2); border: 1px solid var(--border); }
 @media (max-width: 640px) { .job-thumb { grid-template-columns: minmax(0, 1fr); } }
+
+/* Đề xuất truyện (D-112) */
+.textarea.prose { font-family: inherit; font-size: var(--fs-md, 1rem); line-height: 1.5; }
+.sg-editor { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--s-2); }
+.sg-editor legend { padding: 0; margin-bottom: var(--s-1); }
+.sg-quote { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); padding: var(--s-2) var(--s-3); max-height: 160px; overflow: auto; font-size: var(--fs-sm); }
+.sg-count[data-over="1"] { color: var(--st-fail-fg); font-weight: 600; }
+.sg-drift { color: var(--st-wait-fg); }
+.setting.setting-wide { grid-template-columns: minmax(0, 1fr); align-items: start; }
+.setting.setting-wide .s-ctl { align-items: stretch; width: 100%; }
+.setting.setting-wide .s-ctl .textarea { max-width: none; min-height: 168px; }

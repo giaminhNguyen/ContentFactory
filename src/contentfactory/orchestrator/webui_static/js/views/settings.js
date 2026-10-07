@@ -2,12 +2,13 @@
 import { api } from "../api.js";
 import { h, loadCss } from "../dom.js";
 import { icon } from "../icons.js";
-import { badge, btn, busy, alertBox, errorState, skeleton, pageHead, toast, toastError, confirmDialog, disclosure, tabs, select, input, switchCtl, kv } from "../components.js";
+import { badge, btn, busy, alertBox, errorState, skeleton, pageHead, toast, toastError, confirmDialog, disclosure, tabs, select, input, textarea, switchCtl, kv } from "../components.js";
+import { counter, validateDefault } from "../story_guidance_logic.js";
 import { createPoller } from "../poller.js";
 import { bytes, relTime } from "../format.js";
 import { uid } from "../dom.js";
 
-const FALLBACK_GROUPS = [["general", "Chung"], ["audio", "Audio"], ["render", "Render"], ["publishing", "Đăng"], ["resources", "Tài nguyên"], ["storage", "Lưu trữ"], ["advanced", "Nâng cao"]];
+const FALLBACK_GROUPS = [["general", "Chung"], ["story", "Truyện"], ["audio", "Audio"], ["render", "Render"], ["publishing", "Đăng"], ["resources", "Tài nguyên"], ["storage", "Lưu trữ"], ["advanced", "Nâng cao"]];
 const GROUP_META = {
   healthy: { label: "Ổn", icon: "check-circle", tone: "done" }, warning: { label: "Cần xem", icon: "alert", tone: "wait" },
   needs_action: { label: "Cần xử lý", icon: "x-circle", tone: "fail" }, skipped: { label: "Chưa dùng", icon: "skip", tone: "off" },
@@ -120,7 +121,9 @@ export async function mount(root, ctx) {
     const box = h("section", { class: "card", "aria-label": label });
     const mine = settings.items.filter((i) => i.group === group);
     if (!mine.length) box.append(h("p", { class: "muted" }, "Nhóm này chưa có tuỳ chọn nào."));
-    for (const it of mine) box.append(settingRow(it));
+    for (const it of mine.filter((i) => !i.advanced)) box.append(settingRow(it));
+    const adv = mine.filter((i) => i.advanced);                                                  // tuỳ chọn nâng cao nằm trong vùng thu gọn riêng (mở sẵn ở tab chỉ có tuỳ chọn nâng cao)
+    if (adv.length) box.append(disclosure({ label: "Cài đặt nâng cao", open: adv.length === mine.length, content: h("div", null, ...adv.map(settingRow)) }));
     const wrap = h("div", { class: "stack" }, box);
     if (group === "general") wrap.append(linkCards());
     if (group === "storage") wrap.append(storageCard(), cleanupCard());
@@ -128,7 +131,7 @@ export async function mount(root, ctx) {
     return wrap;
   }
 
-  const fmt = (it, v) => it.type === "bool" ? (v ? "Bật" : "Tắt") : it.type === "select" || it.type === "channel" ? (it.options?.find((o) => o[0] === v)?.[1] ?? v) : `${v}${it.unit ? ` ${it.unit}` : ""}`;
+  const fmt = (it, v) => it.type === "textarea" ? (v ? "có nội dung" : "để trống") : it.type === "bool" ? (v ? "Bật" : "Tắt") : it.type === "select" || it.type === "channel" ? (it.options?.find((o) => o[0] === v)?.[1] ?? v) : `${v}${it.unit ? ` ${it.unit}` : ""}`;
 
   function settingRow(it) {
     const cid = uid("set"), lid = cid + "-l";
@@ -148,6 +151,17 @@ export async function mount(root, ctx) {
     } else if (it.type === "select" || it.type === "channel") {
       const s = select({ options: it.options || [], value: it.value, id: cid, onChange: (v) => commit(v) });
       ctl = s; read = () => s.value; write = (v) => { s.value = v; };
+    } else if (it.type === "textarea") {
+      const maxLen = it.max_len || 8000;
+      const t = textarea({ id: cid, rows: 8, value: it.value ?? "", placeholder: it.placeholder, "aria-describedby": cid + "-c" });
+      const count = h("div", { class: "small muted", id: cid + "-c", "aria-live": "off" });
+      const upd = () => { const c = counter(t.value, maxLen); count.textContent = c.label; count.style.color = c.over ? "var(--st-fail-fg)" : ""; };
+      upd();
+      let tm = null;
+      t.addEventListener("input", () => { upd(); clearTimeout(tm); timers.delete(tm); tm = setTimeout(() => commit(read()), 1200); timers.add(tm); });
+      t.addEventListener("blur", () => { if (tm) { clearTimeout(tm); timers.delete(tm); tm = null; } commit(read()); });
+      ctl = h("div", { class: "stack", style: "width: 100%" }, t, count); read = () => t.value.replace(/\r\n?/g, "\n").trim();
+      write = (v) => { t.value = v ?? ""; upd(); };
     } else {
       const i = input({ type: it.type === "text" ? "text" : "number", id: cid, value: it.value ?? "", min: it.min, max: it.max, step: it.step || (it.type === "int" ? 1 : "any"), maxlength: it.max_len, inputmode: it.type === "text" ? "text" : "decimal" });
       let t = null;
@@ -159,6 +173,7 @@ export async function mount(root, ctx) {
     }
 
     function validate(v) {
+      if (it.type === "textarea") return validateDefault(v, it.max_len || 8000);
       if (it.type === "text") return v.trim() ? null : "Không được để trống.";
       if (it.type === "int" || it.type === "number") {
         if (Number.isNaN(v)) return "Nhập một số.";
@@ -181,6 +196,7 @@ export async function mount(root, ctx) {
       try {
         const r = await api.put("/api/settings", { changes: { [it.key]: v } });
         saved = v;
+        it.value = v;                                                                          // đổi tab rồi quay lại vẫn thấy giá trị vừa lưu
         refreshMod();
         note.textContent = r.restart_needed?.length ? "Đã lưu — có hiệu lực sau khi mở lại ứng dụng" : "Đã lưu";
         const t = setTimeout(() => { timers.delete(t); note.textContent = ""; }, 2000);
@@ -193,7 +209,7 @@ export async function mount(root, ctx) {
 
     const left = h("div", null, h("label", { class: "s-label", id: lid, for: cid }, it.label), it.help ? h("div", { class: "s-help" }, it.help) : null,
       it.danger ? h("div", { class: "s-warn" }, icon("alert", { size: 14 }), h("span", null, it.danger)) : null);
-    return h("div", { class: "setting" }, left, h("div", { class: "s-ctl" }, ctl, err, h("div", { class: "s-meta" }, h("span", null, `Mặc định: ${fmt(it, it.default)}`), mod, it.restart ? h("span", null, "Có hiệu lực sau khi mở lại ứng dụng") : null), note));
+    return h("div", { class: it.type === "textarea" ? "setting setting-wide" : "setting" }, left, h("div", { class: "s-ctl" }, ctl, err, h("div", { class: "s-meta" }, h("span", null, `Mặc định: ${fmt(it, it.default)}`), mod, it.restart ? h("span", null, "Có hiệu lực sau khi mở lại ứng dụng") : null), note));
   }
 
   function linkCards() {
