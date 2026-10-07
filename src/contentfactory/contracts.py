@@ -159,6 +159,8 @@ class StageContext:
     log: Callable[..., None]                   # log(event, level="info", **fields)
     # progress(done, total=None, detail="", **extra): ghi checkpoint (tiến độ) của stage vào DB để resume/hiển thị
     progress: Callable[..., None] = field(default=lambda *a, **k: None)
+    # Ngữ cảnh do orchestrator quyết định lúc chạy (KHÔNG phải params của job): vd extra["story_guidance"] = đề xuất truyện hiệu lực (D-112)
+    extra: dict = field(default_factory=dict)
 
     def path(self, ref: ArtifactRef) -> Path:
         return self.workspace / ref["path"]
@@ -239,11 +241,15 @@ class SourceAdapter(Protocol):
 
 
 # ---- Story ----------------------------------------------------------------------------------
-class SourceBundle(TypedDict):
+class _SourceBundleRequired(TypedDict):
     title: str
     language: str            # ngôn ngữ ĐÍCH của truyện
     source_language: str     # ngôn ngữ của transcript nguồn
     transcript: Path
+
+
+class SourceBundle(_SourceBundleRequired, total=False):
+    guidance: str            # đề xuất sáng tạo hiệu lực của người dùng (D-112); thiếu/rỗng = không có
 
 
 class StoryResult(TypedDict):

@@ -30,6 +30,9 @@ def run(ctx: StageContext, story: StoryAdapter) -> StageResult:
     profile = ctx.params.get("story_profile", {})
     bundle = {"title": meta["title"], "language": ctx.params.get("language") or meta.get("language", "vi"),
               "source_language": meta.get("language", ""), "transcript": ctx.one("transcript")}
+    guide = ctx.extra.get("story_guidance") or {}
+    if guide.get("text"):                                    # chỉ thêm khi có nội dung: không guidance => bundle y như cũ
+        bundle["guidance"] = guide["text"]
     res = story.generate(bundle, profile, ctx.stage_dir, ctx)
     sections = res["sections"]
     if not sections:
@@ -64,4 +67,5 @@ def run(ctx: StageContext, story: StoryAdapter) -> StageResult:
                         "joins", "duplicates_removed", "removed_ratio", "paragraphs")}
     return StageResult([ctx.draft(story_path, "story_text", chars=chars),
                         ctx.draft(report_path, "story_report")],
-                       {"chars": chars, "assembly_reused": reused, **summary, **res.get("stats", {})})
+                       {"chars": chars, "assembly_reused": reused, **summary, **res.get("stats", {}),
+                        **({"guidance_source": guide.get("source"), "guidance_hash": guide.get("hash")} if guide.get("text") else {})})

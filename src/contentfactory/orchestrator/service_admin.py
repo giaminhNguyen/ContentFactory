@@ -44,6 +44,10 @@ SETTINGS: list[tuple[str, str, str, str, str, dict]] = [
     ("job_defaults.tiktok.speed", "audio", "Tốc độ audio TikTok", "number", "Tăng tốc audio cho video TikTok, giữ nguyên cao độ giọng.", {"min": 1.0, "max": 3.0, "step": 0.1, "unit": "x"}),
     ("job_defaults.tiktok.target_part_sec", "audio", "Độ dài mỗi part TikTok", "number",
      "Độ dài mục tiêu của mỗi video TikTok (giây, tính theo audio sau khi tăng tốc). Hệ thống cắt ở ranh giới câu/đoạn gần nhất.", {"min": 15, "max": 1800, "step": 15, "unit": "giây"}),
+    ("story.guidance", "story", "Đề xuất truyện", "textarea",
+     "Đề xuất mặc định cho agent viết truyện, dùng khi một job không có đề xuất riêng. Viết tự do: hướng phát triển cốt truyện, không khí/cảm xúc, kiểu mở đầu/kết thúc, ngôi kể, nhịp truyện, "
+     "tính cách nhân vật, twist, chi tiết cần giữ hoặc tránh… Để trống = không thêm đề xuất.",
+     {"max_len": 8000, "advanced": True, "placeholder": "Ví dụ: Viết theo hướng bí ẩn và căng thẳng hơn. Không tiết lộ ngay nguyên nhân cái chết. Kết thúc mở."}),
     ("render.pool_sync_background", "render", "Đồng bộ video nền ở chế độ nền", "bool", "Chuẩn hoá video nguồn một lần, dùng chung cho mọi job.", {}),
     ("render.pool_sync_interval_s", "render", "Chu kỳ kiểm tra video nền", "number", "Bao lâu kiểm tra thư mục video nguồn có thay đổi không.", {"min": 30, "max": 86400, "step": 30, "unit": "giây"}),
     ("limits.gpu", "resources", "Số video render song song", "int", "Số job được render cùng lúc. Tăng chỉ khi máy mạnh (nhiều GPU/CPU).", {"min": 1, "max": 4}),
@@ -63,7 +67,7 @@ SETTINGS: list[tuple[str, str, str, str, str, dict]] = [
     ("auto.hold_wait_s", "advanced", "Thời gian `go` chờ khi job bị giữ", "int", "Chỉ ảnh hưởng lệnh `cf go` (giao diện luôn theo dõi nền).", {"min": 0, "max": 3600, "unit": "giây"}),
     ("monitor.disk_min_free_gb.default", "resources", "Dung lượng trống tối thiểu", "number", "Dưới mức này job bị giữ (hết chỗ đĩa).", {"min": 0.1, "max": 500, "step": 0.5, "unit": "GB", "restart": True}),
 ]
-SETTING_GROUPS = [("general", "Chung"), ("audio", "Audio"), ("render", "Render"), ("publishing", "Đăng"), ("resources", "Tài nguyên"), ("storage", "Lưu trữ"), ("advanced", "Nâng cao")]
+SETTING_GROUPS = [("general", "Chung"), ("story", "Truyện"), ("audio", "Audio"), ("render", "Render"), ("publishing", "Đăng"), ("resources", "Tài nguyên"), ("storage", "Lưu trữ"), ("advanced", "Nâng cao")]
 
 
 def _get(d: dict, dotted: str, default=None):
@@ -203,6 +207,13 @@ class AdminService:
             if "min" in opt and v < opt["min"] or "max" in opt and v > opt["max"]:
                 raise bad(f"nằm ngoài khoảng {opt.get('min')}–{opt.get('max')}")
             return v
+        if typ == "textarea":                                         # văn bản tự do nhiều dòng: cho phép rỗng, giữ xuống dòng, KHÔNG cắt âm thầm khi quá dài
+            if not isinstance(raw, str):
+                raise bad("phải là văn bản")
+            text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+            if len(text) > opt.get("max_len", 8000):
+                raise bad(f"dài {len(text)} ký tự, tối đa {opt.get('max_len', 8000)} — hãy rút gọn")
+            return text
         if typ in ("text", "channel"):
             if not isinstance(raw, str) or not raw.strip() or len(raw) > opt.get("max_len", 80):
                 raise bad("phải là chuỗi không rỗng")

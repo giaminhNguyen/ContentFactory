@@ -105,7 +105,11 @@ class FakeStory:
         hook(ctx, "story")
         record_call(ctx, "story")
         n = int(profile.get("paragraphs", 6))
-        paras = [_paragraph(k) for k in range(1, n + 1)]
+        guide = str(bundle.get("guidance") or "")
+        shift = int(hashlib.sha256(guide.encode("utf-8")).hexdigest()[:6], 16) * 100 if guide else 0     # đề xuất đổi => truyện khác (như agent thật); không đề xuất => y như cũ
+        if guide:
+            atomic_write_text(out_dir / "guidance_seen.txt", guide)                                     # để test kiểm đề xuất thật sự tới generator
+        paras = [_paragraph(k + shift) for k in range(1, n + 1)]
         # 3 section CÓ heading và marker như engine thật hay sinh ra: Story Assembler phải gỡ sạch
         sections, per = [], max(1, n // 3)
         for s in range(3):

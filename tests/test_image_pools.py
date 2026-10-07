@@ -14,7 +14,7 @@ from pathlib import Path
 
 from contentfactory.contracts import StageError
 from contentfactory.jobs import pipeline as P
-from contentfactory.jobs.db import JobStore
+from contentfactory.jobs.db import SCHEMA_VERSION, JobStore
 from contentfactory.media import image_pool as IP
 from contentfactory.orchestrator.config import load_config
 from contentfactory.orchestrator.runner import Orchestrator
@@ -230,11 +230,11 @@ class StoreTest(PoolCase):
         c.commit()
         c.close()
         st2 = JobStore(db)
-        self.assertEqual(st2.schema_version(), 6)
+        self.assertEqual(st2.schema_version(), SCHEMA_VERSION)
         self.assertEqual(st2.image_pool_update("p", lambda s: ("ok", {"n": 1})), "ok")
         self.assertEqual(st2.image_pool_update("p", lambda s: (s, s)), {"n": 1})
         self.assertIsNotNone(st2.get_job(jid))
-        self.assertEqual(JobStore(db).schema_version(), 6)
+        self.assertEqual(JobStore(db).schema_version(), SCHEMA_VERSION)
 
 
 class MaterializeTest(PoolCase):

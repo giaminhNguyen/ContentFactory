@@ -105,7 +105,8 @@ class StageContract:
                                  {"kind": a["kind"], "issues": issues})
 
     # -- stage_key --------------------------------------------------------------------------
-    def stage_key(self, params: dict, snapshot: dict | None, inputs: dict[str, list[ArtifactRef]]) -> str:
+    def stage_key(self, params: dict, snapshot: dict | None, inputs: dict[str, list[ArtifactRef]], extra: dict | None = None) -> str:
+        """`extra` = phần ngữ cảnh quyết định lúc chạy mà không nằm trong params/config (vd đề xuất truyện hiệu lực); chỉ vào khóa khi không rỗng."""
         st = self.stage
         picked = params if st.params_deps is None else {k: _dig(params, k) for k in st.params_deps}
         sem = (snapshot or {}).get("semantic", {})
@@ -116,6 +117,8 @@ class StageContract:
         files = {dep: h for dep in st.file_deps if isinstance(v := _dig(params, dep), str) and v and (h := _file_sha(v))}
         if files:                                                                      # khóa cũ của job không dùng file đó không đổi
             blob["files"] = files
+        if extra:
+            blob["extra"] = extra
         return hashlib.sha256(json.dumps(blob, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
     # -- skip -------------------------------------------------------------------------------

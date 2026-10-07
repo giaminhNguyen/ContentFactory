@@ -11,7 +11,7 @@ from pathlib import Path
 
 from contentfactory.contracts import StageError
 from contentfactory.jobs import pipeline as P
-from contentfactory.jobs.db import JobStore
+from contentfactory.jobs.db import SCHEMA_VERSION, JobStore
 from contentfactory.orchestrator.config import load_config
 from contentfactory.orchestrator.runner import Orchestrator
 from contentfactory.orchestrator.service import Service
@@ -682,9 +682,9 @@ class SourceLinksAndMigrationTest(BatchCase):
         c.close()
         st2 = JobStore(db)
         j = st2.get_job(jid)
-        self.assertEqual((st2.schema_version(), j["channel_id"], j["batch_id"]), (6, "kenh_x", None))        # job cũ: kênh lấy từ params, vẫn là Single Job
+        self.assertEqual((st2.schema_version(), j["channel_id"], j["batch_id"]), (SCHEMA_VERSION, "kenh_x", None))        # job cũ: kênh lấy từ params, vẫn là Single Job
         self.assertEqual(st2.list_batches(), [])
-        self.assertEqual(JobStore(db).schema_version(), 6)                                                  # idempotent
+        self.assertEqual(JobStore(db).schema_version(), SCHEMA_VERSION)                                                  # idempotent
 
 
 if __name__ == "__main__":

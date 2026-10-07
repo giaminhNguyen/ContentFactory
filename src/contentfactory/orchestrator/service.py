@@ -24,6 +24,7 @@ from ..jobs.plan import plan_spec, spec_for_mode
 from ..jobs.workspace import job_dir
 from ..media import image_pool as IPOOL
 from ..source import discovery as DISC
+from ..story import guidance as GD
 from ..output import metadata as MD
 from ..tts import prosody as PRO
 from . import auto as AU
@@ -360,6 +361,8 @@ class Service:
                     if rid:
                         self._remember(rid, full["id"])
                     return {"job_id": full["id"], "deduped": True, "reason": "same_input_running"}
+            if payload.get("story_guidance") is not None:                                     # đề xuất truyện riêng của job (mặc định: dùng đề xuất trong Cài đặt)
+                params["story_guidance"] = payload["story_guidance"]
             params["ui"] = {"sig": sig, "request_id": rid or None}
             extend = kw.pop("_extend", None)
             job_id = self.orc.submit(params, **kw)
@@ -654,6 +657,7 @@ class Service:
                           "clone": status in ("completed", "cancelled", "failed"), "reroll_thumbnail": bool((j["params"].get("thumbnail_source")) and status not in ("completed", "cancelled")),
                           "prosody": any(a["kind"] == "speech_plan" for a in self.orc.store.artifacts(job_id))})
         s["thumbnail"] = self.thumbnail_info(j)
+        s["story_guidance"] = self.story_guidance_view(j, runs)
         pipeline = self._pipeline(j, runs, pend, d.get("human"), cur, imported)
         s["edit"] = self.jobedit.view(j, s, runs, pipeline)
         s.update(version=self.orc.store.jobs_version(), diagnosis=d, pipeline=pipeline, decisions=j["params"].get("auto", []),
@@ -1061,6 +1065,41 @@ class Service:
             raise _err("NOT_FAILED", "Chỉ chạy lại được job đang ở trạng thái lỗi.")
         stage = self.orc.retry(job_id)
         return {"stage": stage, "message": f"Đã xếp lại stage '{DG.STAGE_LABEL.get(stage, stage)}'; các stage trước giữ nguyên."}
+
+    # ---- Story Guidance (D-112)
+    def story_guidance_view(self, j: dict, runs: list[dict] | None = None) -> dict:
+        """Đề xuất truyện của job cho giao diện: cấu hình (inherit/custom/none), mặc định hiện tại trong Cài đặt, thứ sẽ được dùng nếu Truyện chạy NGAY BÂY GIỜ,
+        và đề xuất hiệu lực của lần chạy Truyện gần nhất (snapshot đã chốt — không đổi khi Cài đặt đổi)."""
+        runs = self.orc.store.stage_runs(j["id"]) if runs is None else runs
+        default = str((self.cfg.data.get("story") or {}).get("guidance") or "")
+        cfg = GD.of_job(j["params"])
+        eff = GD.resolve(j["params"], default)
+        last = None
+        for r in reversed(runs):
+            g = json.loads(r.get("meta") or "{}").get("guidance") if r["stage"] == "story" else None
+            if g:
+                last = {"source": g["source"], "text": g["text"], "hash": g["hash"], "run": r["id"], "at": g.get("resolved_at") or r["started_at"], "status": r["status"]}
+                break
+        return {"mode": cfg["mode"], "text": cfg["text"], "default_text": GD.normalize(default), "max_len": GD.MAX_LEN,
+                "effective": {"source": eff["source"], "text": eff["text"]}, "last_run": last,
+                "drift": bool(last and (last["hash"] or "") != (eff["hash"] or ""))}
+
+    def set_story_guidance(self, job_id: str, payload: dict) -> dict:
+        """Đổi đề xuất truyện RIÊNG của job. Chỉ có tác dụng ở lần Truyện chạy kế tiếp (không đổi kết quả đã có, không làm gì bị coi là cũ); muốn áp dụng cho truyện
+        đã có thì dùng “Chạy lại → Truyện”."""
+        self._job_or_error(job_id)
+        g = GD.parse({"mode": payload.get("mode"), "text": payload.get("text")})
+
+        def fn(p: dict) -> dict:
+            p = dict(p)
+            p.pop("story_guidance", None)
+            if g["mode"] != GD.DEFAULT_MODE:
+                p["story_guidance"] = g
+            return p
+        self.orc.store.update_params(job_id, fn, f"story guidance -> {g['mode']}")
+        j = self._job_or_error(job_id)
+        return {**self.story_guidance_view(j), "message": {"inherit": "Job dùng đề xuất trong Cài đặt.", "custom": "Đã lưu đề xuất riêng cho job; áp dụng ở lần Truyện chạy kế tiếp.",
+                                                          "none": "Job không dùng đề xuất truyện."}[g["mode"]]}
 
     def set_auto_resume(self, job_id: str, enabled: bool) -> dict:
         if self.orc.store.get_job(job_id) is None:

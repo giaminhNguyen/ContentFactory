@@ -37,6 +37,7 @@ from .log import EventLog
 from .monitor import DiskProbe, NetworkProbe, ResourceMonitor
 from ..jobs.sequences import SequenceManager
 from ..media import image_pool as IP
+from ..story import guidance as GD
 from . import auto as AU
 from . import cleanup as CL
 from . import channels as CH
@@ -160,6 +161,10 @@ class Orchestrator:
         if src and "source" not in merged:
             merged["source"] = src
         source_key = source_key or (f"youtube:{src['video_id']}" if src else None)
+        if "story_guidance" in merged:                                                    # đề xuất truyện riêng của job: kiểm ngay (quá dài/rỗng bị từ chối, không cắt âm thầm); inherit = không lưu gì
+            g = GD.parse(merged.pop("story_guidance"))
+            if g["mode"] != GD.DEFAULT_MODE:
+                merged["story_guidance"] = g
         if merged.get("prosody"):
             PRO.resolve_prosody(merged["prosody"])                                    # sai thì từ chối ngay lúc tạo job (không để lỗi nửa chừng ở stage TTS)
         items = self._prepare_imports(inputs or {}, from_job, merged)
@@ -834,9 +839,9 @@ class Orchestrator:
                 return
             inputs, package_kinds = contract.scope_inputs(self.store.inputs(job_id, stage.requires + stage.optional), claim.pipeline)
             ready, _missing = contract.can_run({k for k, v in inputs.items() if v})
-            key = contract.stage_key(claim.params, claim.snapshot, inputs) if ready else None
-            if key:
-                self.store.set_run_key(claim.run_id, key)
+            extra = self.stage_extra(stage.name, claim.params)                    # ngữ cảnh quyết định lúc chạy (vd đề xuất truyện hiệu lực), chốt vào lần chạy này
+            key = contract.stage_key(claim.params, claim.snapshot, inputs, GD.key_extra(extra.get("story_guidance"))) if ready else None
+            self.store.set_run_key(claim.run_id, key, {"guidance": extra["story_guidance"]} if extra.get("story_guidance") else None)
             reason = contract.skip_reason(self.store, job_id, jd, key, claim.target_idx, claim.pipeline)
             if reason:                              # output đã hợp lệ (hoặc được cung cấp sẵn): KHÔNG chạy lại
                 if self.store.succeed(claim, self.owner, [], {"skipped": reason}, status="skipped"):
@@ -853,7 +858,7 @@ class Orchestrator:
                                        "render": sem.get("render", self.cfg.data.get("render", {})),
                                        "channel_config": sem.get("channel_config"),
                                        "publishing": sem.get("publishing", self.cfg.data.get("publishing", {}))},
-                               cancel=token, log=log, progress=self._progress_fn(job_id, stage.name))
+                               cancel=token, log=log, progress=self._progress_fn(job_id, stage.name), extra=extra)
             log("stage_started", stage_key=(key or "")[:12])
             t0 = time.time()
             adapters = {**self._adapters_for(claim.snapshot), "sequence": self.sequence}
@@ -871,6 +876,13 @@ class Orchestrator:
         finally:
             self._tokens.pop(job_id, None)
             self._manifest(job_id)
+
+    def stage_extra(self, stage: str, params: dict) -> dict:
+        """Ngữ cảnh do orchestrator quyết định NGAY TRƯỚC khi chạy một stage (không nằm trong params): hiện chỉ `story` — đề xuất truyện hiệu lực
+        (đề xuất riêng của job > mặc định hiện tại trong Cài đặt > không có), đọc MỘT chỗ duy nhất ở đây."""
+        if stage != "story":
+            return {}
+        return {"story_guidance": GD.resolve(params, (self.cfg.data.get("story") or {}).get("guidance"), now=time.time())}
 
     def _on_error(self, claim: Claim, e: StageError, log) -> None:
         if e.error_class == ErrorClass.CANCELLED:

@@ -62,6 +62,9 @@ DEFAULTS: dict = {
     "supervip": {"backend_dir": "modules/Subtitle_supperVip/backend", "python": None,
                  "youtube_api_key_env": "YOUTUBE_API_KEY", "timeout_s": 120, "env": {}},
     "youtube": {"yt_dlp_cmd": ["yt-dlp"], "yt_dlp_args": []},   # chỉ cho YtDlpProvider (fallback)
+    # Story Guidance (D-112): đề xuất sáng tạo MẶC ĐỊNH cho agent viết truyện (văn bản tự do). Job có đề xuất riêng thì ghi đè hoàn toàn. Cố ý KHÔNG nằm trong
+    # snapshot: mặc định được đọc lúc stage `story` chạy (kể cả manual rerun) và chốt vào lần chạy đó.
+    "story": {"guidance": ""},
     "story_branch": {"permission_mode": "acceptEdits", "max_turns": 80, "max_follow_ups": 4,
                      "chapters_per_batch": 3, "max_budget_usd_per_turn": None},
     "job_defaults": {"language": "vi", "channel": "default",

@@ -247,6 +247,10 @@ class Api:
     def retry(app, m, q, b):
         return app.service.retry(m["id"])
 
+    @route("PUT", r"/api/jobs/(?P<id>[\w\-]+)/story-guidance")
+    def story_guidance(app, m, q, b):
+        return app.service.set_story_guidance(m["id"], b)
+
     @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/auto-resume")
     def auto_resume(app, m, q, b):
         return app.service.set_auto_resume(m["id"], bool(b.get("enabled")))

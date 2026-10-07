@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS transitions(
   from_state TEXT, to_state TEXT NOT NULL, stage TEXT, attempt INTEGER, note TEXT);
 """
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 # v1 (Phase 2.9): điều khiển job (start/target stage), hold + auto resume, checkpoint, config snapshot, resource monitor
 V1_JOB_COLUMNS = (
     ("start_stage", "TEXT"), ("target_stage", "TEXT"), ("target_idx", "INTEGER"),
@@ -123,6 +123,9 @@ V6_SQL = (
     # trạng thái túi chọn ảnh của từng Image Pool (Phase 8): bền qua restart, cập nhật nguyên tử giữa các job/batch
     """CREATE TABLE IF NOT EXISTS image_pool_state(pool TEXT PRIMARY KEY, state TEXT NOT NULL, updated_at REAL NOT NULL)""",
 )
+
+# v7 (Story Guidance, D-112): stage_runs.meta = JSON "ngữ cảnh thực thi" của từng lần chạy (vd đề xuất truyện hiệu lực đã chốt lúc chạy). NULL với lần chạy cũ.
+V7_STAGE_RUN_COLUMNS = (("meta", "TEXT"),)
 
 _RUNNING_STATES = tuple(s.running_state for s in P.STAGES)
 
@@ -249,6 +252,11 @@ class JobStore:
                 if ver < 6:
                     for sql in V6_SQL:
                         c.execute(sql)
+                if ver < 7:
+                    have = {r["name"] for r in c.execute("PRAGMA table_info(stage_runs)")}
+                    for name, decl in V7_STAGE_RUN_COLUMNS:
+                        if name not in have:
+                            c.execute(f"ALTER TABLE stage_runs ADD COLUMN {name} {decl}")
                 if ver < SCHEMA_VERSION:
                     c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
@@ -434,9 +442,15 @@ class JobStore:
         return acted
 
     # -- stage lifecycle --------------------------------------------------------------------
-    def set_run_key(self, run_id: int, stage_key: str) -> None:
+    def set_run_key(self, run_id: int, stage_key: str | None = None, meta: dict | None = None) -> None:
+        """Ghi khóa ngữ nghĩa và/hoặc `meta` (ngữ cảnh thực thi, vd đề xuất truyện hiệu lực) của một lần chạy; meta gộp vào meta đã có."""
         with self._tx() as c:
-            c.execute("UPDATE stage_runs SET stage_key=? WHERE id=?", (stage_key, run_id))
+            if stage_key is not None:
+                c.execute("UPDATE stage_runs SET stage_key=? WHERE id=?", (stage_key, run_id))
+            if meta:
+                row = c.execute("SELECT meta FROM stage_runs WHERE id=?", (run_id,)).fetchone()
+                cur = json.loads(row["meta"]) if row and row["meta"] else {}
+                c.execute("UPDATE stage_runs SET meta=? WHERE id=?", (json.dumps({**cur, **meta}, ensure_ascii=False), run_id))
 
     def inputs(self, job_id: str, kinds: tuple[str, ...]) -> dict[str, list[ArtifactRef]]:
         out: dict[str, list[ArtifactRef]] = {k: [] for k in kinds}
@@ -931,6 +945,18 @@ class JobStore:
             j = c.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
             c.execute("UPDATE jobs SET params=?, updated_at=? WHERE id=?", (json.dumps(params, ensure_ascii=False), now, job_id))
             self._note(c, job_id, j["state"], now, note)
+
+    def update_params(self, job_id: str, fn, note: str, now: float | None = None) -> dict | None:
+        """Đọc-sửa-ghi params của job trong MỘT transaction: `fn(params) -> params mới` (tránh ghi đè lẫn nhau giữa các hành động explicit). None nếu không có job."""
+        now = now or time.time()
+        with self._tx() as c:
+            r = c.execute("SELECT state, params FROM jobs WHERE id=? AND control_state!='DELETED'", (job_id,)).fetchone()
+            if r is None:
+                return None
+            params = fn(json.loads(r["params"]))
+            c.execute("UPDATE jobs SET params=?, updated_at=? WHERE id=?", (json.dumps(params, ensure_ascii=False), now, job_id))
+            self._note(c, job_id, r["state"], now, note)
+            return params
 
     def image_pool_update(self, pool: str, fn):
         """Đọc trạng thái túi chọn ảnh của `pool`, gọi `fn(state|None) -> (kết_quả, trạng_thái_mới)` và ghi lại — tất cả trong MỘT transaction (BEGIN IMMEDIATE),
