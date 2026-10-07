@@ -85,6 +85,10 @@ class PauseResumeTest(RootCase):
         orc.run()
         self.assertEqual(orc.store.get_job(jid)["hold_reason"], P.PAUSED_CREDENTIAL)
 
+    def test_publish_hold_can_be_resumed_the_internal_sequence_is_not_an_adapter(self):
+        orc = self.orc()
+        self.assertEqual(orc._adapters_health(P.BY_NAME["publish"]), (True, "adapter sẵn sàng"))
+
     # -- Auto Resume ON ---------------------------------------------------------------------------
     def test_auto_resume_on_resumes_from_checkpoint_when_resource_returns(self):
         orc = self.net_orc()

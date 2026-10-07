@@ -105,6 +105,8 @@ class Orchestrator:
     def _adapters_health(self, stage: P.Stage) -> tuple[bool, str]:
         bad = []
         for name in stage.adapters:
+            if name == "sequence":                                   # thành phần nội bộ (SequenceManager): không phải adapter, không có health
+                continue
             try:
                 h = self.adapters[name].health()
             except Exception as e:
