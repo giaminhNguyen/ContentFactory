@@ -79,4 +79,10 @@ export function dialogIn(dlg) {
   gs().fromTo(dlg, { opacity: 0, y: 12, scale: 0.98 }, { opacity: 1, y: 0, scale: 1, duration: 0.18, ease: "power2.out", clearProps: CLEAR });
 }
 
+// Nội dung đổi tại chỗ (vd mô tả hậu quả khi chọn bước khác): mờ nhẹ rồi hiện, không đổi layout.
+export function swap(el) {
+  if (!live()) return;
+  gs().fromTo(el, { opacity: 0.35 }, { opacity: 1, duration: 0.16, ease: "power1.out", clearProps: "opacity", overwrite: "auto" });
+}
+
 export function kill(el) { gs()?.killTweensOf(el); }

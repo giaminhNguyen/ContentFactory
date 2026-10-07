@@ -123,3 +123,19 @@ test("poller: huỷ yêu cầu đang bay khi stop (AbortError không bị coi l�
   await sleep(30);
   assert.ok(aborted);
 });
+
+test("job_edit_logic: Lưu chỉ bật khi chọn bước hợp lệ KHÁC đích hiện tại; xóa job đang chạy cần xác nhận", async () => {
+  const m = await load("job_edit_logic.js");
+  const edit = { target: "audio", stages: [
+    { id: "story", selectable: false }, { id: "audio", selectable: true }, { id: "output", selectable: true }] };
+  assert.equal(m.saveState(edit, "audio").enabled, false);            // chưa đổi gì
+  assert.match(m.saveState(edit, "audio").why, /giữ nguyên/);
+  assert.equal(m.saveState(edit, "story").enabled, false);            // bước trước progress floor bị backend khóa
+  assert.equal(m.saveState(edit, "nope").enabled, false);
+  assert.deepEqual(m.saveState(edit, "output"), { enabled: true, why: "" });
+  assert.equal(m.stepMark("running").spin, true);
+  assert.equal(m.stepMark("lạ").icon, "clock");                       // trạng thái lạ: mặc định chờ, không vỡ
+  assert.equal(m.deleteReady({ running: false }, false), true);
+  assert.equal(m.deleteReady({ running: true }, false), false);
+  assert.equal(m.deleteReady({ running: true }, true), true);
+});

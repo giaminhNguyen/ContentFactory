@@ -200,15 +200,29 @@ if (wanted("control")) {
   check("sau khi tạm dừng: nút chính đổi thành Tiếp tục", true);
   await page.waitForFunction(() => document.querySelector(".badge[data-tone=wait]")?.textContent.includes("Tạm dừng"), null, { timeout: 15000 });
   check("trạng thái hiển thị chữ 'Tạm dừng' (không chỉ màu)", true);
+  // Sửa job: bộ chọn đích do backend dựng (progress floor), bước đã qua bị khóa kèm lý do, Lưu chỉ bật khi đổi đích, Esc trả focus
+  await page.locator("button:has-text('Sửa job')").click();
+  await page.waitForSelector("dialog[open] .step-row");
+  await page.waitForTimeout(600);
+  check("dialog Sửa job hiện đủ 8 bước", (await page.locator("dialog[open] .step-row").count()) === 8);
+  check("bước bị khóa luôn có lý do bằng chữ (không chỉ màu)", await page.evaluate(() => [...document.querySelectorAll("dialog[open] .step-row[data-disabled=true] input")].every((i) => document.getElementById(i.getAttribute("aria-describedby"))?.textContent.trim().length > 0)));
+  check("Lưu pipeline tắt khi chưa đổi đích và có lý do gần nút", (await page.locator("dialog[open] button:has-text('Lưu pipeline')").isDisabled()) && (await page.locator("dialog[open] #edit-save-why").innerText()).includes("giữ nguyên"));
+  const other = page.locator("dialog[open] .step-row[data-disabled=false]:not(:has(input:checked))").first();
+  await other.click();
+  check("chọn bước khác: mô tả hậu quả hiện và Lưu bật", (await page.locator("dialog[open] .edit-effect").innerText()).length > 10 && (await page.locator("dialog[open] button:has-text('Lưu pipeline')").isEnabled()));
+  await axe(page, "dialog Sửa job");
+  await noOverflow(page, "dialog Sửa job");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("dialog[open]", { state: "detached", timeout: 3000 });
+  check("Esc đóng Sửa job và trả focus về nút Sửa job", await page.evaluate(() => document.activeElement?.textContent?.includes("Sửa job")));
+  await page.locator("button:has-text('Sửa job')").click();
+  await page.locator("dialog[open] button:has-text('Xóa job…')").click();
+  await page.waitForSelector("dialog[open]:has-text('Xóa job này?')");
+  check("xác nhận xóa nói rõ output được giữ nguyên", (await page.locator("dialog[open]:has-text('Xóa job này?')").innerText()).includes("KHÔNG bị xóa"));
+  await page.locator("dialog[open]:has-text('Xóa job này?') button:has-text('Không xóa')").click();
+  await page.locator("dialog[open] button:has-text('Đóng')").click();
+  await page.waitForSelector("dialog[open]", { state: "detached", timeout: 3000 });
   await page.locator("button:has-text('Thao tác nâng cao')").click();
-  await page.locator("button:has-text('Cập nhật pipeline')").click();
-  await page.waitForSelector("dialog[open] .pick-row");
-  check("dialog pipeline hiện đủ 8 bước với lý do", (await page.locator("dialog[open] .pick-row").count()) === 8 && (await page.locator("dialog[open] .pick-row .s-why:not(:empty)").count()) >= 1);
-  await axe(page, "dialog cập nhật pipeline");
-  await page.locator("dialog[open] #pd-publish").uncheck();
-  await page.waitForFunction(() => document.querySelector("dialog[open] #pd-publish")?.closest(".pick-row")?.dataset.role === "not_requested", null, { timeout: 10000 });
-  check("bỏ Đăng YouTube: impact báo bước đó bị bỏ khỏi kế hoạch", (await page.locator("dialog[open] .autolist").innerText()).includes("Bỏ khỏi kế hoạch"));
-  await page.locator("dialog[open] button:has-text('Hủy')").first().click();
   await page.locator("button:has-text('Hủy job')").click();
   await page.waitForSelector("dialog[open]:has-text('Hủy job này?')");
   await page.locator("dialog[open] button:has-text('Không hủy')").click();
@@ -218,6 +232,51 @@ if (wanted("control")) {
   check("Tiếp tục: job rời trạng thái tạm dừng", true);
   await noOverflow(page, "trang job có điều khiển");
   check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
+  await page.context().close();
+}
+
+// ===================================================================== 3c2. Sửa job: job đã xong mở rộng đích (không tự chạy -> Chạy tiếp), xóa job (output giữ nguyên), reduced-motion
+if (wanted("jobedit")) {
+  console.log("\n# Sửa job");
+  const page = await newPage({ reduced: "reduce" });
+  await go(page, "/jobs");
+  const hrefs = await page.locator(".job a[href^='#/jobs/']").evaluateAll((as) => as.map((a) => a.getAttribute("href")));
+  let target = null;
+  for (const href of [...new Set(hrefs)]) {                                       // tìm một job ĐÃ XONG còn bước phía sau để mở rộng đích
+    await page.goto(base + "/" + href);
+    await page.waitForSelector("#page-title");
+    await page.waitForTimeout(500);
+    if (!(await page.locator(".badge:has-text('Hoàn tất')").count())) continue;
+    await page.locator("button:has-text('Sửa job')").click();
+    await page.waitForSelector("dialog[open] .step-row");
+    if ((await page.locator("dialog[open] .step-row[data-disabled=false]:not(:has(input:checked))").count()) > 0) { target = href; break; }
+    await page.keyboard.press("Escape");
+  }
+  check("có job đã xong còn bước phía sau để mở rộng", !!target);
+  if (target) {
+    const id = target.split("/").pop();
+    const items = await page.locator("dialog[open] .step-row[data-disabled=false]:not(:has(input:checked))").count();
+    await page.locator("dialog[open] .step-row[data-disabled=false]:not(:has(input:checked))").nth(Math.min(1, items - 1)).click();
+    check("job đã xong: mô tả nói rõ KHÔNG tự chạy và có Chạy tiếp", (await page.locator("dialog[open] .edit-effect").innerText()).includes("không tự chạy"));
+    await page.locator("dialog[open] button:has-text('Lưu pipeline')").click();
+    await page.waitForSelector("dialog[open]", { state: "detached", timeout: 5000 });
+    await page.waitForSelector(".alert:has-text('Có bước mới chưa chạy')", { timeout: 15000 });
+    check("Lưu xong: banner “Có bước mới chưa chạy” + nút Chạy tiếp, job KHÔNG tự chạy", (await page.locator("button:has-text('Chạy tiếp')").count()) >= 1 && (await page.locator(".badge:has-text('Tạm dừng')").count()) >= 1);
+    await settle(page, 1500);
+    check("sau vài giây vẫn chờ (không tự chạy)", (await page.locator(".badge:has-text('Tạm dừng')").count()) >= 1);
+    await axe(page, "trang job chờ Chạy tiếp");
+    await page.locator("button:has-text('Sửa job')").click();
+    await page.waitForSelector("dialog[open] .step-row");
+    await page.locator("dialog[open] button:has-text('Xóa job…')").click();
+    await page.waitForSelector("dialog[open]:has-text('Xóa job này?')");
+    await page.locator("dialog[open]:has-text('Xóa job này?') button:has-text('Xóa job')").click();
+    await page.waitForURL(/#\/jobs$/, { timeout: 10000 });
+    check("xóa job: quay về danh sách, job biến mất", (await page.locator(`a[href='#/jobs/${id}']`).count()) === 0);
+    await page.goto(base + "/#/jobs/" + id);
+    await page.waitForSelector("#page-title:has-text('Không tìm thấy job')", { timeout: 10000 });
+    check("mở lại job đã xóa: trang không-tìm-thấy, không trắng", true);
+  }
+  check("không lỗi console/mạng", page.problems.filter((x) => !x.includes("404")).length === 0, page.problems.slice(0, 3).join(" | "));
   await page.context().close();
 }
 
@@ -561,7 +620,7 @@ if (wanted("jobsui")) {
   await page.getByRole("button", { name: "Chọn tất cả đang hiện" }).click();
   await page.locator(".bulkbar button:has-text('Cập nhật pipeline')").focus();
   await page.keyboard.press("Enter");
-  await page.waitForSelector("dialog[open] .pick-row");
+  await page.waitForSelector("dialog[open] .step-row");
   check("hộp thoại cập nhật pipeline hàng loạt: focus nằm trong dialog", await page.evaluate(() => !!document.activeElement?.closest("dialog")));
   await page.waitForTimeout(600);                                                                 // dialog đang mờ vào làm axe đo sai độ tương phản
   await axe(page, "dialog cập nhật pipeline hàng loạt");

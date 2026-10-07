@@ -1,9 +1,9 @@
 // Hành động hàng loạt trên các JOB ĐÃ CHỌN (Phase 9). Backend kiểm TỪNG job và trả kết quả từng job; giao diện chỉ gửi lựa chọn và báo
 // thành công một phần RÕ RÀNG (không job nào bị bỏ lặng lẽ). Không có logic nghiệp vụ ở đây.
 import { api } from "../api.js";
-import { h, patchList } from "../dom.js";
-import { icon } from "../icons.js";
-import { btn, busy, field, select, alertBox, openDialog, toast, toastError } from "../components.js";
+import { h } from "../dom.js";
+import { field, select, openDialog, toast, toastError } from "../components.js";
+import { openTargetDialog } from "./_job_edit.js";
 
 export const BULK = {
   pause: ["Tạm dừng", "pause"], resume: ["Tiếp tục", "play"], retry: ["Chạy lại", "refresh"],
@@ -27,39 +27,10 @@ export async function sendBulk(action, ids, args, label = BULK[action]?.[0] || a
   } catch (e) { toastError(e, "Chưa làm được"); return null; }
 }
 
-// Cập nhật pipeline cho nhiều job: chọn bước, backend suy dependency (bước bắt buộc bị khoá kèm lý do); từng job được kiểm riêng khi áp dụng.
+// Cập nhật pipeline cho nhiều job = đổi ĐÍCH (đúng thao tác của Sửa job). Mỗi job được backend kiểm riêng theo progress floor của nó.
 export async function openBulkPipeline(ids) {
-  const sel = new Set(["render_youtube", "render_tiktok", "output"]);
-  const rows = h("div", { class: "stage-pick", role: "group", "aria-label": "Các bước muốn có kết quả" });
-  const problems = h("div", { class: "stack", "aria-live": "polite" });
-  let seq = 0;
-  const apply = (el, st) => {
-    const fixed = st.state === "locked" || st.state === "provided" || (st.state === "selected" && st.by.length > 0);
-    el.dataset.role = st.state;
-    el._cb.checked = st.state === "selected" || st.state === "locked";
-    el._cb.disabled = fixed;
-    el.querySelector(".s-tag").replaceChildren(...({ locked: [icon("lock", { size: 14 }), "Bắt buộc"], provided: [icon("refresh", { size: 14 }), "Dùng lại"], selected: [icon("check", { size: 14 }), "Đã chọn"] }[st.state] || []));
-    el.querySelector(".s-why").textContent = st.state === "not_requested" ? "" : st.reason;
-  };
-  async function refresh() {
-    const my = ++seq;
-    let r;
-    try { r = await api.post("/api/pipeline/plan", { pipeline_spec: { version: 2, requested_stages: [...sel] }, input_kind: "youtube_url" }); } catch { return; }
-    if (my !== seq) return;
-    problems.replaceChildren(...(r.ok ? [] : [alertBox({ tone: "wait", title: r.errors[0] })]));
-    patchList(rows, r.stages, (s) => s.id, (s) => {
-      const cb = h("input", { type: "checkbox", id: `bk-${s.id}` });
-      cb.addEventListener("change", () => { if (cb.checked) sel.add(s.id); else sel.delete(s.id); refresh(); });
-      const el = h("label", { class: "pick-row", for: cb.id }, cb, h("span", { class: "s-label" }, s.label), h("span", { class: "s-tag" }), h("span", { class: "s-why" }));
-      el._cb = cb;
-      apply(el, s);
-      return el;
-    }, apply);
-  }
-  refresh();
-  const content = h("div", { class: "stack" }, h("p", { class: "muted small" }, `Áp dụng cho ${ids.length} job đã chọn. Mỗi job được kiểm riêng bằng impact planner của nó: job đã hoàn tất/hủy không bị đổi tại chỗ (dùng “Chạy lại với thay đổi”), phần đã xong và còn hợp lệ được giữ nguyên.`), rows, problems);
-  const r = await openDialog({ title: `Cập nhật pipeline của ${ids.length} job`, wide: true, content, actions: [{ label: "Hủy", value: null }, { label: "Áp dụng", kind: "primary", value: "ok" }] });
-  return r === "ok" ? { pipeline: { requested_stages: [...sel] } } : null;
+  return openTargetDialog({ title: `Cập nhật pipeline của ${ids.length} job`,
+    intro: `Chọn bước mà ${ids.length} job đã chọn sẽ chạy đến rồi dừng. Mỗi job được kiểm riêng: bước job đã chạy tới không bị lùi lại, kết quả đã có luôn được giữ; job đã hoàn tất lưu pipeline mới và chờ bạn bấm “Chạy tiếp”.` });
 }
 
 // Đổi template cho nhiều job chưa kết thúc (job đang chạy/đã xong bị backend từ chối kèm lý do).

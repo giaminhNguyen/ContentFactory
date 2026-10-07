@@ -162,20 +162,26 @@ export function toastError(e, title = "Không làm được") {
 }
 
 // ---------- dialog (thẻ <dialog> gốc: tự bẫy focus, Esc để đóng, trả focus về nút gọi) ----------
-export function openDialog({ title, content, actions, wide = false, describe }) {
+export function openDialog({ title, content, actions, wide = false, describe, onOpen }) {
   return new Promise((resolve) => {
     const opener = document.activeElement;
     const titleId = uid("dlg");
     const dlg = h("dialog", { class: "dlg" + (wide ? " wide" : ""), "aria-labelledby": titleId });
     const bar = h("div", { class: "actions" });
+    const buttons = {};                                     // theo `id` của action: để người gọi bật/tắt nút khi nội dung đổi (vd Lưu chỉ bật khi có thay đổi)
     const close = (value) => { dlg.close(); resolve(value); };
-    for (const a of actions) bar.append(btn({ label: a.label, kind: a.kind || "", disabled: a.disabled, onClick: async () => { if (a.onClick) { const r = await a.onClick(); if (r === false) return; } close(a.value); } }));
-    dlg.append(h("h2", { id: titleId }, title), describe ? h("p", { class: "muted small" }, describe) : null, content || null, bar);
+    for (const a of actions) {
+      const b = btn({ label: a.label, kind: a.kind || "", disabled: a.disabled, onClick: async () => { if (a.onClick) { const r = await a.onClick(); if (r === false) return; } close(a.value); } });
+      if (a.id) buttons[a.id] = b;
+      bar.append(b);
+    }
+    dlg.append(...[h("h2", { id: titleId }, title), describe ? h("p", { class: "muted small" }, describe) : null, content, bar].filter(Boolean));            // Node.append(null) sẽ chèn chữ "null"
     dlg.addEventListener("cancel", (ev) => { ev.preventDefault(); close(undefined); });
     dlg.addEventListener("close", () => { dlg.remove(); if (opener && opener.isConnected) opener.focus(); });
     document.getElementById("dialogs").append(dlg);
     dlg.showModal();
     motion.dialogIn(dlg);
+    onOpen?.({ close, buttons, dialog: dlg });
     (dlg.querySelector("[autofocus], input, select, textarea") || bar.lastElementChild)?.focus();
   });
 }

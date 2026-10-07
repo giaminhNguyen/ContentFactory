@@ -9,6 +9,7 @@ import { jobStatus } from "../status.js";
 import { relTime, pct } from "../format.js";
 import { actionsFor } from "./_jobrow.js";
 import { BATCH_STATUS_LABEL, ACTION_TEXT, batchAction, countChips, externalLink } from "./_batch_ui.js";
+import { openTargetDialog } from "./_job_edit.js";
 
 const PAGE = 50;
 const TABS = [["all", "Tất cả"], ["running", "Đang chạy"], ["queued", "Chờ"], ["paused", "Tạm dừng"], ["attention", "Cần xử lý"], ["completed", "Hoàn tất"]];
@@ -189,49 +190,19 @@ export async function mount(root, ctx) {
     });
   }
 
-  // ---------- cập nhật pipeline cho nhiều video ----------
+  // ---------- cập nhật pipeline cho nhiều video (đổi ĐÍCH, cùng thao tác với Sửa job) ----------
   async function openPipelineDialog(d) {
-    const sel = new Set(d.requested_stages);
-    const rows = h("div", { class: "stage-pick", role: "group", "aria-label": "Các bước muốn có kết quả" });
-    const problems = h("div", { class: "stack", "aria-live": "polite" });
     const scopeSel = select({ options: SCOPES.filter(([k]) => k !== "selected" || picked.size), value: "unfinished" });
-    let seq = 0;
-    const apply = (el, st) => {
-      const fixed = st.state === "locked" || st.state === "provided" || (st.state === "selected" && st.by.length > 0);
-      el.dataset.role = st.state;
-      el._cb.checked = st.state === "selected" || st.state === "locked";
-      el._cb.disabled = fixed;
-      el.querySelector(".s-tag").replaceChildren(...({ locked: [icon("lock", { size: 14 }), "Bắt buộc"], provided: [icon("refresh", { size: 14 }), "Dùng lại"], selected: [icon("check", { size: 14 }), "Đã chọn"] }[st.state] || []));
-      el.querySelector(".s-why").textContent = st.state === "not_requested" ? "" : st.reason;
-    };
-    async function refresh() {
-      const my = ++seq;
-      let r;
-      try { r = await api.post("/api/pipeline/plan", { pipeline_spec: { version: 2, requested_stages: [...sel] }, input_kind: "youtube_url" }); } catch (e) { return; }
-      if (my !== seq) return;
-      clear(problems);
-      if (!r.ok) problems.append(alertBox({ tone: "wait", title: r.errors[0] }));
-      patchList(rows, r.stages, (s) => s.id, (s) => {
-        const cb = h("input", { type: "checkbox", id: `bp-${s.id}` });
-        cb.addEventListener("change", () => { if (cb.checked) sel.add(s.id); else sel.delete(s.id); refresh(); });
-        const el = h("label", { class: "pick-row", for: cb.id }, cb, h("span", { class: "s-label" }, s.label), h("span", { class: "s-tag" }), h("span", { class: "s-why" }));
-        el._cb = cb;
-        apply(el, s);
-        return el;
-      }, apply);
-    }
-    refresh();
-    const content = h("div", { class: "stack" }, h("p", { class: "muted small" }, `Áp dụng cho các video của Channel Run theo phạm vi bên dưới. Mỗi video được kiểm riêng: video đã hoàn tất không bị đổi tại chỗ (dùng “Chạy lại với thay đổi” ở trang video), video lỗi hoặc không hợp lệ được báo rõ.`),
-      rows, problems, h("label", { class: "field" }, h("span", { class: "label" }, "Áp dụng cho"), scopeSel));
-    await openDialog({ title: "Cập nhật pipeline của Channel Run", wide: true, content, actions: [{ label: "Hủy", value: null }, { label: "Áp dụng", kind: "primary", value: "ok", onClick: async () => {
-      try {
-        const r = await api.post(`/api/batches/${id}/pipeline-revisions`, { pipeline: { requested_stages: [...sel] }, scope: scopeSel.value, job_ids: scopeSel.value === "selected" ? [...picked] : undefined });
-        const c = r.counts;
-        toast({ title: `Đã áp dụng cho ${c.applied + c.pending} video`, message: [c.rejected ? `${c.rejected} video bị từ chối` : "", c.skipped ? `${c.skipped} video bỏ qua (đã xong/đã hủy)` : ""].filter(Boolean).join("; "), tone: c.rejected ? "wait" : "done" });
-        after();
-        return true;
-      } catch (e) { toastError(e, "Chưa cập nhật được"); return false; }
-    } }] });
+    const r = await openTargetDialog({ title: "Cập nhật pipeline của Channel Run",
+      intro: "Chọn bước mà các video sẽ chạy đến rồi dừng. Mỗi video được kiểm riêng: bước video đã chạy tới không bị lùi lại; video đã hoàn tất lưu pipeline mới và chờ bạn bấm “Chạy tiếp” ở trang video; video không hợp lệ được báo rõ.",
+      extra: h("label", { class: "field" }, h("span", { class: "label" }, "Áp dụng cho"), scopeSel) });
+    if (!r) return;
+    try {
+      const x = await api.post(`/api/batches/${id}/target`, { target_stage: r.target_stage, scope: scopeSel.value, job_ids: scopeSel.value === "selected" ? [...picked] : undefined });
+      const c = x.counts;
+      toast({ title: `Đã áp dụng cho ${c.applied} video`, message: [c.unchanged ? `${c.unchanged} video không đổi` : "", c.rejected ? `${c.rejected} video bị từ chối` : "", c.skipped ? `${c.skipped} video bỏ qua (đã hủy)` : ""].filter(Boolean).join("; "), tone: c.rejected ? "wait" : "done" });
+      after();
+    } catch (e) { toastError(e, "Chưa cập nhật được"); }
   }
 
   poller.start();

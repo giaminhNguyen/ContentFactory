@@ -7,7 +7,8 @@ import { createPoller } from "../poller.js";
 import { jobStatus, stageState, timelineState, ACTION_LABEL, BRANCH_LABEL, PART_STATE } from "../status.js";
 import { relTime, duration } from "../format.js";
 import { openOutput, pauseJob, resumeJob, retryJob, setAutoResume } from "../actions.js";
-import { openPipelineDialog, openClone, confirmCancel, openRerollThumbnail } from "./_job_control.js";
+import { openClone, confirmCancel, openRerollThumbnail } from "./_job_control.js";
+import { openEditJob } from "./_job_edit.js";
 import { openProsodyDialog } from "./_prosody.js";
 import { externalLink } from "./_batch_ui.js";
 import * as motion from "../motion.js";
@@ -53,8 +54,8 @@ export async function mount(root, ctx) {
   // ---------- vẽ ----------
   function paint(d) {
     document.title = `${d.title} · ContentFactory`;
-    sig("head", [d.title, d.status, d.channel, d.created_at, JSON.stringify(d.actions), d.control?.pausing, JSON.stringify(d.links), JSON.stringify(d.batch)], () => paintHead(d));
-    sig("alert", [d.status, JSON.stringify(d.diagnosis.hold), d.diagnosis.human, d.diagnosis.resume.actions.join(), d.diagnosis.attempts, d.diagnosis.resume.text], () => paintAlert(d));
+    sig("head", [d.title, d.status, d.channel, d.created_at, JSON.stringify(d.actions), d.control?.pausing, JSON.stringify(d.links), JSON.stringify(d.batch), d.edit?.awaiting_run], () => paintHead(d));
+    sig("alert", [d.status, d.edit?.awaiting_run, d.edit?.awaiting_text, JSON.stringify(d.diagnosis.hold), d.diagnosis.human, d.diagnosis.resume.actions.join(), d.diagnosis.attempts, d.diagnosis.resume.text], () => paintAlert(d));
     sig("auto", [d.auto_resume, d.status], () => paintAuto(d));
     sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
     sig("thumb", [JSON.stringify(d.thumbnail), d.pending_revision?.revision], () => paintThumb(d));
@@ -71,12 +72,12 @@ export async function mount(root, ctx) {
       h("div", { class: "grow" }, h("h1", { id: "page-title" }, d.title), h("p", { class: "muted" }, `Job #${d.id} · Kênh ${d.channel} · tạo ${relTime(d.created_at)}`),
         d.batch ? h("p", { class: "small" }, icon("tv", { size: 14 }), " Thuộc ", h("a", { href: `#/batches/${d.batch.id}` }, `Channel Run ${d.batch.title}`), d.batch.position ? ` (video #${d.batch.position})` : "") : null,
         linkRow(d.links)),
-      h("div", { class: "row" }, bd, live, controlBtn(d), d.output?.project_dir ? openBtn(d) : null)));
+      h("div", { class: "row" }, bd, live, controlBtn(d), editBtn(d), d.output?.project_dir ? openBtn(d) : null)));
   }
   // Nút điều khiển chính theo ngữ cảnh: Tạm dừng (job đang sống) hoặc Tiếp tục (đã tạm dừng). Hủy nằm ở "Thao tác nâng cao" vì không hoàn tác được.
   function controlBtn(d) {
     if (d.actions?.unpause) {
-      const b = btn({ label: ACTION_LABEL.resume, icon: "play", kind: "primary" });
+      const b = btn({ label: d.edit?.awaiting_run ? "Chạy tiếp" : ACTION_LABEL.resume, icon: "play", kind: "primary" });
       b.addEventListener("click", () => resumeJob(d.id, b, { after }));
       return b;
     }
@@ -86,6 +87,14 @@ export async function mount(root, ctx) {
       return b;
     }
     return null;
+  }
+
+  // “Sửa job”: Cập nhật pipeline (đổi đích theo progress floor) + Xóa job. Một lối vào duy nhất — không còn nút “Cập nhật pipeline” riêng.
+  function editBtn(d) {
+    if (!d.actions?.edit) return null;
+    const b = btn({ label: "Sửa job", icon: "settings", title: "Cập nhật pipeline hoặc xóa job" });
+    b.addEventListener("click", () => openEditJob(d, { after, navigate: ctx.navigate }).catch((e) => toastError(e)));
+    return b;
   }
 
   // Ảnh thumbnail đã chốt từ Image Pool (nếu kênh dùng pool): ảnh + nguồn + lý do + “Đổi ảnh” (tắt kèm lý do khi job đã kết thúc).
@@ -118,11 +127,10 @@ export async function mount(root, ctx) {
           s.will_run.length ? h("div", { class: "small" }, "Sẽ chạy: " + s.will_run.join(", ")) : null) }));
     }
     const tools = h("div", { class: "row" });
-    if (a.update) tools.append(btn({ label: "Cập nhật pipeline…", icon: "layers", size: "sm", onClick: () => openPipelineDialog(d, { after }).catch((e) => toastError(e)) }));
     if (a.prosody) tools.append(btn({ label: "Nhịp đọc…", icon: "mic", size: "sm", onClick: () => openProsodyDialog(d, { after, navigate: ctx.navigate }).catch((e) => toastError(e)) }));
     if (a.clone) tools.append(btn({ label: "Chạy lại với thay đổi…", icon: "refresh", size: "sm", onClick: () => openClone(d, { navigate: ctx.navigate }).catch((e) => toastError(e)) }));
     if (a.cancel) tools.append(btn({ label: "Hủy job…", icon: "x", size: "sm", kind: "danger", onClick: () => confirmCancel(d, { after }) }));
-    if (tools.childElementCount) box.append(disclosure({ label: "Thao tác nâng cao", content: h("div", { class: "stack", style: "padding-top: var(--s-2)" }, h("p", { class: "muted small" }, d.status === "completed" || d.status === "cancelled" || d.status === "failed" ? "Job đã kết thúc: kết quả cũ không bị thay đổi tại chỗ." : `Pipeline hiện tại: bản ${d.pipeline_revision}. Thay đổi chỉ áp dụng ở điểm an toàn và chỉ chạy lại phần bị ảnh hưởng.`), tools) }));
+    if (tools.childElementCount) box.append(disclosure({ label: "Thao tác nâng cao", content: h("div", { class: "stack", style: "padding-top: var(--s-2)" }, h("p", { class: "muted small" }, d.status === "completed" || d.status === "cancelled" || d.status === "failed" ? "Job đã kết thúc: kết quả cũ không bị thay đổi tại chỗ." : "Thay đổi chỉ áp dụng ở điểm an toàn và chỉ chạy lại phần bị ảnh hưởng."), tools) }));
     if (box.childElementCount) controlHost.append(h("section", { class: "card stack" }, box));
   }
   // Link YouTube do backend trả (đã kiểm https + host); mở tab mới với noopener.
@@ -143,6 +151,12 @@ export async function mount(root, ctx) {
       const ok = icon("check-circle", { size: 22 });
       alertHost.append(h("div", { class: "alert", dataset: { tone: "done" } }, ok, h("div", { class: "body" }, h("div", { class: "title" }, "Job đã hoàn tất"), h("div", null, d.output?.project_dir ? "Mọi thứ đã sẵn sàng trong thư mục output." : "Các bước đã chọn đã chạy xong."))));
       scope.add(() => motion.successMark(ok));
+      return;
+    }
+    if (d.edit?.awaiting_run) {                                                  // đã Lưu pipeline mới cho job đã xong: KHÔNG tự chạy, chờ người dùng
+      const go = btn({ label: "Chạy tiếp", icon: "play", size: "sm", kind: "primary" });
+      go.addEventListener("click", () => resumeJob(d.id, go, { after }));
+      alertHost.append(alertBox({ tone: "info", title: "Có bước mới chưa chạy", body: d.edit.awaiting_text, actions: [go] }));
       return;
     }
     if (!TONE[d.status]) return;

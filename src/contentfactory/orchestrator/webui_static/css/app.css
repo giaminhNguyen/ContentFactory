@@ -201,6 +201,28 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pick-row .s-label { font-weight: 600; }
 .pick-row .s-tag { display: inline-flex; gap: var(--s-1); align-items: center; font-size: var(--fs-xs); font-weight: 600; }
 .pick-row .s-why { color: var(--muted); font-size: var(--fs-sm); }
+/* Sửa job (Cập nhật pipeline + Vùng nguy hiểm). Bước bị khóa vẫn hiện kèm lý do bằng chữ (không chỉ màu); chuyển động chỉ transform/opacity (motion.js). */
+.edit-steps { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--r-2); overflow: hidden; background: var(--surface); }
+.step-row { position: relative; display: grid; grid-template-columns: auto auto minmax(0, 1fr); column-gap: var(--s-3); row-gap: 2px; align-items: center; padding: var(--s-3) var(--s-4); min-height: 48px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.step-row:last-child { border-bottom: 0; }
+.step-row:hover:not([data-disabled="true"]) { background: var(--surface-2); }
+.step-row[data-selected="true"] { background: var(--st-running-bg); }
+.step-row[data-selected="true"]::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+.step-row[data-disabled="true"] { cursor: not-allowed; color: var(--muted); }
+.step-row:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; }
+.step-row input { margin: 0; width: 18px; height: 18px; accent-color: var(--accent); }
+.step-mark { display: inline-flex; color: var(--muted); }
+.step-mark[data-tone="done"] { color: var(--st-done-fg); } .step-mark[data-tone="running"] { color: var(--st-running-fg); }
+.step-mark[data-tone="wait"] { color: var(--st-wait-fg); } .step-mark[data-tone="fail"] { color: var(--st-fail-fg); }
+.step-main { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-3); align-items: center; min-width: 0; }
+.step-name { font-weight: 650; }
+.step-tags { display: inline-flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; font-size: var(--fs-sm); color: var(--muted); }
+.step-note { grid-column: 3; font-size: var(--fs-sm); color: var(--muted); }
+.step-note:empty { display: none; }
+.edit-effect { display: flex; gap: var(--s-2); align-items: flex-start; padding: var(--s-3) var(--s-4); border-radius: var(--r-1); background: var(--surface-2); border: 1px solid var(--border); font-size: var(--fs-sm); min-height: 48px; }
+.edit-effect svg { flex: none; margin-top: 2px; }
+.danger-zone { display: flex; gap: var(--s-4); justify-content: space-between; align-items: center; flex-wrap: wrap; padding: var(--s-4); border: 1px solid var(--danger); border-radius: var(--r-2); background: var(--danger-bg); }
+.danger-zone h3 { color: var(--danger); }
 .preflight { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-1); }
 .preflight li { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline; }
 .preflight li svg { align-self: center; flex: none; }
