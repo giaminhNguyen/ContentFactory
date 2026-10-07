@@ -11,7 +11,7 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from contentfactory.contracts import StageError
+from contentfactory.contracts import StageError, clean_title
 from contentfactory.jobs import pipeline as P
 from contentfactory.orchestrator.config import load_config
 from contentfactory.orchestrator.runner import Orchestrator
@@ -293,7 +293,7 @@ class RunTest(UiCase):
     def test_blank_title_is_auto_generated_from_file_or_folder(self):
         named = self.root / "Đêm_mưa_ở_làng.txt"
         named.write_text(self.story_file().read_text(encoding="utf-8"), encoding="utf-8")
-        for path, want in ((named, "Đêm mưa ở làng"), (self.story_file(), self.root.name)):                     # story.txt quá chung chung ⇒ tên thư mục
+        for path, want in ((named, "Đêm mưa ở làng"), (self.story_file(), clean_title(self.root.name))):                     # story.txt quá chung chung ⇒ tên thư mục
             params, _ = self.svc._spec(self.svc.detect_input(str(path), "story_text"), "tts_only", "  ", "kenh", None, None)
             self.assertEqual((params["project"]["title"], params["project"]["title_source"]), (want, "auto"))
         params, _ = self.svc._spec(self.svc.detect_input(str(named), "story_text"), "tts_only", "Tên tôi đặt", "kenh", None, None)
