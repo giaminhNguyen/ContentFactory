@@ -87,19 +87,17 @@ class LegacyCompatTest(RootCase):
         jid = orc.submit(params(channel="kenh_cu"), pipeline=spec("render_youtube"))
         self.assertNotIn("thumbnail_source", orc.store.get_job(jid)["params"])
 
-    def test_old_job_snapshot_of_an_archived_template_version_keeps_resolving(self):
+    def test_old_job_snapshot_of_a_deleted_template_keeps_rendering(self):
         orc = self.orc()
         api = orc.adapters["render"].templates
         api.create_draft(type="thumbnail", id="thumb_cu", name="Cũ")
-        api.publish(id="thumb_cu", version=1)
         write_channel(self.root, "kenh_t", {"name": "T", "publishing": {"made_for_kids": False}, "templates": {"thumbnail": "thumb_cu"}})
         jid = orc.submit(params(channel="kenh_t"), pipeline=spec("render_youtube"))
         snap = orc.store.get_job(jid)["params"]["templates"]["thumbnail"]
         self.assertEqual((snap["id"], snap["version"]), ("thumb_cu", 1))
-        orc.adapters["render"].templates.archive(id="thumb_cu")                          # lưu trữ SAU khi job đã chốt version
+        orc.adapters["render"].templates.delete_template(id="thumb_cu")                  # xoá template SAU khi job đã chốt snapshot
         orc.run()
-        self.assertEqual(orc.store.get_job(jid)["state"], P.BY_NAME["render_youtube"].done_state)            # job cũ vẫn dựng được đúng version đã chốt
-        self.assertEqual(orc.adapters["render"].templates.resolve(id="thumb_cu", policy=1)["version"], 1)
+        self.assertEqual(orc.store.get_job(jid)["state"], P.BY_NAME["render_youtube"].done_state)            # job cũ vẫn dựng được từ snapshot
 
     def test_output_package_without_newer_fields_is_still_readable(self):
         orc = self.orc()
@@ -191,30 +189,23 @@ class CrashRestartTest(PoolCase):
 
 # =============================================================================================== 13.3 đồng thời / idempotency
 class ConcurrencyTest(UiCase):
-    def test_double_template_publish_and_archive_are_idempotent_under_threads(self):
+    def test_double_template_delete_is_idempotent_under_threads(self):
         from contentfactory.orchestrator.service_templates import TemplateService
         ts = TemplateService(self.o)
         ts.create("thumbnail", "thumb_dbl", "Dbl")
         out, errs = [], []
 
-        def pub():
+        def rm():
             try:
-                out.append(ts.publish("thumb_dbl", 1))
+                out.append(ts.delete("thumb_dbl"))
             except Exception as e:                                                          # noqa: BLE001
                 errs.append(repr(e))
-        t = [threading.Thread(target=pub) for _ in range(4)]
+        t = [threading.Thread(target=rm) for _ in range(4)]
         [x.start() for x in t]
         [x.join() for x in t]
         self.assertEqual(errs, [])
-        self.assertEqual({r["status"] for r in out}, {"published"})
-        self.assertEqual(sum(1 for r in out if r.get("changed")), 1)                       # đúng MỘT lần thật sự đổi trạng thái
-        arch = []
-        t = [threading.Thread(target=lambda: arch.append(ts.archive("thumb_dbl"))) for _ in range(4)]
-        [x.start() for x in t]
-        [x.join() for x in t]
-        self.assertEqual(len(arch), 4)
-        row = next(r for r in ts.overview(None, True)["templates"] if r["id"] == "thumb_dbl")
-        self.assertEqual([v["status"] for v in row["versions"]], ["archived"])
+        self.assertEqual(sum(1 for r in out if not r.get("already_deleted")), 1)           # đúng MỘT lần xoá thật, còn lại an toàn
+        self.assertNotIn("thumb_dbl", [r["id"] for r in ts.overview(None)["templates"]])
 
     def test_double_run_from_two_threads_makes_one_job(self):
         res, errs = [], []

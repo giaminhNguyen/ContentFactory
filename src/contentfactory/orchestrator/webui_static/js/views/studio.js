@@ -1,5 +1,5 @@
 // Template Studio: sửa MỘT template (cùng schema mà ContentFlow render). Lớp, canvas kéo/thả, thuộc tính, Hoàn tác/Làm lại,
-// Lưu nháp, Kiểm tra, Xem trước, Render thử, Publish. Bản đã publish/có sẵn chỉ xem; muốn sửa thì tạo bản nháp mới (version mới) hoặc nhân bản.
+// Lưu, Kiểm tra, Xem trước, Render thử, Chọn cho kênh. Không còn nháp/publish: template của bạn sửa tại chỗ và dùng được ngay; bản có sẵn chỉ xem (Nhân bản để sửa).
 import { api, forgetBlob } from "../api.js";
 import { h, clear, loadCss, uid } from "../dom.js";
 import { icon } from "../icons.js";
@@ -7,7 +7,6 @@ import { btn, busy, field, input, select, switchCtl, badge, alertBox, emptyState
 import * as motion from "../motion.js";
 import * as L from "../templates_logic.js";
 import { assetPicker, openAssetLibrary, IMAGE_ASSET_TYPES } from "../asset_lib.js";
-import { statusBadges } from "./templates.js";
 
 const KIND = { image: "Hình ảnh", photo: "Ảnh nhân vật", source_video: "Video nguồn", text: "Chữ" };
 const KIND_ICON = { image: "image", photo: "image", source_video: "film", text: "file" };
@@ -33,7 +32,7 @@ export async function mount(root, ctx) {
   const stageNodes = new Map(), binders = [];
   const urlsToForget = new Set();
 
-  const readOnly = () => !doc || doc.status !== "draft" || meta?.scope === "builtin";
+  const readOnly = () => !doc || meta?.scope === "builtin";
   const dirty = () => !!doc && L.isDirty(doc, base);
   const canvasOf = () => doc.canvas;
 
@@ -127,24 +126,23 @@ export async function mount(root, ctx) {
   document.addEventListener("keydown", onKey);
 
   // ================================================================================ thanh công cụ
-  let saveB, undoB, redoB, valB, prevB, testB, pubB, zoomSel, prevSw, moreB, delB;
+  let saveB, undoB, redoB, valB, prevB, testB, chanB, zoomSel, prevSw, moreB;
   function buildToolbar() {
     clear(toolbar);
-    saveB = btn({ label: "Lưu nháp", icon: "save", kind: "primary", onClick: () => save() });
+    saveB = btn({ label: "Lưu", icon: "save", kind: "primary", onClick: () => save() });
     undoB = btn({ icon: "undo", label: "Hoàn tác", onClick: () => undoRedo(-1), title: "Hoàn tác (Ctrl+Z)" });
     redoB = btn({ icon: "redo", label: "Làm lại", onClick: () => undoRedo(+1), title: "Làm lại (Ctrl+Shift+Z)" });
     valB = btn({ icon: "check-circle", label: "Kiểm tra", onClick: () => runValidate() });
     prevB = btn({ icon: "eye", label: "Xem trước", onClick: () => runPreview(), title: "Dựng ảnh xem trước bằng bộ render thật của ContentFlow" });
     testB = btn({ icon: "play", label: "Render thử", onClick: () => runTestRender(), title: "Render thật một mẫu ngắn (có thể mất vài giây)" });
-    pubB = btn({ icon: "upload", label: "Publish", kind: "primary", onClick: () => publish() });
+    chanB = btn({ icon: "upload", label: "Chọn cho kênh", kind: "primary", onClick: () => useInChannel(), title: "Lưu rồi chọn template này làm thumbnail/video của một kênh" });
     zoomSel = select({ options: [["fit", "Vừa khung"], ["0.5", "50%"], ["1", "100%"], ["2", "200%"]], value: zoom, onChange: (v) => { zoom = v; layoutStage(); } });
     zoomSel.setAttribute("aria-label", "Thu phóng canvas (chỉ là hiển thị, không đổi kích thước thật)");
     prevSw = switchCtl({ label: "Hiện ảnh xem trước", checked: showPreview, onChange: (v) => { showPreview = v; hidByUser = !v; renderStage(); } });
     prevSw.input.disabled = true;
     moreB = btn({ icon: "dot", label: "Thêm", onClick: () => openMore() });
-    delB = meta.scope === "user" && doc.status === "draft" ? btn({ icon: "trash", label: "Xoá bản nháp", kind: "danger", onClick: () => deleteDraft(), title: "Xoá bản nháp này (có xác nhận); bản đã publish không bị ảnh hưởng" }) : null;
     toolbar.append(h("div", { class: "row" }, saveB, undoB, redoB), h("span", { class: "st-sep", "aria-hidden": "true" }), h("div", { class: "row" }, valB, prevB, testB),
-      h("span", { class: "st-sep", "aria-hidden": "true" }), pubB, delB, moreB, h("div", { class: "row st-zoom" }, h("label", { class: "small muted", for: "st-zoom" }, "Thu phóng"), zoomSel, prevSw));
+      h("span", { class: "st-sep", "aria-hidden": "true" }), chanB, moreB, h("div", { class: "row st-zoom" }, h("label", { class: "small muted", for: "st-zoom" }, "Thu phóng"), zoomSel, prevSw));
     zoomSel.id = "st-zoom";
   }
   function updateToolbar() {
@@ -154,7 +152,7 @@ export async function mount(root, ctx) {
     saveB.title = ro ? "Bản này không sửa được." : dirty() ? "" : "Chưa có thay đổi.";
     undoB.disabled = ro || !history.canUndo();
     redoB.disabled = ro || !history.canRedo();
-    pubB.disabled = ro || saving;
+    chanB.disabled = saving;
     const te = src?.test_render;
     testB.disabled = testRunning || (!!te && !te.enabled);
     testB.title = te && !te.enabled ? te.reason : "Render thật bằng ContentFlow: thumbnail → ảnh, video → clip ~2 giây. Khác “Xem trước” (nhanh, chỉ dựng ảnh).";
@@ -174,13 +172,11 @@ export async function mount(root, ctx) {
   // ================================================================================ tiêu đề + banner
   function renderTitle() {
     clear(titleHost);
-    const vsel = select({ options: meta.versions.map((v) => [String(v.version), `v${v.version} · ${{ draft: "bản nháp", published: "đã publish", archived: "đã lưu trữ" }[v.status] || v.status}`]), value: String(doc.version) });
+    const vsel = select({ options: meta.versions.map((v) => [String(v.version), `v${v.version}`]), value: String(doc.version) });
     vsel.setAttribute("aria-label", "Chọn version");
     vsel.addEventListener("change", async () => { if (await confirmLeave()) load(Number(vsel.value)); else vsel.value = String(doc.version); });
-    const row = { id: tid, scope: meta.scope, latest_published: meta.versions.filter((v) => v.status === "published").at(-1)?.version, draft: meta.versions.find((v) => v.status === "draft")?.version };
-    titleHost.append(pageHead(doc.name || tid, null, h("div", { class: "row" }, btn({ label: "Danh sách", icon: "layout", href: "#/templates", kind: "ghost" }), vsel)));
+    titleHost.append(pageHead(doc.name || tid, null, h("div", { class: "row" }, btn({ label: "Danh sách", icon: "layout", href: "#/templates", kind: "ghost" }), meta.versions.length > 1 ? vsel : null)));
     const sub = h("div", { class: "row st-sub" }, h("span", { class: "mono small muted" }, tid), h("span", { class: "chip" }, doc.type === "thumbnail" ? "Thumbnail" : "Video"),
-      badge({ tone: { draft: "wait", published: "done", archived: "queue" }[doc.status] || "queue", icon: doc.status === "draft" ? "file" : doc.status === "published" ? "check-circle" : "folder", label: { draft: "Bản nháp", published: "Đã publish", archived: "Đã lưu trữ" }[doc.status] || doc.status }),
       meta.scope === "builtin" ? badge({ tone: "off", icon: "lock", label: "Có sẵn" }) : null,
       h("span", { class: "chip warn st-dirty", hidden: true }, "Chưa lưu"),
       meta.used_by?.length ? h("span", { class: "small muted" }, `Kênh đang dùng: ${meta.used_by.map((u) => u.channel).join(", ")}`) : null);
@@ -190,17 +186,9 @@ export async function mount(root, ctx) {
   function renderBanner() {
     clear(banner);
     if (!readOnly()) return;
-    const openDraft = meta.versions.find((v) => v.status === "draft");
     if (meta.scope === "builtin") {
       banner.append(alertBox({ tone: "info", title: "Template có sẵn của ContentFlow — chỉ xem", body: "Nhân bản để có bản của bạn rồi chỉnh sửa tự do; bản gốc không bao giờ bị đổi.",
         actions: [btn({ label: "Nhân bản để sửa", icon: "copy", kind: "primary", size: "sm", onClick: () => openDuplicate() })] }));
-    } else if (doc.status === "draft") {
-      banner.append(alertBox({ tone: "info", title: "Chỉ xem", body: "Không sửa được bản nháp này." }));
-    } else {
-      banner.append(alertBox({ tone: "info", title: `Version ${doc.version} đã ${doc.status === "archived" ? "lưu trữ" : "publish"} — chỉ xem`,
-        body: "Version đã publish không bao giờ bị sửa để các job đã tạo luôn dựng lại đúng như cũ. Muốn đổi, hãy tạo bản nháp mới (version kế tiếp).",
-        actions: [openDraft ? btn({ label: `Mở bản nháp v${openDraft.version}`, icon: "file", kind: "primary", size: "sm", onClick: () => confirmLeave().then((ok) => ok && load(openDraft.version)) })
-          : btn({ label: "Tạo bản nháp mới để sửa", icon: "plus", kind: "primary", size: "sm", onClick: (e) => newDraft(e.currentTarget) })] }));
     }
   }
 
@@ -522,7 +510,7 @@ export async function mount(root, ctx) {
   }
   function layoutAfterCanvas() { renderStage(); }
 
-  // ================================================================================ lưu / kiểm tra / xem trước / render thử / publish
+  // ================================================================================ lưu / kiểm tra / xem trước / render thử / chọn cho kênh
   function collectIssues() {
     issueIds = new Map();
     for (const it of [...(validation?.errors || []), ...(validation?.warnings || [])]) {
@@ -547,11 +535,11 @@ export async function mount(root, ctx) {
         base = L.clone(r.template);
         validation = r.validation;
         meta.checksum = r.checksum;
-        if (!quiet) toast({ title: "Đã lưu bản nháp", message: r.validation?.ok ? "Bố cục hợp lệ." : `Còn ${r.validation?.errors?.length || 0} lỗi cần sửa trước khi publish.`, tone: r.validation?.ok ? "done" : "wait" });
+        if (!quiet) toast({ title: "Đã lưu", message: r.validation?.ok ? "Bố cục hợp lệ." : `Còn ${r.validation?.errors?.length || 0} lỗi cần sửa trước khi kênh dùng được.`, tone: r.validation?.ok ? "done" : "wait" });
         ok = true;
       } catch (e) {
         toastError(e, "Chưa lưu được");
-        if (e.status === 404 || e.code === "TEMPLATE_IMMUTABLE") await load(doc.version);   // trạng thái phía máy chủ đã đổi: nạp lại
+        if (e.status === 404) await load(doc.version);   // trạng thái phía máy chủ đã đổi: nạp lại
       }
     });
     saving = false;
@@ -709,20 +697,11 @@ export async function mount(root, ctx) {
     }
   }
 
-  async function publish() {
-    if (readOnly() || saving) return;
-    if (!(await save({ quiet: true }))) return;
-    if (validation && !validation.ok) { toast({ title: "Chưa publish được", message: `Còn ${validation.errors.length} lỗi bố cục — sửa rồi thử lại.`, tone: "wait" }); collectIssues(); return; }
-    const ok = await confirmDialog({ title: `Publish version ${doc.version}?`, body: "Sau khi publish, version này KHÔNG sửa được nữa (job đã tạo luôn dựng lại đúng như cũ) và có thể được kênh chọn. Muốn đổi, bạn tạo bản nháp mới.", confirmLabel: "Publish" });
-    if (!ok) return;
-    await busy(pubB, async () => {
-      try {
-        const r = await api.post(`/api/templates/${tid}/${doc.version}/publish`, {});
-        toast({ title: `Đã publish v${r.version}`, tone: "done" });
-        await load(r.version);
-        offerChannels();
-      } catch (e) { toastError(e, "Chưa publish được"); if (e.code === "TEMPLATE_INVALID") { await runValidate(); } }
-    });
+  async function useInChannel() {
+    if (saving) return;
+    if (!readOnly() && !(await save({ quiet: true }))) return;
+    if (validation && !validation.ok) { toast({ title: "Chưa chọn được cho kênh", message: `Còn ${validation.errors.length} lỗi bố cục — sửa rồi thử lại.`, tone: "wait" }); collectIssues(); return; }
+    await offerChannels();
   }
 
   async function offerChannels() {
@@ -732,18 +711,11 @@ export async function mount(root, ctx) {
     const defKey = doc.type === "video" && doc.canvas.height > doc.canvas.width ? "tiktok_video" : keys[0][0];
     const chSel = select({ options: chans.map((c) => [c.id, c.name || c.id]) });
     const kSel = select({ options: keys, value: defKey });
-    const r = await openDialog({ title: "Chọn template này cho một kênh?", describe: "Kênh luôn dùng bản publish mới nhất; job đã tạo giữ đúng version lúc tạo.", content: h("div", { class: "stack" }, field({ label: "Kênh", control: chSel }), field({ label: "Dùng làm", control: kSel })),
-      actions: [{ label: "Để sau", value: false }, { label: "Chọn cho kênh", kind: "primary", value: true, onClick: async () => {
+    const r = await openDialog({ title: "Chọn template này cho một kênh?", describe: "Kênh luôn dùng bản hiện tại của template; job đã tạo giữ bản sao lúc tạo nên không đổi.", content: h("div", { class: "stack" }, field({ label: "Kênh", control: chSel }), field({ label: "Dùng làm", control: kSel })),
+      actions: [{ label: "Huỷ", value: false }, { label: "Chọn cho kênh", kind: "primary", value: true, onClick: async () => {
         try { await api.put(`/api/channels/${chSel.value}/templates`, { key: kSel.value, template_id: tid, version_policy: "latest_published" }); } catch (e) { toastError(e, "Chưa chọn được"); return false; }
       } }] });
     if (r) { toast({ title: "Đã chọn cho kênh", message: `${chSel.options[chSel.selectedIndex].text}`, tone: "done" }); meta.used_by = [...(meta.used_by || []), { channel: chSel.value, key: kSel.value }]; renderTitle(); updateToolbar(); }
-  }
-
-  async function newDraft(button) {
-    await busy(button, async () => {
-      try { const r = await api.post(`/api/templates/${tid}/new-draft`, { from_version: doc.version }); toast({ title: `Đã tạo bản nháp v${r.template.version}`, tone: "done" }); await load(r.template.version); }
-      catch (e) { toastError(e, "Chưa tạo được bản nháp"); if (e.code === "DRAFT_EXISTS") await load(); }
-    });
   }
 
   async function openDuplicate() {
@@ -764,35 +736,15 @@ export async function mount(root, ctx) {
   let dupTarget = null;
 
   async function openMore() {
-    const ro3 = readOnly();
     const content = h("div", { class: "stack st-more" },
       btn({ label: "Nhân bản template này", icon: "copy", onClick: () => { dlg.close(); openDuplicate(); } }),
       btn({ label: "Thư viện asset (xem, tải lên, xoá)", icon: "image", onClick: () => { dlg.close(); openAssetLibrary({ title: "Thư viện asset" }); } }),
-      ro3 && meta.scope !== "builtin" && doc.status !== "draft" && !meta.versions.some((v) => v.status === "draft") ? btn({ label: "Tạo bản nháp mới (version kế tiếp)", icon: "plus", onClick: (e) => { dlg.close(); newDraft(e.currentTarget); } }) : null,
-      meta.scope === "user" && doc.status === "draft" ? btn({ label: "Xoá bản nháp này", icon: "trash", kind: "danger", onClick: () => { dlg.close(); deleteDraft(); } }) : null,
-      meta.scope === "user" && meta.versions.some((v) => v.status === "published") ? btn({ label: "Lưu trữ template (ẩn khỏi kênh)", icon: "folder", kind: "danger", onClick: () => { dlg.close(); archive(); } }) : null,
       h("p", { class: "muted small" }, `Checksum nội dung: ${meta.checksum ? meta.checksum.slice(0, 12) : "—"}`));
     const dlg = h("dialog", { class: "dlg", "aria-label": "Thêm thao tác" }, h("h2", null, "Thao tác khác"), content, h("div", { class: "actions" }, btn({ label: "Đóng", onClick: () => dlg.close() })));
     dlg.addEventListener("close", () => dlg.remove());
     document.getElementById("dialogs").append(dlg);
     dlg.showModal();
     dlg.querySelector("button")?.focus();
-  }
-
-  async function archive() {
-    const used = meta.used_by?.length ? ` ${meta.used_by.length} kênh đang chọn template này: job mới của họ sẽ báo lỗi cho tới khi chọn template khác.` : "";
-    if (!(await confirmDialog({ title: "Lưu trữ template?", body: `Template không còn được đề xuất cho kênh; version cũ vẫn dùng được cho job đã tạo.${used}`, confirmLabel: "Lưu trữ", danger: true }))) return;
-    try { const r = await api.post(`/api/templates/${tid}/archive`, {}); toast({ title: "Đã lưu trữ", message: r.warning || undefined, tone: r.warning ? "wait" : "done", sticky: !!r.warning }); await load(doc.version); } catch (e) { toastError(e, "Chưa lưu trữ được"); }
-  }
-  async function deleteDraft() {
-    if (!(await confirmDialog({ title: "Xoá bản nháp?", body: `Xoá bản nháp v${doc.version}. Không thể khôi phục.`, confirmLabel: "Xoá", danger: true }))) return;
-    try {
-      await api.del(`/api/templates/${tid}/${doc.version}`);
-      base = L.clone(doc);
-      toast({ title: "Đã xoá bản nháp", tone: "done" });
-      const left = meta.versions.filter((v) => v.version !== doc.version);
-      if (left.length) await load(left.at(-1).version); else navigate("/templates");
-    } catch (e) { toastError(e, "Chưa xoá được"); }
   }
 
   // ================================================================================ dựng

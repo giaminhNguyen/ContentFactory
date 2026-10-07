@@ -171,7 +171,7 @@ Lệnh cơ bản:
   resume    tiếp tục job đang bị giữ (mất mạng, quota...) ; retry: chạy lại job lỗi
   doctor    kiểm tra máy đã sẵn sàng chưa và cần làm gì
   channels  danh sách kênh; channel-init <id>: tạo kênh mới (preset đầy đủ)
-  templates template thumbnail/video (ContentFlow): list, use <kênh> <khóa> <id>, publish, duplicate, test-render, migrate...
+  templates template thumbnail/video (ContentFlow): list, use <kênh> <khóa> <id>, delete, duplicate, test-render, migrate...
   setup / update / start / demo   cài đặt máy mới / cập nhật / chạy dịch vụ nền / chạy thử nhanh
 
 Lệnh nâng cao: cf --advanced -h   (submit, plan, run, config, pools, retry-part, sequences, cleanup, resources...)
@@ -265,9 +265,9 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     ci.add_argument("--kids", choices=["yes", "no"], default="no", help="made_for_kids của kênh (khai báo COPPA, mặc định no)")
     ci.add_argument("--last-used", type=int, default=0, help="số Full Audio đã đăng trước đó")
     ci.add_argument("--force", action="store_true")
-    tp = add("templates", "template thumbnail/video: list | show | use | validate | publish | archive | duplicate | preview | test-render | assets | migrate")
-    tp.add_argument("action", nargs="?", default="list", choices=["list", "show", "use", "validate", "publish", "archive", "duplicate", "preview", "test-render", "assets", "migrate"])
-    tp.add_argument("args", nargs="*", help="show/validate/archive/preview/test-render <id> | use <kênh> <khóa> <id> | publish <id> <version> | duplicate <id> <id mới>")
+    tp = add("templates", "template thumbnail/video: list | show | use | validate | delete | duplicate | preview | test-render | assets | migrate")
+    tp.add_argument("action", nargs="?", default="list", choices=["list", "show", "use", "validate", "delete", "duplicate", "preview", "test-render", "assets", "migrate"])
+    tp.add_argument("args", nargs="*", help="show/validate/delete/preview/test-render <id> | use <kênh> <khóa> <id> | duplicate <id> <id mới>")
     tp.add_argument("--version", help="số version hoặc latest_published (use: ghim version)")
     tp.add_argument("--type", choices=["thumbnail", "video"])
     tp.add_argument("--fallback", help="use: id template dự phòng (chỉ khi khai báo rõ ràng)")
@@ -342,8 +342,7 @@ def _templates_cmd(a: argparse.Namespace, root: Path) -> int:
             out = ops.list(a.type, include_archived=True)
             if not a.json:
                 for r in out:
-                    pub = f"v{r['latest_published']}" if r["latest_published"] else "-"
-                    print(f"{r['id']:22} {r['type']:9} {r['scope']:8} publish={pub:4} {'draft=v' + str(r['draft']) if r['draft'] else '':9} "
+                    print(f"{r['id']:22} {r['type']:9} {r['scope']:8} "
                           f"{(r['name'] or '')[:28]:28} {','.join(u['channel'] + ':' + u['key'] for u in r['used_by'])}")
                 return 0
         elif act == "show":
@@ -358,10 +357,8 @@ def _templates_cmd(a: argparse.Namespace, root: Path) -> int:
                     print(f"{x['level']:8} {x['message']}")
                 print("OK" if out["ok"] else "KHÔNG HỢP LỆ")
                 return 0 if out["ok"] else 1
-        elif act == "publish":
-            out = ops.api.publish(id=args[0], version=int(args[1]))
-        elif act == "archive":
-            out = ops.api.archive(id=args[0], version=int(a.version) if a.version else None)
+        elif act == "delete":
+            out = ops.api.delete_template(id=args[0])
         elif act == "duplicate":
             out = ops.api.duplicate(id=args[0], new_id=args[1])
         elif act in ("preview", "test-render"):

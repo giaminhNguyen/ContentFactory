@@ -37,12 +37,10 @@ def channel(root: Path, cid: str = "k", templates: dict | None = None, **extra) 
 
 
 def publish_new(api, tid: str, ttype: str = "video", versions: int = 1) -> None:
-    """Tạo template user `tid` và publish đủ `versions` version (v1..vN), đúng vòng đời thật: draft -> publish -> new_draft -> publish."""
+    """Tạo template user `tid` (dùng được ngay, không có bước publish). `versions` > 1 dựng thêm version kiểu dữ liệu CŨ (v2, v3…) để thử ghim version."""
     api.create_draft(type=ttype, id=tid, name=tid.replace("_", " ").title())
-    api.publish(id=tid, version=1)
     for n in range(2, versions + 1):
-        api.new_draft(id=tid)
-        api.publish(id=tid, version=n)
+        api.t[tid]["versions"][n] = {**copy.deepcopy(api.t[tid]["versions"][1]), "version": n}
 
 
 class TemplateCase(RootCase):
@@ -108,8 +106,7 @@ class SelectionTest(TemplateCase):
 
     def test_unusable_template_is_rejected_with_an_actionable_message_and_no_job(self):
         o = self.orc()
-        self.api(o).create_draft(type="video", id="only_draft", name="Only Draft")
-        for tpl, code in (({"youtube_video": "ghost"}, "TEMPLATE_NOT_FOUND"), ({"youtube_video": "only_draft"}, "NO_PUBLISHED_VERSION"),
+        for tpl, code in (({"youtube_video": "ghost"}, "TEMPLATE_NOT_FOUND"),
                           ({"thumbnail": "youtube_default"}, "TEMPLATE_WRONG_TYPE"), ({"youtube_video": {"id": "youtube_default", "version_policy": 9}}, "TEMPLATE_VERSION_NOT_FOUND")):
             channel(self.root, "k", tpl)
             with self.assertRaises(StageError, msg=str(tpl)) as e:
@@ -130,18 +127,11 @@ class SelectionTest(TemplateCase):
         with self.assertRaises(StageError):
             o.submit(params(channel="k2"))
 
-    def test_archived_template_is_not_offered_but_old_version_still_resolves(self):
+    def test_a_new_template_can_go_into_a_channel_at_once(self):
         o = self.orc()
-        api = self.api(o)
-        publish_new(api, "retired", versions=2)
-        api.archive(id="retired")
-        channel(self.root, "k", {"youtube_video": "retired"})
-        with self.assertRaises(StageError) as e:
-            o.submit(params(channel="k"))
-        self.assertEqual(e.exception.detail["template_error"], "NO_PUBLISHED_VERSION")
-        self.assertEqual(api.resolve(id="retired", policy=1)["version"], 1)                    # job cũ vẫn tái hiện được
-        self.assertNotIn("retired", [r["id"] for r in api.list_templates(type="video")["templates"]])
-        self.assertIn("retired", [r["id"] for r in api.list_templates(type="video", include_archived=True)["templates"]])
+        self.api(o).create_draft(type="video", id="fresh_t", name="Fresh")                   # không publish
+        channel(self.root, "k", {"youtube_video": "fresh_t"})
+        self.assertEqual(o.store.get_job(o.submit(params(channel="k")))["params"]["templates"]["youtube"]["id"], "fresh_t")
 
     def test_jobs_that_stop_before_render_do_not_need_templates(self):
         channel(self.root, "k", {"youtube_video": "ghost"})
@@ -172,22 +162,29 @@ class SelectionTest(TemplateCase):
 
 # ============================================================================================= snapshot / reproducibility
 class SnapshotTest(TemplateCase):
-    def test_old_job_keeps_v2_after_v3_is_published_and_new_job_gets_v3(self):
+    def edit(self, o, tid: str, **canvas) -> None:
+        api = self.api(o)
+        doc = api.get_template(id=tid)["template"]
+        doc["canvas"] = {**doc["canvas"], **canvas}
+        api.save_draft(id=tid, version=1, template=doc)
+
+    def test_old_job_keeps_its_snapshot_after_the_template_is_edited_and_new_job_gets_the_edit(self):
         channel(self.root, "k", {"youtube_video": "story_frame"})
         o = self.orc()
-        publish_new(self.api(o), "story_frame", versions=2)
-        a = o.submit(params(channel="k"))                                                    # resolve latest_published = v2 ngay lúc tạo
-        self.assertEqual(o.store.get_job(a)["params"]["templates"]["youtube"]["version"], 2)
-        self.api(o).new_draft(id="story_frame")
-        self.api(o).publish(id="story_frame", version=3)                                     # v3 xuất bản SAU khi job A đã tạo
-        o.run()                                                                                # A chạy bây giờ: vẫn phải dùng v2
-        self.assertIn("template=story_frame@v2", self.video_text(a, "youtube", "video.mp4"))
-        b = o.submit(params(channel="k"))
-        self.assertEqual(o.store.get_job(b)["params"]["templates"]["youtube"]["version"], 3)
+        publish_new(self.api(o), "story_frame")
+        a = o.submit(params(channel="k"))
+        before = o.store.get_job(a)["params"]["templates"]["youtube"]["checksum"]
+        self.edit(o, "story_frame", width=1280, height=720)                                  # sửa tại chỗ SAU khi job A đã tạo
         o.run()
-        self.assertIn("template=story_frame@v3", self.video_text(b, "youtube", "video.mp4"))
+        self.assertIn("template=story_frame@v1", self.video_text(a, "youtube", "video.mp4"))
+        self.assertEqual(o.store.get_job(a)["params"]["templates"]["youtube"]["checksum"], before)
+        self.assertEqual(o.store.get_job(a)["params"]["templates"]["youtube"]["template"]["canvas"]["width"], 1920)    # A giữ bản cũ
+        b = o.submit(params(channel="k"))
+        snap = o.store.get_job(b)["params"]["templates"]["youtube"]
+        self.assertNotEqual(snap["checksum"], before)
+        self.assertEqual(snap["template"]["canvas"]["width"], 1280)                          # job mới lấy bản vừa sửa
 
-    def test_retry_and_restart_use_the_snapshot_not_latest_published(self):
+    def test_retry_and_restart_use_the_snapshot_not_the_edited_template(self):
         channel(self.root, "k", {"youtube_video": "story_frame"})
         gate = self.root / "down"
         gate.write_text("x")
@@ -196,16 +193,16 @@ class SnapshotTest(TemplateCase):
         jid = o.submit(params(channel="k", fake={"render_youtube": {"fail_while_file": str(gate), "error_class": "POLICY", "code": "BOOM"}}))
         o.run()
         self.assertEqual(o.store.get_job(jid)["state"], P.FAILED)
-        self.api(o).new_draft(id="story_frame")
-        self.api(o).publish(id="story_frame", version=2)                                     # đổi template trong lúc job đang lỗi
+        before = o.store.get_job(jid)["params"]["templates"]["youtube"]["checksum"]
+        self.edit(o, "story_frame", width=1280, height=720)                                  # đổi template trong lúc job đang lỗi
         gate.unlink()
-        o2 = self.orc()                                                                       # "restart": orchestrator mới, DB cũ, adapter fake mới (registry v1 mới tinh)
+        o2 = self.orc()                                                                       # "restart": orchestrator mới, DB cũ, adapter fake mới
         j = o2.store.get_job(jid)
-        self.assertEqual(j["params"]["templates"]["youtube"]["version"], 1)                    # snapshot sống qua restart
+        self.assertEqual(j["params"]["templates"]["youtube"]["checksum"], before)              # snapshot sống qua restart
         o2.retry(jid)
         o2.run()
         self.assertEqual(o2.store.get_job(jid)["state"], P.PUBLISHED)
-        self.assertIn("template=story_frame@v1", self.video_text(jid, "youtube", "video.mp4"))
+        self.assertEqual(o2.store.get_job(jid)["params"]["templates"]["youtube"]["checksum"], before)
 
     def test_explicit_retemplate_changes_only_that_kind(self):
         channel(self.root)
@@ -367,9 +364,7 @@ class TemplateOpsTest(TemplateCase):
         raw = json.loads((self.root / "channels" / "k" / "channel.json").read_text(encoding="utf-8"))
         self.assertEqual(raw["templates"], {"thumbnail": {"id": "thumb_gold", "version_policy": "latest_published"}})
         self.assertEqual(raw["sequence"], {"last_used": 7})                                      # phần khác của kênh nguyên vẹn
-        self.api(o).create_draft(type="video", id="wip", name="Wip")
-        for key, tid, code in (("youtube_video", "ghost", "TEMPLATE_NOT_FOUND"), ("youtube_video", "wip", "NO_PUBLISHED_VERSION"),
-                               ("youtube_video", "thumb_gold", "TEMPLATE_WRONG_TYPE")):
+        for key, tid, code in (("youtube_video", "ghost", "TEMPLATE_NOT_FOUND"), ("youtube_video", "thumb_gold", "TEMPLATE_WRONG_TYPE")):
             with self.assertRaises(StageError, msg=tid) as e:
                 ops.set_channel_template("k", key, tid)
             self.assertEqual(e.exception.code, code)
@@ -380,14 +375,12 @@ class TemplateOpsTest(TemplateCase):
         ops.set_channel_template("k", "tiktok_video", "tiktok_framed")
         self.assertEqual([u["key"] for u in ops.usage("tiktok_framed")], ["tiktok_video"])
 
-    def test_options_list_only_published_templates_per_key(self):
+    def test_options_list_every_template_per_key(self):
         o = self.orc()
         ops = TemplateOps(o.cfg, api=self.api(o))
-        self.api(o).create_draft(type="video", id="wip", name="Wip")
         publish_new(self.api(o), "pubd")
         opt = ops.options()["options"]
         self.assertIn("pubd", [r["id"] for r in opt["youtube_video"]])
-        self.assertNotIn("wip", [r["id"] for r in opt["youtube_video"]])
         self.assertTrue(all(r["id"].startswith("thumb") for r in opt["thumbnail"]))
 
     def test_health_reports_a_channel_template_that_stopped_working(self):

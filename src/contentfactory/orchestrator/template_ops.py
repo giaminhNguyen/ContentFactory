@@ -203,7 +203,6 @@ class TemplateOps:
             extra = (spec.get("config_overrides") or {}).get("video_generator") or {}
             self.api.migrate_legacy(config={}, type="video", id=tid, name=f"Legacy {kind} layout ({a['scope']})", frame_path=spec.get("frame_path"), base_dir=str(self.cfg.root),
                                     viewport=spec.get("viewport") or extra.get("viewport"), canvas=[w, h], fps=spec.get("fps"))
-        self.api.publish(id=tid, version=1)
 
     def _exists(self, tid: str) -> bool:
         try:

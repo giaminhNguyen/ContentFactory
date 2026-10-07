@@ -3,7 +3,7 @@ asks it (`python -m templating <command>`, JSON on stdin/stdout, one process per
 
 Every method returns the plain `result` data or raises StageError (POLICY for a template/asset problem the user can fix, RESOURCE
 when ContentFlow cannot be started). Method names = ContentFlow `templating.Service` methods:
-  list_templates, get_template, versions, validate, create_draft, duplicate, new_draft, save_draft, publish, archive, delete_draft, delete_template,
+  list_templates, get_template, versions, validate, create_draft, duplicate, save_draft, delete_template,
   resolve, resolve_many, preview, test_render, list_assets, get_asset, validate_asset, asset_path, import_asset, delete_asset, info
 """
 from __future__ import annotations
@@ -16,8 +16,8 @@ from pathlib import Path
 
 from ..contracts import ErrorClass, StageError
 
-METHODS = frozenset({"list_templates", "get_template", "versions", "validate", "create_draft", "duplicate", "new_draft", "save_draft", "publish",
-                     "archive", "delete_draft", "delete_template", "resolve", "resolve_many", "preview", "test_render", "list_assets", "get_asset", "validate_asset",
+METHODS = frozenset({"list_templates", "get_template", "versions", "validate", "create_draft", "duplicate", "save_draft",
+                     "delete_template", "resolve", "resolve_many", "preview", "test_render", "list_assets", "get_asset", "validate_asset",
                      "asset_path", "import_asset", "delete_asset", "info", "migrate_legacy"})
 
 

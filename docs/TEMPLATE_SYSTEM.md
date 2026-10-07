@@ -45,15 +45,16 @@ ContentFlow/                        (builtin, đi cùng module, chỉ đọc)
 - Template tham chiếu asset bằng **ID** (`frame_gold_01`), registry lưu **đường dẫn tương đối** (`frames/gold_01.png`); gốc lấy từ biến môi trường/cấu hình: `CONTENTFLOW_ASSET_ROOT`, `CONTENTFLOW_TEMPLATE_ROOT`, `CONTENTFLOW_USER_ROOT` (ContentFactory đặt từ `tools.contentflow.user_root`), `CONTENTFLOW_CACHE_ROOT`. Clone/chuyển máy không làm hỏng dữ liệu (có test: không có đường dẫn tuyệt đối trong dữ liệu di động; chuyển thư mục user vẫn resolve).
 - Cập nhật code **không bao giờ xóa** asset/template của người dùng (nằm ngoài module, trong thư mục riêng). Builtin chỉ đọc trong UI; muốn sửa thì **Duplicate**.
 
-## 4. Vòng đời, version, immutability
+## 4. Vòng đời (D-111: không còn nháp/publish)
 
-`draft` (sửa được, không bao giờ tự được chọn cho production) → `published` (bất biến, chọn được) → `archived` (không chào cho job mới, vẫn resolve được theo version chính xác để job cũ tái hiện).
+Mọi template của user **sửa được tại chỗ bất cứ lúc nào** và **chọn được cho kênh ngay khi tạo** — không có `draft`/`published`/`archived` để quản lý. Template có sẵn (builtin) chỉ đọc: *Nhân bản* để có bản sửa được.
 
-- Sửa bản đã publish = **tạo draft version mới** (`new-draft`: v2 → v3), Test Render, rồi Publish. Version đã publish **không bao giờ bị ghi đè** (`TEMPLATE_IMMUTABLE`). Mỗi template tối đa một draft mở.
-- Publish **validate** trước (không publish được template lỗi) và **idempotent** (bấm đúp không sao). Ghi file nguyên tử + khóa theo scope: hai Save/Publish đè nhau hoặc crash giữa chừng không làm hỏng registry.
-- `latest_published` = version published cao nhất. Template không có version published ⇒ lỗi rõ ràng (`NO_PUBLISHED_VERSION`), **không** âm thầm chọn template khác.
-- Hành động theo trạng thái (backend quyết định, `service_templates.actions_for` → `row.actions`; giao diện chỉ vẽ nút, D-103): **builtin** = chỉ Xem/Nhân bản; **bản nháp của user** = Sửa / Nhân bản / **Xoá bản nháp** (ngay ở danh sách và trên thanh công cụ Studio; xác nhận ngắn; bấm đúp an toàn); **đã publish** = Nhân bản / Bản nháp mới / **Lưu trữ** (không bao giờ xoá để job cũ tái lập được); **đã lưu trữ** = Nhân bản / **Khôi phục** (= bản nháp mới từ version gần nhất, rồi publish lại). Không có hard-delete cho published/archived: ContentFlow không cung cấp và job cũ có thể ghim version. Xoá bản nháp DUY NHẤT của một template (template biến mất) khi kênh đang chọn nó bị chặn (`TEMPLATE_IN_USE`, nêu tên kênh + cách xử lý); xoá nháp của template đã publish thì luôn được (kênh dùng bản publish).
-- Xóa: **bản nháp** xóa riêng từng bản (`delete-draft`); **cả template** (mọi version, kể cả published/archived) xóa bằng `DELETE /api/templates/<id>` (D-110) — bị từ chối khi builtin hoặc kênh còn chọn nó; job cũ không ảnh hưởng vì giữ snapshot. Published vẫn có thể **archive** thay vì xóa. Asset đang được template dùng không xóa được (`ASSET_IN_USE`) trừ khi `force`.
+- Tạo/nhân bản ⇒ dùng được ngay. Sửa = lưu đè cùng `v1` (`PUT /api/templates/<id>/<version>`). Template lưu sai vẫn lưu được (Studio hiện lỗi), nhưng **resolve cho kênh/job** validate và báo lỗi rõ (`TEMPLATE_INVALID`), nên template hỏng không lọt vào job.
+- **Job không bị ảnh hưởng khi sửa/xóa**: job chốt **snapshot đầy đủ** (tài liệu + checksum + sha256 asset) lúc tạo và render/retry/restart bằng snapshot đó. Sửa template ⇒ checksum đổi ⇒ chỉ job MỚI lấy bản mới (render lại, không tái dùng lớp bake cũ).
+- `latest_published` (tên giữ để không phải đổi `channel.json`) = version cao nhất; template cũ có nhiều version vẫn ghim được. File cũ mang `status: draft/archived` được đọc như dùng được (không cần migrate).
+- Hành động (backend quyết định, `service_templates.actions_for` → `row.actions`, D-103): **builtin** = Xem / Nhân bản; **của user** = Sửa / Nhân bản / **Xoá template**.
+- Xóa: `DELETE /api/templates/<id>` xóa cả template (D-110) — bị từ chối khi builtin hoặc kênh còn chọn nó (`TEMPLATE_IN_USE`, nêu kênh + cách xử lý); bấm đúp an toàn. Asset đang được template dùng không xóa được (`ASSET_IN_USE`) trừ khi `force`.
+- Ghi file nguyên tử + khóa theo scope: hai lần Lưu đè nhau hoặc crash giữa chừng không làm hỏng registry.
 - **Checksum** = sha256 nội dung chuẩn hóa của (schema, type, id, version, canvas, elements) — không gồm status/mô tả/thời gian. **Fingerprint** của snapshot = checksum + sha256 từng asset ⇒ asset đổi thì fingerprint đổi.
 
 ## 5. Channel Config
@@ -98,8 +99,8 @@ Profile render cũ có `frame_path`/`viewport`/`config_overrides`, `thumbnail.co
 
 ## 9. Thêm template / asset
 
-- **Qua giao diện**: Template → *Mới* (hoặc *Duplicate* một template builtin) → chỉnh trong Studio → Lưu nháp → Kiểm tra → Xem trước → **Render thử** → Publish → Kênh → chọn.
-- **Qua CLI**: `cf templates duplicate youtube_default my_yt`, sửa JSON ở `<contentflow_user>/templates/video/my_yt/v1.json` hoặc dùng API, `cf templates validate my_yt`, `cf templates test-render my_yt`, `cf templates publish my_yt 1`.
+- **Qua giao diện**: Template → *Mới* (hoặc *Duplicate* một template builtin) → chỉnh trong Studio → Lưu → Kiểm tra → Xem trước → **Render thử** → *Chọn cho kênh* (hoặc Kênh → chọn).
+- **Qua CLI**: `cf templates duplicate youtube_default my_yt`, sửa JSON ở `<contentflow_user>/templates/video/my_yt/v1.json` hoặc dùng API, `cf templates validate my_yt`, `cf templates test-render my_yt`, `cf templates use <kênh> <khóa> my_yt`.
 - **Asset**: `PUT /api/assets/<id>?type=frame&name=file.png` (UI: thư viện asset) hoặc `python -m templating import-asset` (`{"id","type","file"}`). Loại: frame, background, overlay, logo, font, mask. Chi tiết `ASSET_MANAGEMENT.md`.
 - **Builtin mới** (trong repo ContentFlow): sửa `scripts/make_builtin.py`, chạy lại, commit.
 

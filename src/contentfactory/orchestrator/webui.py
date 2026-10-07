@@ -353,7 +353,7 @@ class Api:
     # ------------------------------------------------------------------------------------------ Template / asset (Template Studio)
     @route("GET", "/api/templates")
     def templates(app, m, q, b):
-        return app.templates.overview(q.get("type", [None])[0], q.get("archived", ["0"])[0] == "1")
+        return app.templates.overview(q.get("type", [None])[0])
 
     @route("GET", "/api/templates/preview-sources")
     def template_preview_sources(app, m, q, b):
@@ -380,33 +380,13 @@ class Api:
     def template_save(app, m, q, b):
         return app.templates.save(m["id"], int(m["ver"]), b.get("template") or {})
 
-    @route("DELETE", r"/api/templates/(?P<id>[a-z0-9_]+)/(?P<ver>\d+)")
-    def template_delete_draft(app, m, q, b):
-        return app.templates.delete_draft(m["id"], int(m["ver"]))
-
     @route("DELETE", r"/api/templates/(?P<id>[a-z0-9_]+)")
     def template_delete(app, m, q, b):
         return app.templates.delete(m["id"])
 
-    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/(?P<ver>\d+)/publish")
-    def template_publish(app, m, q, b):
-        return app.templates.publish(m["id"], int(m["ver"]))
-
-    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/archive")
-    def template_archive(app, m, q, b):
-        return app.templates.archive(m["id"], b.get("version"))
-
     @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/duplicate")
     def template_duplicate(app, m, q, b):
         return app.templates.duplicate(m["id"], str(b.get("new_id") or ""), b.get("name"), b.get("version"))
-
-    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/restore")
-    def template_restore(app, m, q, b):
-        return app.templates.restore(m["id"])
-
-    @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/new-draft")
-    def template_new_draft(app, m, q, b):
-        return app.templates.new_draft(m["id"], b.get("from_version"))
 
     @route("POST", r"/api/templates/(?P<id>[a-z0-9_]+)/validate")
     def template_validate(app, m, q, b):

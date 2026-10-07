@@ -612,10 +612,17 @@
 - **API:** `/api/channels/<id>/watermarks[/<wm>[/activate|restore|regenerate|file|audio]]`, `watermarks/upload`, `watermark/deactivate`. Tạo/sửa/tạo lại bằng TTS: kiểm đầu vào NGAY (400/404), rồi tổng hợp ở tác vụ nền (`/api/tasks/<id>`; mỗi kênh một lượt `WATERMARK_BUSY`); không đổi gì ảnh hưởng âm thanh thì trả kết quả ngay. Nghe thử chỉ phục vụ revision đã quản lý theo mã `wm_xxxxxxxx` + số (không nhận đường dẫn), cần token.
 - **Giới hạn đã biết:** khóa registry chỉ trong một tiến trình (cf ui là tiến trình ghi duy nhất); tiến độ tạo là trạng thái tác vụ + thời gian đã trôi (engine không báo phần trăm); tổng hợp không hủy được giữa chừng.
 
-### D-110 ✅ Xóa template đã publish (xóa cả template)
+### D-110 ✅ Xóa cả template, kể cả đã publish (sau D-111 không còn khái niệm publish)
 - **Thay đổi so với trước:** trước đây published chỉ được “Lưu trữ”. Giờ user có thể **xóa cả template** (mọi version: nháp/published/lưu trữ) bằng `DELETE /api/templates/<id>` → ContentFlow `Service.delete_template` (xóa thư mục `templates/user/<loại>/<id>/`). `delete-draft` giữ nguyên cho từng bản nháp.
 - **An toàn:** builtin ⇒ `TEMPLATE_READONLY`; kênh còn chọn template (kể cả `fallback`) ⇒ `TEMPLATE_IN_USE` nêu kênh + cách xử lý (không để cấu hình kênh trỏ vào template ma); bấm đúp ⇒ `already_deleted`. Job cũ không ảnh hưởng: `params.templates` giữ snapshot đầy đủ (tài liệu + sha256 asset) của version đã dùng. Asset không bị xóa theo (có thể dùng chung).
 - **Giới hạn:** không xóa riêng một version đã publish (chỉ cả template hoặc lưu trữ); không thùng rác/hoàn tác. Cần commit module ContentFlow chứa `delete_template` (xem `modules.lock`).
+
+### D-111 ✅ Bỏ vòng đời nháp/publish/lưu trữ: template luôn sửa được và chọn được cho kênh
+- **Quyết định:** mọi template của user dùng được ngay khi tạo/nhân bản và sửa tại chỗ (cùng version) bất cứ lúc nào; chỉ builtin là chỉ đọc (Nhân bản để sửa). Đã gỡ khỏi ContentFlow: `new_draft`, `publish`, `archive`, `delete_draft`; khỏi ContentFactory: API/route/UI/CLI tương ứng (`/publish`, `/archive`, `/restore`, `/new-draft`, `DELETE …/<ver>`), `cf templates publish|archive`. Giữ tên `create_draft`/`save_draft`/`latest_published`/`version_policy` để không phải migrate dữ liệu và `channel.json`.
+- **Vì sao an toàn:** tính tái lập đến từ **snapshot của job** (D-92…97: tài liệu + checksum + sha256 asset), không đến từ việc khóa version. Sửa template ⇒ checksum/fingerprint đổi ⇒ chỉ job mới dùng bản mới; job cũ (retry/restart) dùng snapshot. Xóa template cũng không ảnh hưởng job cũ (D-110).
+- **Tương thích:** `ContentFlow.registry._read` đọc file `status: draft|archived` như `published`, nên template cũ (kể cả nháp dang dở) dùng được ngay mà không cần migrate; nháp dang dở chưa hợp lệ sẽ bị chặn lúc resolve với `TEMPLATE_INVALID` nêu rõ lỗi. Template cũ có nhiều version vẫn ghim được; không tạo thêm version mới bằng giao diện.
+- **Rủi ro chấp nhận:** sửa template đang được kênh dùng đổi ngay kết quả cho job mới (không còn bước “publish để xác nhận”); Studio có Kiểm tra/Xem trước/Render thử để thử trước, và template lỗi bị chặn lúc tạo job. Không có hoàn tác phía máy chủ (chỉ Hoàn tác trong phiên Studio) — Nhân bản trước khi sửa mạnh.
+- **Cần push:** commit module ContentFlow chứa thay đổi này (xem `modules.lock`).
 
 ## 2. Câu hỏi còn mở
 

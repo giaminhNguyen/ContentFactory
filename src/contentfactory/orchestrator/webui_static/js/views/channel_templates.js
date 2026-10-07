@@ -70,7 +70,7 @@ export function templateBlock(channelId, { onSaved }) {
     else row.append(kv([["Template", `${r.name} (${r.effective.id})`], ["Version đang dùng", `v${r.version}`], ["Canvas", size(r.canvas)], ["Checksum", r.checksum.slice(0, 12)]]));
     if (!configured) { row.append(h("p", { class: "muted small" }, "Đang dùng template mặc định. Chọn template ở trên để ghim version hoặc đặt dự phòng.")); return row; }
     const pol = r.configured.version_policy;
-    const polSel = select({ options: [["latest_published", "Bản published mới nhất (khuyên dùng)"], ["pin", "Ghim một version cố định"]], value: pol === "latest_published" ? "latest_published" : "pin" });
+    const polSel = select({ options: [["latest_published", "Bản hiện tại của template (khuyên dùng)"], ["pin", "Ghim một version cố định"]], value: pol === "latest_published" ? "latest_published" : "pin" });
     polSel.id = `pol-${key}`;
     const pin = input({ type: "number", min: 1, step: "1", value: pol === "latest_published" ? "" : String(pol), disabled: pol === "latest_published", placeholder: "Số version" });
     pin.id = `pin-${key}`;

@@ -453,32 +453,32 @@ if (wanted("channelrun")) {
   await page.context().close();
 }
 
-// ===================================================================== 3f. Vòng đời template: xoá bản nháp ngay ở danh sách, template có sẵn chỉ nhân bản, lưu trữ/khôi phục
+// ===================================================================== 3f. Vòng đời template: không còn nháp/publish; xoá cả template ngay ở danh sách; template có sẵn chỉ nhân bản
 if (wanted("tpllife")) {
   console.log("\n# Vòng đời template");
   const page = await newPage();
   await go(page, "/templates");
   await page.waitForSelector(".tpl-card");
   const builtin = await page.locator(".tpl-card").count();
-  check("template có sẵn: không có nút Xoá/Lưu trữ", (await page.locator(".tpl-card button:has-text('Xoá bản nháp'), .tpl-card button:has-text('Lưu trữ')").count()) === 0);
+  check("template có sẵn: không có nút Xoá/Lưu trữ", (await page.locator(".tpl-card button:has-text('Xoá template'), .tpl-card button:has-text('Lưu trữ')").count()) === 0);
   await page.locator("button:has-text('Template mới')").first().click();
   await page.waitForSelector("dialog[open]");
   await page.locator("dialog[open] input[placeholder^='Ví dụ']").fill("Nháp thử xoá");
   await page.locator("dialog[open] button:has-text('Tạo và mở Studio')").click();
   await page.waitForURL(/#\/templates\/nhap_thu_xoa/);
-  await page.waitForSelector("button:has-text('Xoá bản nháp')");
-  check("Studio: nút Xoá bản nháp hiện ngay trên thanh công cụ (không giấu trong menu)", true);
+  await page.waitForSelector("button:has-text('Chọn cho kênh')");
+  check("Studio: không còn nút Publish/Xoá bản nháp; có Chọn cho kênh ngay", (await page.locator("button:has-text('Publish'), button:has-text('Xoá bản nháp')").count()) === 0);
   await page.waitForSelector(".st-pv-status .alert");                                              // adapter giả lập không có xem trước: báo rõ, không treo
   page.problems.splice(0);                                                                         // ...và 400 đó là hành vi mong đợi của fixture giả lập
   await go(page, "/templates");
   await page.waitForSelector(".tpl-card:has-text('Nháp thử xoá')");
   const card = page.locator(".tpl-card:has-text('Nháp thử xoá')");
-  check("danh sách: bản nháp của user có Xoá bản nháp, không có Lưu trữ", (await card.locator("button:has-text('Xoá bản nháp')").count()) === 1 && (await card.locator("button:has-text('Lưu trữ')").count()) === 0);
+  check("danh sách: template của user có Xoá template, không có Lưu trữ/Bản nháp", (await card.locator("button:has-text('Xoá template')").count()) === 1 && (await card.locator("button:has-text('Lưu trữ'), button:has-text('Bản nháp')").count()) === 0 && !(await card.innerText()).includes("publish"));
   await page.waitForTimeout(400);
   await axe(page, "danh sách template có bản nháp");
-  await card.locator("button:has-text('Xoá bản nháp')").click();
-  await page.waitForSelector("dialog[open]:has-text('Xoá bản nháp?')");
-  check("xác nhận xoá nói rõ hậu quả (template biến mất, không khôi phục)", (await page.locator("dialog[open]").innerText()).includes("biến mất"));
+  await card.locator("button:has-text('Xoá template')").click();
+  await page.waitForSelector("dialog[open]:has-text('Xoá template?')");
+  check("xác nhận xoá nói rõ hậu quả (không khôi phục, job cũ vẫn render)", (await page.locator("dialog[open]").innerText()).includes("Không thể khôi phục"));
   await page.locator("dialog[open] button:has-text('Xoá')").last().click();
   await page.waitForFunction((n) => document.querySelectorAll(".tpl-card").length === n, builtin, { timeout: 10000 });
   check("xoá xong danh sách làm mới ngay, các template có sẵn còn nguyên", (await page.locator(".tpl-card:has-text('Nháp thử xoá')").count()) === 0);
@@ -998,7 +998,7 @@ if (wanted("real")) {
   await page.context().close();
 }
 
-// ===================================================================== 11. Template: danh sách -> Studio -> publish -> chọn cho kênh (cần ContentFlow THẬT: real_templates.py)
+// ===================================================================== 11. Template: danh sách -> Studio (sửa tại chỗ) -> chọn cho kênh (cần ContentFlow THẬT: real_templates.py)
 if (wanted("templates")) {
   console.log("\n# Template (ContentFlow thật)");
   const tok = async (page) => page.locator("meta[name=cf-token]").getAttribute("content");
@@ -1023,14 +1023,14 @@ if (wanted("templates")) {
   await page.getByRole("button", { name: "Tạo và mở Studio" }).click();
   await page.waitForURL(/#\/templates\/story_frame/);
   await page.waitForSelector(".st-stage .st-el");
-  check("Studio: bản nháp v1 sửa được, nút Lưu tắt khi chưa đổi", (await page.getByRole("button", { name: "Lưu nháp" }).isDisabled()));
+  check("Studio: sửa được ngay, nút Lưu tắt khi chưa đổi", (await page.getByRole("button", { name: "Lưu", exact: true }).isDisabled()));
 
   // ---- sửa bằng số + hoàn tác / làm lại
   await page.locator(".st-layer-main", { hasText: "Video nguồn" }).click();
   await props(page).getByLabel("X", { exact: true }).first().fill("100");
   await page.waitForTimeout(900);                                         // quá cửa sổ gom => bước hoàn tác riêng
   await props(page).getByLabel("Rộng", { exact: true }).first().fill("1600");
-  check("sửa số: Lưu nháp bật + chip 'Chưa lưu'", (await page.getByRole("button", { name: "Lưu nháp" }).isEnabled()) && (await page.locator(".st-dirty").isVisible()));
+  check("sửa số: Lưu bật + chip 'Chưa lưu'", (await page.getByRole("button", { name: "Lưu", exact: true }).isEnabled()) && (await page.locator(".st-dirty").isVisible()));
   await page.keyboard.press("Control+z");
   check("Ctrl+Z hoàn tác lần sửa gần nhất", (await val(page, "Rộng")) === 1920 && (await val(page, "X")) === 100, `X=${await val(page, "X")} W=${await val(page, "Rộng")}`);
   await page.keyboard.press("Control+Shift+z");
@@ -1077,8 +1077,8 @@ if (wanted("templates")) {
   check("z của các lớp duy nhất", new Set(zs).size === zs.length, zs.join(","));
 
   // ---- lưu + nạp lại
-  await page.getByRole("button", { name: "Lưu nháp" }).click();
-  check("lưu nháp thành công", await toastText(page, "Đã lưu bản nháp"));
+  await page.getByRole("button", { name: "Lưu", exact: true }).click();
+  check("lưu thành công", await toastText(page, "Đã lưu"));
   check("sau lưu: chip 'Chưa lưu' ẩn", !(await page.locator(".st-dirty").isVisible()));
   await page.reload();
   await page.waitForSelector(".st-stage .st-el");
@@ -1109,30 +1109,24 @@ if (wanted("templates")) {
   check("Render thử: video mẫu đúng cỡ canvas", tline.includes("1920×1080") && tline.includes("đúng canvas"), tline);
   await shot(page, "tpl_testrender_light");
 
-  // ---- publish + chọn cho kênh
-  await page.getByRole("button", { name: "Publish", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Publish" }).click();
+  // ---- chọn cho kênh NGAY (không publish)
+  await page.getByRole("button", { name: "Chọn cho kênh" }).first().click();
   await page.waitForSelector("text=Chọn template này cho một kênh?");
   await page.locator("dialog select").first().selectOption("kenh_a");
-  await page.getByRole("button", { name: "Chọn cho kênh" }).click();
-  await page.waitForSelector(".alert:has-text('chỉ xem')");
+  await page.getByRole("dialog").getByRole("button", { name: "Chọn cho kênh" }).click();
+  check("chọn cho kênh ngay sau khi lưu", await toastText(page, "Đã chọn cho kênh"));
   await page.locator(".st-layer-main", { hasText: "Video nguồn" }).click();
-  check("publish: version đã publish chuyển sang chỉ xem", await props(page).getByLabel("X", { exact: true }).first().isDisabled());
+  check("sau khi dùng trong kênh vẫn sửa được (không khoá)", await props(page).getByLabel("X", { exact: true }).first().isEnabled());
   await shot(page, "tpl_published_light");
   const api1 = await apiGet(page, "/api/templates/story_frame");
-  check("API: v1 published, có checksum", api1.template.status === "published" && !!api1.checksum);
-  const xPub = api1.template.elements.find((e) => e.id === "source_video").x;
+  check("API: chỉ một version, có checksum", api1.versions.length === 1 && !!api1.checksum);
 
-  // ---- sửa bản đã publish = tạo bản nháp mới; v1 không đổi
-  await page.getByRole("button", { name: "Tạo bản nháp mới để sửa" }).click();
-  await page.waitForFunction(() => location.hash.includes("v=2"));
-  await page.waitForSelector(".st-stage .st-el");
-  await page.locator(".st-layer-main", { hasText: "Video nguồn" }).click();
+  // ---- sửa tại chỗ: cùng version, nội dung đổi
   await props(page).getByLabel("X", { exact: true }).first().fill("20");
-  await page.getByRole("button", { name: "Lưu nháp" }).click();
-  await toastText(page, "Đã lưu bản nháp");
+  await page.getByRole("button", { name: "Lưu", exact: true }).click();
+  await toastText(page, "Đã lưu");
   const v1 = await apiGet(page, "/api/templates/story_frame?version=1");
-  check("v1 đã publish KHÔNG bị đổi khi sửa v2", v1.template.elements.find((e) => e.id === "source_video").x === xPub);
+  check("sửa tại chỗ: v1 đổi nội dung, vẫn chỉ một version", v1.template.elements.find((e) => e.id === "source_video").x === 20 && v1.versions.length === 1);
   await props(page).getByLabel("X", { exact: true }).first().fill("30");
   await page.locator(".nav a[data-section=channels]").click();
   await page.waitForSelector("dialog:has-text('Bỏ thay đổi chưa lưu')");
@@ -1142,8 +1136,8 @@ if (wanted("templates")) {
   // ---- kênh thấy template mới + chọn bằng giao diện
   await go(page, "/channels/kenh_a");
   await page.waitForSelector("#tpl-youtube_video");
-  check("kenh_a: ô YouTube Template đã chọn story_frame (do bước publish)", (await page.locator("#tpl-youtube_video").inputValue()) === "story_frame");
-  check("kênh: ô chọn có template mới publish", (await page.locator("#tpl-youtube_video option").allInnerTexts()).some((t) => t.includes("Story Frame")));
+  check("kenh_a: ô YouTube Template đã chọn story_frame (do bước chọn cho kênh)", (await page.locator("#tpl-youtube_video").inputValue()) === "story_frame");
+  check("kênh: ô chọn có template mới tạo", (await page.locator("#tpl-youtube_video option").allInnerTexts()).some((t) => t.includes("Story Frame")));
   await page.locator("#tpl-thumbnail").selectOption("thumb_gold");
   await page.waitForFunction(() => document.querySelector("#tpl-thumbnail")?.value === "thumb_gold");
   await page.waitForTimeout(1200);
@@ -1184,7 +1178,7 @@ if (wanted("templates")) {
   for (const scheme of ["light", "dark"]) {
     for (const [w, h] of [[1440, 900], [390, 844]]) {
       const p = await newPage({ width: w, height: h, scheme });
-      for (const [hash, name] of [["/templates", "list"], ["/templates/story_frame?v=2", "studio_draft"], ["/templates/thumb_default", "studio_thumb"], ["/channels/kenh_a", "channel"]]) {
+      for (const [hash, name] of [["/templates", "list"], ["/templates/story_frame", "studio_draft"], ["/templates/thumb_default", "studio_thumb"], ["/channels/kenh_a", "channel"]]) {
         await go(p, hash);
         if (name.startsWith("studio")) await p.waitForSelector(".st-stage .st-el");
         if (name === "studio_thumb") await p.locator(".st-layer-main", { hasText: "Tiêu đề" }).click();

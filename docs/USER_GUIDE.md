@@ -57,7 +57,7 @@ Mỗi kênh nhớ cấu hình của nó trong `channels\<id>\channel.json`: tên
 
 Mỗi kênh chọn **3 template**: Thumbnail, YouTube, TikTok (Kênh → Template, hoặc `cf templates use <kênh> youtube_video youtube_framed`). Bạn **không** nhập tọa độ: khung, vùng video, vị trí chữ nằm trong template.
 
-Muốn kiểu mới: trang **Template** → *Mới* (hoặc *Duplicate* một mẫu có sẵn) → kéo/chỉnh trong Studio → *Lưu nháp* → *Kiểm tra* → *Render thử* → *Publish* → chọn nó trong Kênh. Sửa template đã publish tạo **bản nháp mới** (v2 → v3): job đã tạo vẫn dùng đúng bản cũ, job mới dùng bản mới nhất đã publish. Template/asset của bạn nằm ở `contentflow_user\` (không mất khi cập nhật). Chi tiết: `docs/TEMPLATE_SYSTEM.md`.
+Muốn kiểu mới: trang **Template** → *Mới* (hoặc *Duplicate* một mẫu có sẵn) → kéo/chỉnh trong Studio → *Lưu* → *Kiểm tra* → *Render thử* → *Chọn cho kênh*. Không có bước Publish: template tạo ra dùng được ngay và sửa lại bất cứ lúc nào; job đã tạo giữ đúng bản lúc tạo, job mới lấy bản vừa lưu. Có thể xoá cả template (trừ khi kênh còn chọn nó). Template/asset của bạn nằm ở `contentflow_user\` (không mất khi cập nhật). Chi tiết: `docs/TEMPLATE_SYSTEM.md`.
 
 Đang dùng cấu hình bố cục cũ (frame/viewport trong config)? `cf doctor` sẽ nhắc; `cf templates migrate --apply` chuyển sang template (có sao lưu).
 

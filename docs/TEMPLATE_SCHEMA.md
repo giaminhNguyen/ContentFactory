@@ -21,8 +21,8 @@ Một template là **một tài liệu JSON** (`templates/<scope>/<type>/<id>/v<
 | `schema` | `1` |
 | `id` | `^[a-z0-9][a-z0-9_]{1,47}$`, duy nhất trên toàn bộ template (mọi loại, builtin + user) |
 | `type` | `thumbnail` \| `video` (không đổi sau khi tạo) |
-| `version` | số nguyên ≥ 1; version mới do hệ thống cấp (`new-draft`) |
-| `status` | `draft` \| `published` \| `archived` (xem `TEMPLATE_SYSTEM.md` §4) |
+| `version` | số nguyên ≥ 1 (template mới luôn là v1; sửa tại chỗ không đổi version) |
+| `status` | luôn đọc ra `published` (file cũ `draft`/`archived` vẫn hợp lệ, được coi là dùng được; xem `TEMPLATE_SYSTEM.md` §4) |
 | `name`, `description` | tên hiển thị (bắt buộc), mô tả |
 
 ## Canvas

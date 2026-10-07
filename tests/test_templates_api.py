@@ -44,37 +44,29 @@ class _Http(UiCase):
 
 
 class TemplateApiTest(_Http):
-    def test_lifecycle_over_http(self):
+    def test_create_edit_and_use_over_http_without_publish(self):
         c, d = self.call("GET", "/api/templates")
         self.assertEqual(c, 200)
         self.assertIn("youtube_default", [t["id"] for t in d["templates"]])
         self.assertEqual(d["defaults"]["tiktok_video"], "tiktok_default")
         c, d = self.call("POST", "/api/templates", {"type": "video", "id": "studio_one", "name": "Studio One"})
-        self.assertEqual((c, d["template"]["status"], d["template"]["version"]), (200, "draft", 1))
+        self.assertEqual((c, d["template"]["status"], d["template"]["version"]), (200, "published", 1))                 # dùng được ngay
         c, d = self.call("POST", "/api/templates", {"type": "video", "id": "studio_one", "name": "again"})
         self.assertEqual((c, d["error"]["code"]), (400, "TEMPLATE_ID_EXISTS"))
         c, opt = self.call("GET", "/api/templates/options")
-        self.assertNotIn("studio_one", [r["id"] for r in opt["options"]["youtube_video"]])                       # draft: chưa chọn được cho kênh
+        self.assertIn("studio_one", [r["id"] for r in opt["options"]["youtube_video"]])                                  # chọn được cho kênh ngay
         c, g = self.call("GET", "/api/templates/studio_one")
         doc = g["template"]
-        doc["description"] = "đã sửa"
-        c, saved = self.call("PUT", "/api/templates/studio_one/1", {"template": doc})
-        self.assertEqual((c, saved["template"]["description"]), (200, "đã sửa"))
-        c, p1 = self.call("POST", "/api/templates/studio_one/1/publish")
-        c, p2 = self.call("POST", "/api/templates/studio_one/1/publish")                                          # bấm đúp: không lỗi, không đổi
-        self.assertEqual((p1["changed"], p2["changed"], p2["status"]), (True, False, "published"))
-        c, e = self.call("PUT", "/api/templates/studio_one/1", {"template": doc})
-        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_IMMUTABLE"))
-        c, opt = self.call("GET", "/api/templates/options")
-        self.assertIn("studio_one", [r["id"] for r in opt["options"]["youtube_video"]])
-        c, nd = self.call("POST", "/api/templates/studio_one/new-draft", {})
-        self.assertEqual(nd["template"]["version"], 2)
-        c, e = self.call("POST", "/api/templates/studio_one/new-draft", {})
-        self.assertEqual(e["error"]["code"], "DRAFT_EXISTS")
+        for note in ("đã sửa", "sửa lần nữa"):                                                                          # sửa tại chỗ nhiều lần, không bị khoá
+            doc["description"] = note
+            c, saved = self.call("PUT", "/api/templates/studio_one/1", {"template": doc})
+            self.assertEqual((c, saved["template"]["description"], saved["template"]["version"]), (200, note, 1))
+        c, e = self.call("PUT", "/api/templates/thumb_default/1", {"template": self.call("GET", "/api/templates/thumb_default")[1]["template"]})
+        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_READONLY"))                                            # có sẵn: nhân bản để sửa
         c, dup = self.call("POST", "/api/templates/studio_one/duplicate", {"new_id": "studio_two", "name": "Hai"})
-        self.assertEqual((dup["template"]["id"], dup["template"]["status"]), ("studio_two", "draft"))
-        c, a = self.call("POST", "/api/templates/studio_one/archive", {})
-        self.assertEqual(a["archived"], [1])
+        self.assertEqual((dup["template"]["id"], dup["template"]["status"]), ("studio_two", "published"))
+        for gone in ("publish", "archive", "new-draft", "restore"):                                                      # vòng đời cũ đã bỏ
+            self.assertEqual(self.call("POST", f"/api/templates/studio_one/{gone}", {})[0], 404, gone)
         c, e = self.call("GET", "/api/templates/ghost")
         self.assertEqual((c, e["error"]["code"]), (404, "TEMPLATE_NOT_FOUND"))
 
@@ -91,9 +83,8 @@ class TemplateApiTest(_Http):
         c, p = self.call("POST", "/api/preview", {"input": {"value": URL_}, "channel": "kenh"})
         self.assertEqual(p["templates"]["tiktok"]["id"], "tiktok_framed")
         self.assertFalse([x for x in p["problems"] if "TEMPLATE" in x["code"]])
-        self.call("POST", "/api/templates", {"type": "video", "id": "wip_t", "name": "WIP"})
         raw = self.call("GET", "/api/channels/kenh")[1]["raw"]
-        raw["templates"] = {"youtube_video": {"id": "wip_t"}}
+        raw["templates"] = {"youtube_video": {"id": "ghost_t"}}
         self.call("PUT", "/api/channels/kenh", {"raw": raw})                                                      # lưu tay: chỉ kiểm hình dạng
         c, p = self.call("POST", "/api/preview", {"input": {"value": URL_}, "channel": "kenh"})
         self.assertIn("INVALID_CHANNEL_TEMPLATE", [x["code"] for x in p["problems"]])                            # nhưng báo ngay trước khi bấm RUN
@@ -116,10 +107,10 @@ class TemplateApiTest(_Http):
 
 
 class TemplateLifecycleUxTest(_Http):
-    """Phase 6: xoá bản nháp / lưu trữ / khôi phục — backend quyết định hành động hợp lệ; lỗi dễ hiểu; không phá khả năng tái lập của job cũ."""
+    """Xoá template — backend quyết định hành động hợp lệ; lỗi dễ hiểu; không phá khả năng tái lập của job cũ (job giữ snapshot)."""
 
     def row(self, tid):
-        return next(t for t in self.call("GET", "/api/templates?archived=1")[1]["templates"] if t["id"] == tid)
+        return next(t for t in self.call("GET", "/api/templates")[1]["templates"] if t["id"] == tid)
 
     def point_channel_at(self, tid, key="youtube_video"):
         raw = self.call("GET", "/api/channels/kenh")[1]["raw"]
@@ -131,54 +122,22 @@ class TemplateLifecycleUxTest(_Http):
         raw.pop("templates", None)
         self.call("PUT", "/api/channels/kenh", {"raw": raw})
 
-    def test_user_draft_is_deletable_from_the_list_and_double_delete_is_safe(self):
-        self.call("POST", "/api/templates", {"type": "video", "id": "tmp_draft", "name": "Tạm"})
-        a = self.row("tmp_draft")["actions"]
-        self.assertEqual((a["delete_draft"]["enabled"], a["delete_draft"]["version"], a["delete_draft"]["removes_template"]), (True, 1, True))
-        self.assertIsNone(a["archive"])                                                                     # nháp chưa publish: không có "Lưu trữ"
-        c, r = self.call("DELETE", "/api/templates/tmp_draft/1")
-        self.assertEqual((c, r["deleted"]), (200, "tmp_draft@v1"))
-        c, r2 = self.call("DELETE", "/api/templates/tmp_draft/1")                                            # bấm đúp: không lỗi
-        self.assertEqual((c, r2.get("already_deleted")), (200, True))
-        self.assertNotIn("tmp_draft", [t["id"] for t in self.call("GET", "/api/templates?archived=1")[1]["templates"]])      # danh sách làm mới ngay
-
     def test_builtin_is_read_only_duplicate_only(self):
         a = self.row("thumb_default")["actions"]
-        self.assertEqual((a["open"], a["duplicate"], a["delete_draft"], a["archive"], a["new_draft"], a["restore"]), (True, True, None, None, None, None))
-        c, e = self.call("DELETE", "/api/templates/thumb_default/1")
+        self.assertEqual((a["open"], a["duplicate"], a["delete"]), (True, True, None))
+        self.assertEqual(sorted(a), ["delete", "duplicate", "open"])                                         # không còn publish/lưu trữ/nháp
+        c, e = self.call("DELETE", "/api/templates/thumb_default")
         self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_READONLY"))
         self.assertIn("chỉ đọc", e["error"]["message"])
         self.assertIn("Nhân bản", e["error"]["hint"])
-        c, e = self.call("POST", "/api/templates/thumb_default/archive", {})
-        self.assertEqual(c, 400)
 
-    def test_published_delete_is_redirected_to_archive_not_destroyed(self):
-        self.call("POST", "/api/templates", {"type": "video", "id": "pub_t", "name": "Pub"})
-        self.call("POST", "/api/templates/pub_t/1/publish")
-        a = self.row("pub_t")["actions"]
-        self.assertIsNone(a["delete_draft"])
-        self.assertEqual((a["archive"]["enabled"], a["new_draft"]["enabled"]), (True, True))
-        c, e = self.call("DELETE", "/api/templates/pub_t/1")
-        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_NOT_DRAFT"))
-        self.assertIn("Lưu trữ", e["error"]["hint"])
-        self.assertEqual(self.row("pub_t")["latest_published"], 1)                                         # không bị xoá
-        c, e = self.call("PUT", "/api/templates/pub_t/1", {"template": self.call("GET", "/api/templates/pub_t")[1]["template"]})
-        self.assertEqual(e["error"]["code"], "TEMPLATE_IMMUTABLE")
-        self.assertIn("không sửa hay xoá được", e["error"]["message"])                                      # lỗi ContentFlow được dịch, mã giữ nguyên
-
-    def test_published_and_archived_templates_can_be_deleted_as_a_whole(self):
+    def test_a_whole_template_can_be_deleted_and_double_delete_is_safe(self):
         self.call("POST", "/api/templates", {"type": "video", "id": "del_pub", "name": "Pub"})
-        self.call("POST", "/api/templates/del_pub/1/publish")
-        self.call("POST", "/api/templates/del_pub/new-draft", {})
-        self.assertEqual((self.row("del_pub")["actions"]["delete"]["enabled"], self.row("del_pub")["actions"]["delete"]["versions"]), (True, 2))
+        self.assertEqual((self.row("del_pub")["actions"]["delete"]["enabled"], self.row("del_pub")["actions"]["delete"]["versions"]), (True, 1))
         c, r = self.call("DELETE", "/api/templates/del_pub")
         self.assertEqual((c, r["deleted"]), (200, "del_pub"))
-        self.assertNotIn("del_pub", [t["id"] for t in self.call("GET", "/api/templates?archived=1")[1]["templates"]])
+        self.assertNotIn("del_pub", [t["id"] for t in self.call("GET", "/api/templates")[1]["templates"]])
         self.assertEqual(self.call("DELETE", "/api/templates/del_pub")[1].get("already_deleted"), True)        # bấm đúp an toàn
-        self.call("POST", "/api/templates", {"type": "video", "id": "del_arch", "name": "Arch"})
-        self.call("POST", "/api/templates/del_arch/1/publish")
-        self.call("POST", "/api/templates/del_arch/archive", {})
-        self.assertEqual(self.call("DELETE", "/api/templates/del_arch")[0], 200)
 
     def test_delete_template_is_refused_for_builtin_and_for_a_template_a_channel_uses(self):
         self.assertIsNone(self.row("thumb_default")["actions"]["delete"])
@@ -196,57 +155,11 @@ class TemplateLifecycleUxTest(_Http):
         self.clear_channel()
         self.assertEqual(self.call("DELETE", "/api/templates/del_used")[0], 200)
 
-    def test_archived_template_can_be_restored_through_a_new_draft(self):
-        self.call("POST", "/api/templates", {"type": "video", "id": "old_t", "name": "Old"})
-        self.call("POST", "/api/templates/old_t/1/publish")
-        self.call("POST", "/api/templates/old_t/archive", {})
-        a = self.row("old_t")["actions"]
-        self.assertEqual((a["archive"], a["delete_draft"], a["restore"]["from_version"]), (None, None, 1))
-        c, d = self.call("POST", "/api/templates/old_t/restore")
-        self.assertEqual((c, d["template"]["status"], d["template"]["version"]), (200, "draft", 2))
-        a = self.row("old_t")["actions"]
-        self.assertEqual((a["delete_draft"]["enabled"], a["delete_draft"]["removes_template"], a["restore"]), (True, False, None))
-        c, e = self.call("POST", "/api/templates/old_t/restore")                                            # đã có nháp đang mở
-        self.assertEqual((c, e["error"]["code"]), (400, "DRAFT_EXISTS"))
-        c, e = self.call("POST", "/api/templates/thumb_default/restore")
-        self.assertEqual(c, 400)
-
-    def test_referenced_draft_only_template_cannot_be_deleted_and_names_the_channels(self):
-        self.call("POST", "/api/templates", {"type": "video", "id": "ref_t", "name": "Ref"})
-        self.point_channel_at("ref_t")
-        a = self.row("ref_t")["actions"]["delete_draft"]
-        self.assertFalse(a["enabled"])
-        self.assertIn("kenh", a["blocked"])
-        self.assertIn("YouTube", a["blocked"])
-        c, e = self.call("DELETE", "/api/templates/ref_t/1")
-        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_IN_USE"))
-        self.assertIn("kenh", e["error"]["message"])
-        self.assertIn("Kênh", e["error"]["hint"])
-        self.assertIn("ref_t", [t["id"] for t in self.call("GET", "/api/templates?archived=1")[1]["templates"]])      # chưa bị xoá
-        self.clear_channel()                                                                                # bỏ chọn rồi xoá được: kênh không bị trỏ vào template ma
-        self.assertEqual(self.call("DELETE", "/api/templates/ref_t/1")[0], 200)
-
-    def test_open_draft_of_a_published_referenced_template_is_deletable(self):
-        self.call("POST", "/api/templates", {"type": "video", "id": "live_t", "name": "Live"})
-        self.call("POST", "/api/templates/live_t/1/publish")
-        self.point_channel_at("live_t")
-        self.call("POST", "/api/templates/live_t/new-draft", {})
-        a = self.row("live_t")["actions"]
-        self.assertEqual((a["delete_draft"]["enabled"], a["delete_draft"]["removes_template"], a["archive"]["warning"] is not None), (True, False, True))
-        self.assertEqual(self.call("DELETE", "/api/templates/live_t/2")[0], 200)
-        self.assertEqual(self.row("live_t")["latest_published"], 1)                                         # bản đã publish (kênh đang dùng) còn nguyên
-        res = self.call("GET", "/api/channels/kenh/templates")[1]
-        self.assertTrue(res["youtube_video"]["ok"])
-
-    def test_archiving_a_referenced_template_warns_but_keeps_old_versions_resolvable(self):
-        self.call("POST", "/api/templates", {"type": "video", "id": "arch_t", "name": "Arch"})
-        self.call("POST", "/api/templates/arch_t/1/publish")
-        self.point_channel_at("arch_t")
-        c, r = self.call("POST", "/api/templates/arch_t/archive", {})
-        self.assertEqual(c, 200)
-        self.assertIn("kênh", r["warning"])
-        snap = self.o.adapters["render"].templates.resolve(id="arch_t", policy=1)                          # job cũ ghim version vẫn tái lập được
-        self.assertEqual((snap["id"], snap["version"]), ("arch_t", 1))
+    def test_job_snapshot_survives_deleting_the_template(self):
+        self.call("POST", "/api/templates", {"type": "video", "id": "snap_del", "name": "Snap"})
+        snap = self.o.adapters["render"].templates.resolve(id="snap_del")
+        self.call("DELETE", "/api/templates/snap_del")
+        self.assertEqual((snap["id"], snap["version"]), ("snap_del", 1))                                      # job đã chốt snapshot nên không cần template nữa
 
 
 class TemplatePreviewSamplesTest(_Http):
@@ -325,12 +238,6 @@ class TemplatePreviewSamplesTest(_Http):
         self.assertEqual(c, 200)
         self.assertTrue(self.call("GET", "/api/templates/preview-sources?type=thumbnail")[1]["test_render"]["enabled"])      # thumbnail không cần ffmpeg
 
-    def test_publish_validates_the_final_draft(self):
-        self.call("POST", "/api/templates", {"type": "video", "id": "vid_pub", "name": "Vid Pub"})
-        c, r = self.call("POST", "/api/templates/vid_pub/1/publish")
-        self.assertEqual(c, 200)
-        self.assertEqual(r["status"], "published")
-
 
 @unittest.skipUnless(HAVE_REAL, "cần ContentFlow thật")
 class RealTemplateApiTest(_Http):
@@ -369,27 +276,22 @@ class RealTemplateApiTest(_Http):
         c, e = self.call("POST", "/api/templates/real_pv/preview", {"template": doc, "sample": {"image": "frame:demo:7"}})
         self.assertEqual((c, e["error"]["code"]), (400, "BAD_SAMPLE"))
 
-    def test_lifecycle_actions_and_deletion_with_real_contentflow(self):
+    def test_edit_in_place_and_delete_with_real_contentflow(self):
         def row(tid):
-            return next(t for t in self.call("GET", "/api/templates?archived=1")[1]["templates"] if t["id"] == tid)
+            return next(t for t in self.call("GET", "/api/templates")[1]["templates"] if t["id"] == tid)
         self.call("POST", "/api/templates", {"type": "video", "id": "real_del", "name": "Real Del"})
         a = row("real_del")["actions"]
-        self.assertEqual((a["delete_draft"]["enabled"], a["delete_draft"]["removes_template"], a["archive"]), (True, True, None))
-        self.assertEqual(self.call("DELETE", "/api/templates/real_del/1")[1]["deleted"], "real_del@v1")
-        self.assertTrue(self.call("DELETE", "/api/templates/real_del/1")[1]["already_deleted"])
-        self.assertNotIn("real_del", [t["id"] for t in self.call("GET", "/api/templates?archived=1")[1]["templates"]])
-        c, e = self.call("DELETE", "/api/templates/thumb_default/1")
+        self.assertEqual((a["delete"]["enabled"], sorted(a)), (True, ["delete", "duplicate", "open"]))
+        doc = self.call("GET", "/api/templates/real_del")[1]["template"]
+        doc["description"] = "sửa tại chỗ"
+        c, saved = self.call("PUT", "/api/templates/real_del/1", {"template": doc})                       # đã "dùng được" vẫn sửa được
+        self.assertEqual((c, saved["template"]["description"], saved["template"]["status"]), (200, "sửa tại chỗ", "published"))
+        self.assertIn("real_del", [r["id"] for r in self.call("GET", "/api/templates/options")[1]["options"]["youtube_video"]])
+        self.assertEqual(self.call("DELETE", "/api/templates/real_del")[1]["deleted"], "real_del")
+        self.assertTrue(self.call("DELETE", "/api/templates/real_del")[1]["already_deleted"])
+        self.assertNotIn("real_del", [t["id"] for t in self.call("GET", "/api/templates")[1]["templates"]])
+        c, e = self.call("DELETE", "/api/templates/thumb_default")
         self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_READONLY"))
-        c, e = self.call("POST", "/api/templates/thumb_default/archive", {})
-        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_READONLY"))
-        self.call("POST", "/api/templates", {"type": "video", "id": "real_arch", "name": "Real Arch"})
-        self.call("POST", "/api/templates/real_arch/1/publish")
-        c, e = self.call("DELETE", "/api/templates/real_arch/1")
-        self.assertEqual((c, e["error"]["code"]), (400, "TEMPLATE_NOT_DRAFT"))
-        self.call("POST", "/api/templates/real_arch/archive", {})
-        self.assertEqual(row("real_arch")["actions"]["restore"]["from_version"], 1)
-        c, d = self.call("POST", "/api/templates/real_arch/restore")
-        self.assertEqual((c, d["template"]["version"], d["template"]["status"]), (200, 2, "draft"))
 
     def test_studio_round_trip_with_real_preview_test_render_assets(self):
         c, d = self.call("POST", "/api/templates", {"type": "thumbnail", "id": "real_t", "name": "Real T"})

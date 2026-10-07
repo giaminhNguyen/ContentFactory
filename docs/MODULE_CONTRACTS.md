@@ -653,14 +653,14 @@ class TemplateApi:            # = render.templates (ContentFlowRender: TemplateC
     get_template(id, version="latest"|"latest_published"|N) -> {template, scope, checksum, versions, summary, assets, validation}
     resolve(id, policy="latest_published"|N, expect_type=None) -> snapshot       # {schema, id, version, type, name, scope, status, policy, checksum, fingerprint, template, assets{id:{sha256,type,scope,path}}, summary{canvas,fps,source_region}}
     resolve_many([{key, id, policy, expect_type}]) -> {key: snapshot}              # 1 tiến trình cho cả 3 kind; lỗi kèm detail.key
-    create_draft / duplicate / new_draft / save_draft / publish / archive / delete_draft / delete_template / validate / preview / test_render
+    create_draft / duplicate / save_draft (sửa tại chỗ) / delete_template / validate / preview / test_render
     list_assets / get_asset / validate_asset / asset_path / import_asset / delete_asset / info / migrate_legacy
 ```
 
 - **Lỗi** → `StageError`: vấn đề template/asset người dùng sửa được ⇒ `POLICY` (mã của ContentFlow: `TEMPLATE_NOT_FOUND`, `NO_PUBLISHED_VERSION`, `TEMPLATE_WRONG_TYPE`, `ASSET_IN_USE`…, `resource="input"`); không chạy được ContentFlow ⇒ `RESOURCE CONTENTFLOW_MISSING`; module chưa có `templating` ⇒ `RESOURCE TEMPLATES_UNAVAILABLE` (tạo job rơi về layout cũ + quyết định). `media_worker`: template/asset thiếu hoặc đổi ⇒ `MISSING_INPUT` (POLICY, giữ job); template hỏng/sai loại ⇒ `INVALID_CONFIG`.
 - **Chọn lúc tạo job** (`orchestrator/templates.py`): ưu tiên `params.templates` (đã là snapshot: giữ; hoặc tham chiếu) > `channel.templates` > layout cũ (nếu có) > `config.templates.defaults`. Kết quả: `params.templates{thumbnail, youtube, tiktok}` + `params.auto` ("template.<kind> = id@vN vì …"). `fallback` chỉ khi kênh khai. Hành động explicit: `Orchestrator.retemplate(job, kind, id, policy)`.
 - **`stage_key`:** `render_youtube` ← `templates.youtube`, `templates.thumbnail`; `render_tiktok` ← `templates.tiktok`.
-- **CLI:** `cf templates list|show|use|validate|publish|archive|duplicate|preview|test-render|assets|migrate`, `cf retemplate <job> <kind> <id>` (chọn lại cho job CHƯA xong stage đó), `cf rerender <job>` (job mới dựng lại từ audio cũ bằng template hiện tại). **Doctor:** nhóm *Template* (ContentFlow có hệ thống template, template các kênh còn dùng được, còn layout cũ).
+- **CLI:** `cf templates list|show|use|validate|delete|duplicate|preview|test-render|assets|migrate`, `cf retemplate <job> <kind> <id>` (chọn lại cho job CHƯA xong stage đó), `cf rerender <job>` (job mới dựng lại từ audio cũ bằng template hiện tại). **Doctor:** nhóm *Template* (ContentFlow có hệ thống template, template các kênh còn dùng được, còn layout cũ).
 - **API giao diện:** `service_templates.TemplateService` + routes `/api/templates…`, `/api/assets…`, `/api/channels/<id>/templates`.
 
 ## 14. Khám phá nguồn YouTube và Channel Run (Agent Plan Phase 4; D-101)

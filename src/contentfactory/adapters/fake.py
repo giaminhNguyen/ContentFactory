@@ -205,7 +205,7 @@ def _terr(code: str, msg: str, **detail) -> StageError:
 
 class FakeTemplateApi:
     """Bản trong bộ nhớ của hệ thống template ContentFlow (cùng hình dạng trả lời với `python -m templating`): đủ để test chọn template,
-    version, publish/archive và snapshot mà không cần ContentFlow. Builtin giống bản thật: thumb_default, youtube_default, tiktok_default..."""
+    version và snapshot mà không cần ContentFlow. Builtin giống bản thật: thumb_default, youtube_default, tiktok_default..."""
 
     BUILTIN = {"thumb_default": ("thumbnail", 1648, 928), "thumb_gold": ("thumbnail", 1648, 928), "youtube_default": ("video", 1920, 1080),
                "tiktok_default": ("video", 1080, 1920), "youtube_framed": ("video", 1920, 1080), "tiktok_framed": ("video", 1080, 1920)}
@@ -226,11 +226,8 @@ class FakeTemplateApi:
         vs = self._tpl(tid)["versions"]
         if v in ("latest", None):
             return vs[max(vs)]
-        if v == "latest_published":
-            pub = [n for n, d in vs.items() if d["status"] == "published"]
-            if not pub:
-                raise _terr("NO_PUBLISHED_VERSION", f"template '{tid}' has no published version", template_id=tid)
-            return vs[max(pub)]
+        if v == "latest_published":                                  # không còn publish: bản mới nhất luôn dùng được
+            return vs[max(vs)]
         if int(v) not in vs:
             raise _terr("TEMPLATE_VERSION_NOT_FOUND", f"template '{tid}' has no version {v}", template_id=tid)
         return vs[int(v)]
@@ -241,14 +238,10 @@ class FakeTemplateApi:
             if type and t["type"] != type:
                 continue
             vs = t["versions"]
-            pub = [n for n, d in vs.items() if d["status"] == "published"]
-            if not pub and not include_archived and not any(d["status"] == "draft" for d in vs.values()):
-                continue
-            top = vs[max(pub or vs)]
+            top = vs[max(vs)]
             rows.append({"id": tid, "name": top["name"], "type": t["type"], "scope": t["scope"], "description": top["description"],
-                         "latest_published": max(pub) if pub else None, "latest": max(vs),
-                         "draft": next((n for n, d in vs.items() if d["status"] == "draft"), None),
-                         "status": "published" if pub else top["status"], "canvas": top["canvas"],
+                         "latest_published": max(vs), "latest": max(vs), "draft": None,
+                         "status": "published", "canvas": top["canvas"],
                          "versions": [{"version": n, "status": d["status"]} for n, d in sorted(vs.items())]})
         return {"templates": rows}
 
@@ -267,50 +260,18 @@ class FakeTemplateApi:
         if id in self.t:
             raise _terr("TEMPLATE_ID_EXISTS", f"template id '{id}' already exists")
         w, h = width or (1648 if type == "thumbnail" else 1920), height or (928 if type == "thumbnail" else 1080)
-        doc = {"schema": 1, "id": id, "name": name, "type": type, "version": 1, "status": "draft", "description": description,
+        doc = {"schema": 1, "id": id, "name": name, "type": type, "version": 1, "status": "published", "description": description,
                "canvas": {"width": w, "height": h}, "elements": [{"id": "e", "type": "x", "z": 1}]}
         self.t[id] = {"scope": "user", "type": type, "versions": {1: doc}}
         return {"template": doc, "validation": _OK}
 
-    def new_draft(self, id: str, from_version=None) -> dict:
-        t = self._tpl(id)
-        if any(d["status"] == "draft" for d in t["versions"].values()):
-            raise _terr("DRAFT_EXISTS", f"template '{id}' already has an open draft")
-        doc = json.loads(json.dumps(self._doc(id, from_version if from_version is not None else "latest")))
-        doc.update(version=max(t["versions"]) + 1, status="draft")
-        t["versions"][doc["version"]] = doc
-        return {"template": doc, "validation": _OK}
-
     def save_draft(self, id: str, version: int, template: dict) -> dict:
         d = self._doc(id, int(version))
-        if d["status"] != "draft":
-            raise _terr("TEMPLATE_IMMUTABLE", f"template '{id}' v{version} is {d['status']} and immutable")
-        new = {**template, "id": id, "version": int(version), "status": "draft", "type": d["type"]}
+        if self._tpl(id)["scope"] != "user":
+            raise _terr("TEMPLATE_READONLY", "builtin template is read-only")
+        new = {**template, "id": id, "version": int(version), "status": "published", "type": d["type"]}
         self._tpl(id)["versions"][int(version)] = new
         return {"template": new, "checksum": _canon(new), "validation": _OK}
-
-    def publish(self, id: str, version: int) -> dict:
-        d = self._doc(id, int(version))
-        changed = d["status"] != "published"
-        d["status"] = "published"
-        return {"id": id, "version": int(version), "status": "published", "changed": changed, "checksum": _canon(d)}
-
-    def archive(self, id: str, version=None) -> dict:
-        done = []
-        for n, d in self._tpl(id)["versions"].items():
-            if (version is None or n == int(version)) and d["status"] == "published":
-                d["status"] = "archived"
-                done.append(n)
-        return {"id": id, "archived": done}
-
-    def delete_draft(self, id: str, version: int) -> dict:
-        t = self._tpl(id)
-        if t["versions"].get(int(version), {}).get("status") != "draft":
-            raise _terr("TEMPLATE_IMMUTABLE", "only drafts can be deleted")
-        del t["versions"][int(version)]
-        if not t["versions"]:
-            del self.t[id]
-        return {"deleted": f"{id}@v{version}"}
 
     def delete_template(self, id: str) -> dict:
         t = self._tpl(id)
@@ -322,7 +283,7 @@ class FakeTemplateApi:
     def duplicate(self, id: str, new_id: str, name=None, version=None) -> dict:
         base = self._doc(id, version if version is not None else "latest")
         doc = json.loads(json.dumps(base))
-        doc.update(id=new_id, name=name or f"{base['name']} Copy", version=1, status="draft")
+        doc.update(id=new_id, name=name or f"{base['name']} Copy", version=1, status="published")
         self.t[new_id] = {"scope": "user", "type": base["type"], "versions": {1: doc}}
         return {"template": doc, "validation": _OK}
 

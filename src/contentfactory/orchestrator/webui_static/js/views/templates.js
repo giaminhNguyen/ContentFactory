@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { h, clear, loadCss } from "../dom.js";
 import { icon } from "../icons.js";
-import { btn, busy, field, input, select, badge, alertBox, emptyState, errorState, skeleton, pageHead, toast, toastError, confirmDialog, openDialog, switchCtl } from "../components.js";
+import { btn, busy, field, input, select, badge, alertBox, emptyState, errorState, skeleton, pageHead, toast, toastError, confirmDialog, openDialog } from "../components.js";
 import * as motion from "../motion.js";
 import { slug, validTemplateId, uniqueId } from "../templates_logic.js";
 
@@ -16,27 +16,23 @@ const CANVAS_PRESETS = {
 export function statusBadges(r) {
   const out = [];
   if (r.scope === "builtin") out.push(badge({ tone: "off", icon: "lock", label: "Có sẵn" }));
-  if (r.latest_published) out.push(badge({ tone: "done", icon: "check-circle", label: `Đã publish v${r.latest_published}` }));
-  if (r.draft) out.push(badge({ tone: "wait", icon: "file", label: `Bản nháp v${r.draft}` }));
-  if (!r.latest_published && !r.draft) out.push(badge({ tone: "queue", icon: "folder", label: "Đã lưu trữ" }));
   return out;
 }
 
 export async function mount(root, ctx) {
   loadCss("/css/templates.css");
   const { scope, navigate } = ctx;
-  let rows = [], type = "", archived = false, alive = true, animated = false;
+  let rows = [], type = "", alive = true, animated = false;
   const host = h("div", { class: "stack" });
   const typeSel = select({ options: [["", "Tất cả loại"], ["thumbnail", "Thumbnail"], ["video", "Video"]], value: type, onChange: (v) => { type = v; paint(); } });
-  const archSw = switchCtl({ label: "Hiện cả template đã lưu trữ", checked: false, onChange: (v) => { archived = v; load(); } });
   const newBtn = btn({ label: "Template mới", icon: "plus", kind: "primary", onClick: () => openNew() });
   root.append(pageHead("Template", "Bố cục thumbnail và video do ContentFlow quản lý. Chọn template cho từng kênh ở trang Kênh; sửa và thử ở Template Studio.", newBtn),
-    h("div", { class: "row tpl-filters" }, field({ label: "Loại", control: typeSel }), archSw), h("div", { "aria-live": "polite" }, host));
+    h("div", { class: "row tpl-filters" }, field({ label: "Loại", control: typeSel })), h("div", { "aria-live": "polite" }, host));
   host.append(skeleton(4));
 
   async function load() {
     try {
-      const r = await api.get("/api/templates", { query: { archived: archived ? 1 : 0 } });
+      const r = await api.get("/api/templates");
       if (!alive) return;
       rows = r.templates;
       paint();
@@ -65,17 +61,12 @@ export async function mount(root, ctx) {
     mini.firstChild.dataset.type = r.type;
     const used = r.used_by?.length ? h("span", { class: "small" }, "Đang dùng bởi: ", r.used_by.map((u) => `${u.channel} (${KEY_LABEL[u.key] || u.key})`).join(", ")) : h("span", { class: "small muted" }, "Chưa kênh nào chọn");
     const def = r.default_for?.length ? h("span", { class: "small muted" }, "Mặc định cho: ", r.default_for.map((k) => KEY_LABEL[k] || k).join(", ")) : null;
-    const open = btn({ label: r.scope === "builtin" ? "Xem" : r.draft ? "Sửa bản nháp" : "Mở", icon: "layout", kind: "primary", size: "sm", onClick: () => navigate(`/templates/${r.id}${r.draft ? `?v=${r.draft}` : ""}`) });
+    const open = btn({ label: r.scope === "builtin" ? "Xem" : "Sửa", icon: "layout", kind: "primary", size: "sm", onClick: () => navigate(`/templates/${r.id}`) });
     const dup = btn({ label: "Nhân bản", icon: "copy", size: "sm", onClick: () => openDuplicate(r) });
     // Hành động hợp lệ do BACKEND quyết định (r.actions); nút bị tắt luôn kèm lý do nhìn thấy được (không chỉ tooltip).
     const act = r.actions || {};
-    const arch = act.archive ? btn({ label: "Lưu trữ", icon: "folder", kind: "ghost", size: "sm", onClick: (e) => archive(r, e.currentTarget) }) : null;
-    const newDraft = act.new_draft ? btn({ label: "Bản nháp mới", icon: "plus", kind: "ghost", size: "sm", onClick: (e) => newDraftFor(r, e.currentTarget) }) : null;
-    const restore = act.restore ? btn({ label: "Khôi phục", icon: "undo", size: "sm", title: "Tạo bản nháp mới từ version gần nhất đã lưu trữ; publish lại để chọn cho kênh.", onClick: (e) => restoreFor(r, e.currentTarget) }) : null;
-    const del = act.delete_draft ? btn({ label: "Xoá bản nháp", icon: "trash", kind: "danger", size: "sm", disabled: !act.delete_draft.enabled, onClick: (e) => deleteDraft(r, e.currentTarget) }) : null;
     const delAll = act.delete ? btn({ label: "Xoá template", icon: "trash", kind: "danger", size: "sm", disabled: !act.delete.enabled, onClick: (e) => deleteTemplate(r, e.currentTarget) }) : null;
-    const blockedInfo = act.delete_draft && !act.delete_draft.enabled ? act.delete_draft : act.delete && !act.delete.enabled ? act.delete : null;
-    const blocked = blockedInfo ? alertBox({ tone: "wait", title: blockedInfo.blocked,
+    const blocked = act.delete && !act.delete.enabled ? alertBox({ tone: "wait", title: act.delete.blocked,
       actions: (r.used_by || []).map((u) => btn({ label: `Đổi template của kênh ${u.channel}`, size: "sm", href: `#/channels/${u.channel}` })) }) : null;
     return h("li", { class: "card tpl-card", dataset: { id: r.id } }, mini,
       h("div", { class: "tpl-body" },
@@ -83,7 +74,7 @@ export async function mount(root, ctx) {
         h("span", { class: "mono small muted" }, r.id),
         h("div", { class: "row" }, ...statusBadges(r)),
         r.description ? h("p", { class: "small muted" }, r.description) : null, used, def,
-        h("div", { class: "row tpl-actions" }, open, dup, restore, newDraft, arch, del, delAll), blocked));
+        h("div", { class: "row tpl-actions" }, open, dup, delAll), blocked));
   }
 
   // ---------- Template mới ----------
@@ -107,7 +98,7 @@ export async function mount(root, ctx) {
     nameIn.addEventListener("input", () => { nameF.setError(null); if (!idTouched) { idIn.value = slug(nameIn.value); } });
     idIn.addEventListener("input", () => { idTouched = true; idF.setError(null); });
     const content = h("div", { class: "stack" }, h("div", { class: "field" }, h("div", { class: "label" }, "Loại"), typeIn), nameF, idF, field({ label: "Kích thước canvas", control: preset }), custom);
-    openDialog({ title: "Template mới", content, describe: "Tạo bản nháp trống với bố cục khởi đầu; sửa và publish ở Template Studio.", actions: [{ label: "Huỷ", value: null }, { label: "Tạo và mở Studio", kind: "primary", value: "ok", onClick: async () => {
+    openDialog({ title: "Template mới", content, describe: "Tạo template với bố cục khởi đầu; sửa ở Template Studio, chọn cho kênh ở trang Kênh ngay khi lưu.", actions: [{ label: "Huỷ", value: null }, { label: "Tạo và mở Studio", kind: "primary", value: "ok", onClick: async () => {
       const id = idIn.value.trim();
       if (!nameIn.value.trim()) { nameF.setError("Đặt tên cho template."); return false; }
       if (!validTemplateId(id)) { idF.setError("Mã không hợp lệ: 2–48 ký tự, chữ thường không dấu, số, _; bắt đầu bằng chữ hoặc số."); return false; }
@@ -140,22 +131,9 @@ export async function mount(root, ctx) {
       } }] });
   }
 
-  async function deleteDraft(r, button) {
-    const d = r.actions.delete_draft;
-    const body = d.removes_template ? `“${r.name || r.id}” chỉ có bản nháp này nên template sẽ biến mất. Không thể khôi phục.` : `Xoá bản nháp v${d.version}. Các bản đã publish giữ nguyên. Không thể khôi phục.`;
-    if (!(await confirmDialog({ title: "Xoá bản nháp?", body, confirmLabel: "Xoá", danger: true }))) return;
-    await busy(button, async () => {
-      try {
-        await api.del(`/api/templates/${r.id}/${d.version}`);
-        toast({ title: "Đã xoá bản nháp", tone: "done" });
-      } catch (e) { toastError(e, "Chưa xoá được"); }
-      await load();                                                                  // luôn làm mới: danh sách phản ánh ngay trạng thái thật (kể cả khi đã xoá ở nơi khác)
-    });
-  }
-
   async function deleteTemplate(r, button) {
     const n = r.actions.delete.versions;
-    const body = `Xoá “${r.name || r.id}” cùng ${n} version (kể cả bản đã publish). Job đã tạo vẫn render được vì giữ bản sao của version đã dùng. Không thể khôi phục.`;
+    const body = `Xoá “${r.name || r.id}” cùng ${n} version . Job đã tạo vẫn render được vì giữ bản sao của version đã dùng. Không thể khôi phục.`;
     if (!(await confirmDialog({ title: "Xoá template?", body, confirmLabel: "Xoá", danger: true }))) return;
     await busy(button, async () => {
       try {
@@ -163,31 +141,6 @@ export async function mount(root, ctx) {
         toast({ title: "Đã xoá template", tone: "done" });
       } catch (e) { toastError(e, "Chưa xoá được"); }
       await load();
-    });
-  }
-
-  async function newDraftFor(r, button) {
-    await busy(button, async () => {
-      try { await api.post(`/api/templates/${r.id}/new-draft`, {}); navigate(`/templates/${r.id}`); } catch (e) { toastError(e, "Chưa tạo được bản nháp"); }
-    });
-  }
-
-  async function restoreFor(r, button) {
-    await busy(button, async () => {
-      try { await api.post(`/api/templates/${r.id}/restore`, {}); toast({ title: "Đã tạo bản nháp từ bản lưu trữ", message: "Sửa nếu cần rồi Publish để chọn lại cho kênh.", tone: "done" }); navigate(`/templates/${r.id}`); }
-      catch (e) { toastError(e, "Chưa khôi phục được"); }
-    });
-  }
-
-  async function archive(r, button) {
-    const used = r.used_by?.length ? ` ${r.used_by.length} kênh đang chọn template này; job mới của các kênh đó sẽ báo lỗi cho tới khi họ chọn template khác.` : "";
-    if (!(await confirmDialog({ title: `Lưu trữ “${r.name || r.id}”?`, body: `Template sẽ không còn được đề xuất cho kênh. Job đã tạo vẫn dùng đúng version cũ.${used}`, confirmLabel: "Lưu trữ", danger: true }))) return;
-    await busy(button, async () => {
-      try {
-        const res = await api.post(`/api/templates/${r.id}/archive`, {});
-        toast({ title: "Đã lưu trữ template", message: res.warning || undefined, tone: res.warning ? "wait" : "done", sticky: !!res.warning });
-        await load();
-      } catch (e) { toastError(e, "Chưa lưu trữ được"); }
     });
   }
 
