@@ -19,11 +19,10 @@ from pathlib import Path
 
 from contentfactory.workers.errors import WorkerErrorClass
 from contentfactory.workers.models import WorkerStatus
+from contentfactory.workers.validation import FORBIDDEN_MARKER
 from .base import BaseDriver, DetectedExecutable, ExecRequest, ExecResult, ProbeResult
 
-# marker mà validator của ContentFactory cấm (W1.14)
-FORBIDDEN_MARKER = "<<INVALID_OUTPUT>>"
-
+# marker mà validator của ContentFactory cấm (W1.14) — định nghĩa ở workers/validation.py
 _OK_TEXT = "# chương thử\n\nNội dung do fake worker tạo ra.\n"
 _BEHAVIOR = {
     "temporary": WorkerErrorClass.TEMPORARY,

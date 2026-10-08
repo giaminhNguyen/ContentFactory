@@ -41,6 +41,10 @@ class WorkerRegistry:
     def driver_ids(self) -> list[str]:
         return sorted(set(CLASSES) | set(self._drivers))
 
+    def register_driver(self, driver_id: str, driver: BaseDriver) -> None:
+        """Tiêm driver (test và driver tự đăng ký ngoài registry mặc định)."""
+        self._drivers[driver_id] = driver
+
     # -- đọc --------------------------------------------------------------------------------
     def get(self, worker_id: str) -> Worker:
         w = self.store.worker(worker_id)
