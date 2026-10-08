@@ -21,7 +21,13 @@ from ..render.contentflow import ContentFlowRender
 from ..source.chain import ProviderChain
 from ..tts.planner import RuleSegmentPlanner
 from ..source.providers import LocalSubtitleProvider, PlainTextProvider, SubtitleSupperVipProvider, YtDlpProvider
+from ..workers.drivers.claude_cli import ClaudeCliDriver
+from ..workers.manager import WorkerManager
+from ..workers.registry import WorkerRegistry
+from ..workers.runner import DriverRunner, WorkerRunner
+from ..workers.store import WorkerStore
 from .config import Config
+from .validation import validate_kind
 
 
 def _source_chain(cfg: Config) -> ProviderChain:
@@ -50,6 +56,21 @@ def _contentflow(cfg: Config) -> ContentFlowRender:
                               "verify_output": cf.get("verify_output", True)})
 
 
+def _story_runner(cfg: Config, sb: dict):
+    """Runner cho StoryBranchAdapter (W1: story.write đi qua Worker Runtime).
+
+    Đã cấu hình routing `story.write` trong workers.db -> WorkerManager (retry/fallback/cooldown
+    + validation gate); chưa -> chạy thẳng ClaudeCliDriver một CLI như trước đây.
+    """
+    driver = ClaudeCliDriver(sb)
+    reg = WorkerRegistry(WorkerStore(cfg.path("runtime") / "workers.db"), drivers={"claude_cli": driver})
+    if "story.write" not in reg.routing():
+        return DriverRunner(driver)
+    mgr = WorkerManager(reg, cfg.path("runtime") / "workspace",
+                        validate=lambda path, work_type: validate_kind(work_type, path))
+    return WorkerRunner(mgr)
+
+
 def _factories(cfg: Config) -> dict:
     sb = cfg.data.get("story_branch", {})
     oh_root = Path(sb.get("oh_story_root") or cfg.root / "modules" / "oh-story-claudecode")
@@ -59,7 +80,7 @@ def _factories(cfg: Config) -> dict:
         ("source", "fake"): fake.FakeSource,
         ("source", "provider_chain"): lambda: _source_chain(cfg),
         ("story", "fake"): fake.FakeStory,
-        ("story", "story_branch"): lambda: StoryBranchAdapter(sb, oh_root),
+        ("story", "story_branch"): lambda: StoryBranchAdapter(sb, oh_root, runner=_story_runner(cfg, sb)),
         ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("render", "contentflow"): lambda: _contentflow(cfg),

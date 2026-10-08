@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
-from ..contracts import CancelToken
+from ..contracts import CancelToken, ErrorClass, StageError
 from ..fsutil import atomic_write
 from . import policy as policy_mod
 from .drivers.base import ExecRequest, ExecResult
@@ -34,6 +34,9 @@ class RunResult:
     output_path: Path | None = None     # file canonical sau promote
     error: WorkerError | None = None    # lỗi cuối khi ok=False
     reason: str = ""                    # vì sao dừng (thành công / hết worker / hết lượt)
+    text: str = ""                      # text mà lượt chạy thành công trả về (driver dạng hội thoại)
+    session_id: str | None = None       # session để tiếp lượt sau (agent CLI)
+    cost_usd: float = 0.0
 
     @property
     def final(self) -> Attempt | None:
@@ -55,7 +58,10 @@ class WorkerManager:
     # -- chạy ----------------------------------------------------------------------------------
     def run(self, work_type: WorkType, *, prompt: str = "", job_id: str = "", stage: str = "",
             output: Path | None = None, timeout_s: float | None = None,
-            cancel: CancelToken | None = None, meta: dict | None = None) -> RunResult:
+            cancel: CancelToken | None = None, meta: dict | None = None,
+            cwd: Path | None = None) -> RunResult:
+        """`cwd`: thư mục LÀM VIỆC dùng chung (adapter có trạng thái trên đĩa như oh-story) —
+        không truyền thì chạy trong attempt workspace riêng. Kết quả promote ra `output`."""
         routing = self.reg.routing().get(work_type) or {}
         policy = policy_mod.merge(routing.get("policy"))
         attempts: list[Attempt] = []
@@ -85,7 +91,12 @@ class WorkerManager:
                     chosen.add(target.worker.id)
 
             attempt = self._begin(work_type, target, job_id, stage, timeout_s)
-            result = self._execute(target, attempt, prompt, timeout_s, cancel, meta)
+            try:
+                result = self._execute(target, attempt, prompt, timeout_s, cancel, meta, cwd)
+            except StageError as e:                       # driver ném CANCELLED -> ghi nhận rồi lan ra
+                attempts.append(self._finish(attempt, AttemptState.FAILED,
+                                             WorkerError.from_stage_error(e), ExecResult(ok=False)))
+                raise
             if not result.ok:
                 err = result.error or WorkerError.from_text(
                     WorkerErrorClass.UNKNOWN, "EXEC_FAILED", raw=result.text)
@@ -96,7 +107,11 @@ class WorkerManager:
                 pending = self._retry_or_fallback(target, err, policy, tries, used)
                 continue
 
-            errors = validate_output(result.output_path, work_type, extra=self.validate)
+            if result.output_path is not None:
+                errors = validate_output(result.output_path, work_type, extra=self.validate)
+            else:
+                # driver hội thoại không ghi file: text trả về chính là output
+                errors = [] if (result.text or "").strip() else ["không có output"]
             if errors:
                 err = WorkerError.from_text(WorkerErrorClass.INVALID_OUTPUT, "OUTPUT_INVALID",
                                             message="; ".join(errors))
@@ -112,6 +127,7 @@ class WorkerManager:
             attempts.append(self._finish(attempt, AttemptState.SUCCESS, None, result))
             self._register_success(target.worker)
             return RunResult(ok=True, work_type=work_type, attempts=attempts, output_path=promoted,
+                             text=result.text, session_id=result.session_id, cost_usd=result.cost_usd,
                              reason=f"thành công qua {len(attempts)} attempt: {target.worker.name}")
 
         if len(attempts) >= int(policy["max_total_attempts"]):
@@ -136,13 +152,20 @@ class WorkerManager:
                        workspace=str(ws), meta={"timeout_s": timeout_s or w.timeout_s})
 
     def _execute(self, target: ExecutionTarget, attempt: Attempt, prompt: str,
-                 timeout_s: float | None, cancel: CancelToken | None, meta: dict | None) -> ExecResult:
+                 timeout_s: float | None, cancel: CancelToken | None, meta: dict | None,
+                 cwd: Path | None = None) -> ExecResult:
         w = target.worker
-        req = ExecRequest(work_type=attempt.work_type, prompt=prompt, cwd=Path(attempt.workspace),
-                          model=target.model, timeout_s=timeout_s or w.timeout_s,
+        work_dir = Path(cwd) if cwd is not None else Path(attempt.workspace)
+        req = ExecRequest(work_type=attempt.work_type, prompt=prompt, cwd=work_dir,
+                          model=target.model, session=(meta or {}).get("session"),
+                          timeout_s=timeout_s or w.timeout_s,
                           cancel=cancel or CancelToken(), meta=dict(meta or {}))
         try:
             return self.reg.driver(w.driver_id).execute(req)
+        except StageError as e:
+            if e.error_class is ErrorClass.CANCELLED:       # hủy job không phải lỗi worker
+                raise
+            return ExecResult(ok=False, text=e.message, error=WorkerError.from_stage_error(e))
         except NotImplementedError as e:                    # driver chưa dựng lệnh -> lỗi rõ ràng
             return ExecResult(ok=False, text=str(e), error=WorkerError.from_text(
                 WorkerErrorClass.UNKNOWN, "DRIVER_UNSUPPORTED", raw=str(e)))

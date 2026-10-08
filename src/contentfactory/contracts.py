@@ -256,6 +256,20 @@ class StoryAdapter(Protocol):
     def health(self) -> dict: ...
 
 
+# ---- Agent (một lượt chạy CLI agent; adapter sinh truyện gọi qua hợp đồng này) --------------
+class AgentTurn(TypedDict):
+    session_id: str | None
+    text: str
+    cost_usd: float
+    is_error: bool
+
+
+class AgentRunner(Protocol):
+    """Một lượt agent. Adapter KHÔNG biết CLI nào chạy lượt đó — runner do composition root tiêm
+    (`orchestrator/registry.py`): WorkerRunner (đi qua retry/fallback) hoặc chạy thẳng một driver."""
+    def run(self, prompt: str, cwd: Path, session: str | None, ctx: StageContext) -> AgentTurn: ...
+
+
 # ---- TTS ------------------------------------------------------------------------------------
 class Segment(TypedDict):
     index: int

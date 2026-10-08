@@ -1,16 +1,13 @@
 import json
-import os
 import shutil
 import sys
 import tempfile
-import threading
-import time
 import unittest
 from pathlib import Path
 
-from contentfactory.adapters.story_branch import (FOLLOW_UP, ClaudeCliRunner, StoryBranchAdapter, _deploy)
+from contentfactory.adapters.story_branch import (FOLLOW_UP, StoryBranchAdapter, _deploy)
 from contentfactory.contracts import CancelToken, ErrorClass, StageError
-from contentfactory.orchestrator.registry import build_adapters
+from contentfactory.orchestrator.registry import build_adapter, build_adapters
 from contentfactory.orchestrator.config import load_config
 from contentfactory.orchestrator.runner import Orchestrator
 from contentfactory.jobs import pipeline as P
@@ -21,7 +18,6 @@ from contentfactory.story.validate import validate_story_text
 from tests.fakes import URL, FakeYtDlp, ScriptedOhStory, make_ctx, stub_deploy
 from tests.support import RootCase, params
 
-HERE = Path(__file__).resolve().parent
 TITLE = "Chuyện ma ở nhà cũ"
 EXPECTED_ORDER = ["/story-branch analyze", "/story-branch explore", "/story-branch create", "/story-branch handoff",
                   "/story-long-write 开书"]
@@ -142,74 +138,16 @@ class StoryBranchAdapterTest(unittest.TestCase):
         self.assertTrue((ws / "CLAUDE.md").is_file())
 
 
-class ClaudeCliRunnerTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="cf-cli-"))
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.stub = [sys.executable, str(HERE / "fake_claude.py")]
+class StoryRunnerWiringTest(RootCase):
+    """Composition root (orchestrator/registry) tiêm runner cho StoryBranchAdapter — adapter không
+    còn tự dựng CLI vendor. Chưa cấu hình routing story.write thì chạy thẳng một driver (cũ như trước)."""
 
-    def runner(self, mode="ok", **cfg):
-        env = {"FAKE_CLAUDE_MODE": mode, "FAKE_CLAUDE_ARGS_FILE": str(self.tmp / "args.json")}
-        return ClaudeCliRunner({"claude_cmd": self.stub, "env": env, **cfg})
-
-    def test_command_line_isolates_the_session_and_limits_tools(self):
-        cmd = ClaudeCliRunner({"claude_cmd": ["claude"], "model": "m", "max_budget_usd_per_turn": 2}).command("SID")
-        for flag in ("-p", "--strict-mcp-config", "--verbose"):
-            self.assertIn(flag, cmd)
-        self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "project,local")     # không nạp CLAUDE.md/plugin/hook của người dùng
-        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
-        self.assertEqual(cmd[cmd.index("--resume") + 1], "SID")
-        self.assertEqual(cmd[cmd.index("--max-budget-usd") + 1], "2")
-        self.assertIn("--allowedTools", cmd)
-        self.assertLess(cmd.index("--model"), cmd.index("--allowedTools"))             # variadic nằm cuối
-        bypass = ClaudeCliRunner({"claude_cmd": ["claude"], "permission_mode": "bypassPermissions"}).command(None)
-        self.assertNotIn("--allowedTools", bypass)
-        self.assertNotIn("--resume", bypass)
-
-    def test_parses_result_and_strips_nested_session_env(self):
-        os.environ["CLAUDECODE"] = "1"
-        self.addCleanup(os.environ.pop, "CLAUDECODE", None)
-        turn = self.runner().run("/story-branch analyze", self.tmp, None, make_ctx(self.tmp))
-        self.assertEqual((turn["session_id"], turn["text"], turn["cost_usd"]), ("SID", "xong lượt", 0.0123))
-        seen = json.loads((self.tmp / "args.json").read_text(encoding="utf-8"))
-        self.assertEqual(seen["claude_env"], [])
-        self.assertEqual(Path(seen["cwd"]).resolve(), self.tmp.resolve())
-
-    def test_waits_for_background_tasks_before_finishing(self):
-        t0 = time.time()
-        turn = self.runner("background").run("x", self.tmp, None, make_ctx(self.tmp))
-        self.assertEqual(turn["text"], "xong sau tác vụ nền")                 # lấy result SAU khi tác vụ nền xong
-        self.assertGreaterEqual(time.time() - t0, 0.5)
-
-    def test_does_not_hang_when_cli_stays_silent_after_background_tasks(self):
-        t0 = time.time()
-        turn = self.runner("background_silent", background_grace_s=1).run("x", self.tmp, None, make_ctx(self.tmp))
-        self.assertEqual(turn["text"], "lượt đầu")
-        self.assertLess(time.time() - t0, 15)
-
-    def test_not_logged_in_is_an_auth_error(self):
-        with self.assertRaises(StageError) as cm:
-            self.runner("auth").run("x", self.tmp, None, make_ctx(self.tmp))
-        self.assertEqual((cm.exception.error_class, cm.exception.code), (ErrorClass.AUTH, "CLAUDE_NOT_LOGGED_IN"))
-
-    def test_crash_without_result_is_transient(self):
-        with self.assertRaises(StageError) as cm:
-            self.runner("noresult").run("x", self.tmp, None, make_ctx(self.tmp))
-        self.assertEqual((cm.exception.error_class, cm.exception.code), (ErrorClass.TRANSIENT, "AGENT_NO_RESULT"))
-
-    def test_cancel_kills_a_hung_turn(self):
-        cancel = CancelToken()
-        threading.Timer(1.0, cancel.set).start()
-        t0 = time.time()
-        with self.assertRaises(StageError) as cm:
-            self.runner("hang").run("x", self.tmp, None, make_ctx(self.tmp, cancel=cancel))
-        self.assertEqual(cm.exception.error_class, ErrorClass.CANCELLED)
-        self.assertLess(time.time() - t0, 10)
-
-    def test_missing_cli_is_a_resource_error(self):
-        with self.assertRaises(StageError) as cm:
-            ClaudeCliRunner({"claude_cmd": ["khong-co-claude"]}).run("x", self.tmp, None, make_ctx(self.tmp))
-        self.assertEqual(cm.exception.code, "CLAUDE_CLI_MISSING")
+    def test_story_adapter_is_built_with_a_runner(self):
+        cfg = load_config(self.root)
+        cfg["adapters"]["story"] = "story_branch"
+        ad = build_adapter(cfg, "story")
+        self.assertIn(type(ad.runner).__name__, {"DriverRunner", "WorkerRunner"})
+        self.assertIn("ok", ad.health())                     # health() chạy được với runner tiêm sẵn
 
 
 class StoryStageTest(unittest.TestCase):
