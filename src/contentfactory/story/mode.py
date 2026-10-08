@@ -40,6 +40,7 @@ STORY_FIELDS = [
     ("source_rights", "select", "unknown", {"options": RIGHTS}, "Quyền sử dụng nguồn", "Không rõ ⇒ báo cáo originality sẽ đánh dấu cần người xem lại."),
     ("source_provenance", "text", "", {"max_len": 300}, "Nguồn gốc / ghi chú bản quyền", "Ghi lại nguồn và quyền bạn có (chỉ để lưu vết)."),
     ("rights_ack", "bool", False, {}, "Tôi hiểu: nguồn chỉ dùng để học mô-típ", "Hệ thống không tuyên bố ‘an toàn bản quyền’."),
+    ("review_accepted", "bool", False, {}, "Đã xem báo cáo originality — tiếp tục", "Chỉ bật sau khi bạn đã đọc báo cáo khi hệ thống yêu cầu xem lại."),
     ("auto_select_premise", "bool", True, {}, "Tự chọn ý tưởng tốt nhất", "Tắt = dừng lại cho bạn xem/chọn ý tưởng trước khi viết."),
     ("outline_gate", "bool", True, {}, "Kiểm tra đại cương trước khi viết dài", "Chặn sớm đại cương yếu/giống nguồn, tránh tốn chi phí viết cả truyện."),
     ("premise_candidates", "int", 3, {"min": 2, "max": 6}, "Số ý tưởng ứng viên", "Nhiều hơn = chọn tốt hơn nhưng tốn hơn."),
@@ -176,7 +177,7 @@ def of_job(params: dict) -> dict:
 
 
 # Phần của cấu hình ảnh hưởng nội dung ⇒ vào stage_key. Cố ý BỎ: rights_ack, source_provenance (chỉ lưu vết), budget_usd (không đổi nội dung).
-_NOT_IN_KEY = {"story": {"rights_ack", "source_provenance", "budget_usd"}, "character_universe": set()}
+_NOT_IN_KEY = {"story": {"rights_ack", "source_provenance", "budget_usd", "review_accepted"}, "character_universe": set()}
 
 
 def _key(m: dict) -> dict:

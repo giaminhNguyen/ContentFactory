@@ -11,6 +11,7 @@ import { openClone, confirmCancel, openRerollThumbnail } from "./_job_control.js
 import { openEditJob } from "./_job_edit.js";
 import { openProsodyDialog } from "./_prosody.js";
 import { storyGuidanceCard } from "./_story_guidance.js";
+import { remixPlanCard } from "./_remix_plan.js";
 import { openRerunDialog, rerunBanner, rerunHistoryCard } from "./_rerun.js";
 import { countBadge, countLabel, finishedSession, RESULT_LABEL } from "../rerun_logic.js";
 import { externalLink } from "./_batch_ui.js";
@@ -29,6 +30,7 @@ export async function mount(root, ctx) {
   const controlHost = h("div", null);
   const thumbHost = h("div", null);
   const guidanceHost = h("div", null);
+  const remixHost = h("div", null);
   const rerunHost = h("div", { "aria-live": "polite" });
   const history = rerunHistoryCard(id);
   let lastActive = null;
@@ -37,7 +39,7 @@ export async function mount(root, ctx) {
   const stagesCard = h("section", { class: "card", "aria-labelledby": "pipe-h" }, h("div", { class: "card-title" }, h("h2", { id: "pipe-h" }, "Pipeline")), stagesList);
   const outputHost = h("div", null);
   const techHost = h("div", null);
-  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, rerunHost, controlHost, thumbHost, guidanceHost, stagesCard, history.el, outputHost, techHost));
+  root.append(h("p", null, btn({ label: "Tất cả job", icon: "list", kind: "ghost", size: "sm", href: "#/jobs" })), head, h("div", { class: "stack" }, alertHost, autoHost, rerunHost, controlHost, thumbHost, remixHost, guidanceHost, stagesCard, history.el, outputHost, techHost));
   head.append(skeleton(2));
 
   // ---------- tải ----------
@@ -67,6 +69,7 @@ export async function mount(root, ctx) {
     sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
     sig("thumb", [JSON.stringify(d.thumbnail), d.pending_revision?.revision], () => paintThumb(d));
     sig("guidance", [JSON.stringify(d.story_guidance)], () => { clear(guidanceHost); const c = storyGuidanceCard(d, { after }); if (c) guidanceHost.append(c); });
+    sig("remix", [d.story_mode?.mode, d.status, JSON.stringify(d.pipeline.map((s) => s.state))], () => { clear(remixHost); const c = remixPlanCard(id, d); if (c) remixHost.append(c); });
     sig("rerun", [JSON.stringify(d.rerun?.active)], () => { clear(rerunHost); const b = rerunBanner(d); if (b) rerunHost.append(b); });
     const done = finishedSession(lastActive, d.rerun?.active);                       // phiên vừa kết thúc: báo kết quả + làm mới lịch sử
     lastActive = d.rerun?.active || null;

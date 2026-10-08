@@ -252,6 +252,19 @@ class SourceBundle(_SourceBundleRequired, total=False):
     guidance: str            # đề xuất sáng tạo hiệu lực của người dùng (D-112); thiếu/rỗng = không có
 
 
+class LLMResult(TypedDict, total=False):
+    text: str
+    cost_usd: float | None        # None = nhà cung cấp không báo (KHÔNG suy đoán; báo cáo ghi "unknown")
+    tokens_in: int | None
+    tokens_out: int | None
+    seconds: float
+
+
+class TextLLM(Protocol):
+    """Một lượt gọi LLM không công cụ: prompt → văn bản (thường là JSON). Story Remix dùng cái này cho phân tích/ý tưởng/đại cương/viết chương; bản thật nằm ở adapters/."""
+    def complete(self, prompt: str, *, system: str, step: str, ctx: "StageContext | None" = None) -> LLMResult: ...
+
+
 class StoryResult(TypedDict):
     sections: list[Path]   # các section/chương nội bộ theo thứ tự; Story Assembler (stage) dựng story.txt từ đây
     stats: dict

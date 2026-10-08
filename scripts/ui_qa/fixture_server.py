@@ -36,6 +36,7 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--many", type=int, default=0, help="thêm N job nhỏ (subtitle-only) để kiểm tra danh sách lớn")
     ap.add_argument("--universe-demo", action="store_true", help="gieo vài nhân vật + một dàn nhân vật staged (kiểm tra màn Kho nhân vật/dàn nhân vật)")
+    ap.add_argument("--remix-demo", action="store_true", help="tạo một job Story Remix mẫu kèm kế hoạch (LLM giả) để kiểm tra thẻ Kế hoạch Story Remix")
     ap.add_argument("--empty", action="store_true", help="không tạo dữ liệu mẫu (kiểm tra trạng thái trống)")
     a = ap.parse_args()
     root = make_root()
@@ -68,6 +69,18 @@ def main() -> int:
     from tests.test_batches import FakeYouTube, discovery as make_discovery, entry as yt_entry         # noqa: E402 - kênh YouTube giả (chỉ metadata) cho Channel Run
     orc.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(30, live_status="is_upcoming"), yt_entry(29, live_status="was_live")] + [yt_entry(i) for i in range(28, 0, -1)]))
     fx["channel_url"] = "@abc"
+    if a.remix_demo:
+        from unittest import mock                                                                           # noqa: E402
+        from contentfactory.jobs.workspace import job_dir                                                    # noqa: E402
+        from contentfactory.orchestrator.remix_universe import UniverseBridge                                # noqa: E402
+        from contentfactory.story import mode as SM                                                          # noqa: E402
+        from contentfactory.story_remix.plan import plan_story                                               # noqa: E402
+        from tests.fakes_remix import SOURCE, RemixFakeLLM, premise                                          # noqa: E402
+        with mock.patch.object(SM, "BACKEND_READY", True):
+            rid = orc.submit(params(channel="kenh_a", project={"title": "Truyện Remix mẫu"}, story_mode={"mode": "story_remix", "story": {"tone": "căng thẳng"}}), mode="STORY_ONLY", auto_resume=False)
+        plan_story(RemixFakeLLM(premises_by_call=[[premise("P1"), premise("P2", weak=True), premise("P3", weak=True)]], outline_gap=50, outline_repair_gap=2), UniverseBridge(orc.universe), SOURCE, "T", "vi",
+                   SM.parse({"mode": "story_remix"}), {"target_chars": 18000, "chapter_chars": 3000}, job_dir(orc.cfg.path("workspace"), rid) / "story" / "remix", rid)
+        fx["remix_job"] = rid
     opened = root / "opened.log"
     app = App(orc, run_loop=True, opener=lambda p: opened.open("a", encoding="utf-8").write(p + "\n"))
     orc.monitor.probes["network"] = type("Down", (), {"resource": "network", "check": lambda s: (False, "mất mạng (giả lập)")})()

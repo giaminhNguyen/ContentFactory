@@ -1103,7 +1103,30 @@ class Service:
         except Exception:                                                              # noqa: BLE001
             return None
 
-    # ---- Chế độ truyện (Story hiện có | Story Remix)
+    def remix_plan(self, job_id: str) -> dict:
+        """Kế hoạch Story Remix của job (đọc artifact do bước lập kế hoạch ghi): ý tưởng đã chọn + lý do loại, dàn nhân vật, cổng originality/nhịp thưởng, chi phí, đại cương."""
+        j = self._job_or_error(job_id)
+        mode = SM.of_job(j["params"])
+        if mode["mode"] != "story_remix":
+            return {"active": False}
+        d = job_dir(self.cfg.path("workspace"), job_id) / "story" / "remix"
+
+        def rd(name: str):
+            try:
+                return json.loads((d / name).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+        sel, cands, outline, cost = rd("selection_report.json"), rd("premise_candidates.json"), rd("outline.json"), rd("cost_report.json")
+        premises = None
+        if sel and cands:
+            premises = [{"id": p["id"], "logline": p["logline"], "total": sel["scores"].get(p["id"], {}).get("total"), "selected": p["id"] == sel["selected"],
+                         "reason": next((r["reason"] for r in sel["rejected"] if r["id"] == p["id"]), "")} for p in cands["candidates"]]
+        return {"active": True, "mode": mode, "ready": bool(outline), "dna": rd("source_dna.json"), "premises": premises, "selection_min": sel and sel.get("min_select"), "cast": rd("character_cast.json"),
+                "originality": rd("originality_report.json"), "quality": rd("quality_report.json"), "bible": (lambda b: b and {"title": b["title"], "themes": b["themes"]})(rd("story_bible.json")),
+                "outline": outline and [{"n": c["n"], "title": c["title"], "payoff": c["payoff"] and c["payoff"]["type"], "cast": len(c["cast"])} for c in outline["chapters"]],
+                "cost": cost and {k: v for k, v in cost.items() if k != "call_log"}}
+
+    # ---- Chế độ truyện (Story Remix | Story hiện có)
     def story_mode_info(self) -> dict:
         """Mô tả cho UI: các mode (kèm khả dụng + lý do), schema trường, mặc định hệ thống. Cùng schema server dùng để kiểm."""
         return SM.describe(self.cfg.data.get("story"))

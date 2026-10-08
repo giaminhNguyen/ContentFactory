@@ -168,6 +168,30 @@ if (wanted("cast")) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------- Phase 4: thẻ Kế hoạch Story Remix (cần fixture --remix-demo)
+if (wanted("plan")) {
+  for (const [label, opts] of [["desktop", {}], ["mobile", { width: 390, height: 844 }], ["dark", { scheme: "dark" }]]) {
+    const page = await newPage(opts);
+    await go(page, `/jobs/${fx.remix_job}`);
+    await page.waitForSelector("#rp-h");
+    await page.waitForSelector("text=Ý tưởng: đã chọn 1 trong 3");
+    const card = page.locator("section:has(#rp-h)");
+    const txt = await card.innerText();
+    check(`plan/${label}: hiện ý tưởng được chọn và các ý tưởng bị loại kèm lý do`, /Được chọn/.test(txt) && (txt.match(/Bị loại/g) || []).length === 2 && /yếu nhất/.test(txt));
+    check(`plan/${label}: có dàn nhân vật đã chốt, cổng originality, nhịp thưởng, chi phí`, /Dàn nhân vật \(3\)/.test(txt) && /Kiểm tra độ giống nguồn/.test(txt) && /Kiểm tra nhịp thưởng/.test(txt) && /Chi phí đã biết/.test(txt));
+    check(`plan/${label}: không tuyên bố an toàn bản quyền`, !/an toàn bản quyền|đã xác minh/i.test(txt.replace("KHÔNG phải xác nhận quyền sử dụng hay an toàn bản quyền", "")));
+    check(`plan/${label}: không lọt 'null'/'undefined'`, !/(null|undefined)/.test(await page.locator("#view").innerText()));
+    if (label === "desktop") {
+      await page.click("button:has-text('Kiểm tra nhịp thưởng cảm xúc')");
+      check("plan: đại cương đã được sửa 1 lượt hiển thị", /Đã sửa đại cương 1 lượt/.test(await card.innerText()));
+    }
+    await shot(page, `plan-${label}`);
+    await noOverflowEl(page, "section:has(#rp-h)", `plan/${label}`);
+    await axe(page, `plan/${label}`);
+    clean(page, `plan/${label}`);
+  }
+}
+
 await browser.close();
 console.log(failures ? `\n${failures} kiểm tra thất bại` : "\nTất cả đạt");
 process.exit(failures ? 1 : 0);

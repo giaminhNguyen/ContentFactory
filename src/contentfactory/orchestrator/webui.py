@@ -171,6 +171,10 @@ class Api:
     def batch_target(app, m, q, b):
         return app.orc.batch_service().update_pipeline(m["id"], str(b.get("target_stage") or ""), b.get("scope") or "unfinished", b.get("job_ids"))
 
+    @route("GET", r"/api/jobs/(?P<id>[\w\-]+)/remix")
+    def job_remix(app, m, q, b):
+        return app.service.remix_plan(m["id"])
+
     @route("GET", "/api/story-mode")
     def story_mode(app, m, q, b):
         return app.service.story_mode_info()
