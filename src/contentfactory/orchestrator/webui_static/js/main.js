@@ -14,6 +14,7 @@ const NAV = [
   ["tts", "/tts", "Giọng đọc", "mic"],
   ["pools", "/pools", "Nguồn Media", "film"],
   ["templates", "/templates", "Template", "layout"],
+  ["universe", "/universe", "Kho nhân vật", "database"],
   ["settings", "/settings", "Cài đặt & Doctor", "settings"],
 ];
 

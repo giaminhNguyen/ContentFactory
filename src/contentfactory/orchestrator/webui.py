@@ -26,6 +26,7 @@ from .service import Service
 from .service_admin import AdminService
 from .service_image_pools import ImagePoolService
 from .service_templates import Raw, TemplateService
+from .service_universe import UniverseService
 
 STATIC = Path(__file__).resolve().parent / "webui_static"
 MAX_JSON = 1 << 20
@@ -43,6 +44,7 @@ class App:
         self.orc, self.cfg = orc, orc.cfg
         self.service, self.admin = Service(orc), AdminService(orc)
         self.templates = TemplateService(orc)
+        self.universe = UniverseService(orc)
         self.watermarks = self.service.watermarks
         self.image_pools = ImagePoolService(orc, self.admin)
         self.token = token or secrets.token_urlsafe(24)
@@ -108,7 +110,7 @@ def _int(q: dict, key: str, default: int, lo: int = 0, hi: int = 1000) -> int:
 
 
 ROUTES: list[tuple[str, re.Pattern, str]] = []
-RAW_BODY = {"channel_asset", "asset_import", "watermark_upload", "watermark_replace"}                                 # PUT nhận byte thô (watermark, ảnh asset), không phải JSON
+RAW_BODY = {"channel_asset", "asset_import", "watermark_upload", "watermark_replace", "universe_import_preview", "universe_import_apply"}                                 # PUT nhận byte thô (watermark, ảnh asset), không phải JSON
 
 
 def route(method: str, pattern: str):
@@ -176,6 +178,47 @@ class Api:
     @route("POST", "/api/story-mode/effective")
     def story_mode_effective(app, m, q, b):
         return app.service.story_mode_effective(b)
+
+    @route("GET", "/api/universe/summary")
+    def universe_summary(app, m, q, b):
+        return app.universe.summary()
+
+    @route("GET", "/api/universe/characters")
+    def universe_list(app, m, q, b):
+        return app.universe.list(q)
+
+    @route("POST", "/api/universe/characters")
+    def universe_create(app, m, q, b):
+        return app.universe.create(b)
+
+    @route("GET", r"/api/universe/characters/(?P<id>[\w\-]+)")
+    def universe_detail(app, m, q, b):
+        return app.universe.detail(m["id"])
+
+    @route("PUT", r"/api/universe/characters/(?P<id>[\w\-]+)")
+    def universe_update(app, m, q, b):
+        return app.universe.update(m["id"], b)
+
+    @route("POST", r"/api/universe/characters/(?P<id>[\w\-]+)/(?P<act>archive|restore|lock|unlock)")
+    def universe_action(app, m, q, b):
+        a = m["act"]
+        return app.universe.status(m["id"], "archived" if a == "archive" else "active", b) if a in ("archive", "restore") else app.universe.lock(m["id"], a == "lock", b)
+
+    @route("GET", "/api/universe/audit")
+    def universe_audit(app, m, q, b):
+        return app.universe.audit(q)
+
+    @route("GET", "/api/universe/export.xlsx")
+    def universe_export(app, m, q, b):
+        return app.universe.export()
+
+    @route("PUT", "/api/universe/import/preview")
+    def universe_import_preview(app, m, q, b):
+        return app.universe.import_preview(b)
+
+    @route("PUT", "/api/universe/import/apply")
+    def universe_import_apply(app, m, q, b):
+        return app.universe.import_apply(b, q.get("skip_conflicts", ["0"])[0] == "1")
 
     @route("POST", "/api/preview")
     def preview(app, m, q, b):

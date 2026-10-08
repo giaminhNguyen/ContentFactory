@@ -87,6 +87,7 @@ class Orchestrator:
         self._batches = None
         self._reruns = None
         self.sequence = SequenceManager(self.store)          # Sequence Manager dùng chung (trạng thái project, không phải cấu hình)
+        self._universe = None                                                              # Kho nhân vật: mở lười (job Story thường không cần), DB riêng runtime/universe.db
         self.watermarks = WM.Watermarks(cfg, self.store, self.adapters.get("audio"))     # Watermark Library theo kênh (revision bất biến, active, tham chiếu của job)
 
     def rerun_service(self):
@@ -151,6 +152,13 @@ class Orchestrator:
             if h not in self._job_adapters:
                 self._job_adapters[h] = build_adapters(effective_config(self.cfg, snapshot))
             return self._job_adapters[h]
+
+    @property
+    def universe(self):
+        if self._universe is None:
+            from ..universe import Universe, UniverseDB
+            self._universe = Universe(UniverseDB(self.cfg.path("runtime") / "universe.db"))
+        return self._universe
 
     # -- tạo job ------------------------------------------------------------------------------
     def submit(self, params: dict, priority: int = 0, *, mode: str | None = None, start_stage: str | None = None,

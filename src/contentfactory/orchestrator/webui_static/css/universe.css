@@ -1,0 +1,22 @@
+/* Kho nhân vật. Dùng token của app.css; trạng thái luôn có chữ + biểu tượng (không chỉ màu). */
+.uv-dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--s-3); margin-bottom: var(--s-5); }
+.uv-stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-2); padding: var(--s-3) var(--s-4); }
+.uv-stat-v { font-size: var(--fs-xl, 1.5rem); font-weight: 700; line-height: 1.2; }
+.uv-stat-l { color: var(--muted); font-size: var(--fs-sm); }
+.uv-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--s-5); align-items: start; }
+@media (max-width: 900px) { .uv-layout { grid-template-columns: minmax(0, 1fr); } }
+.uv-filters { display: flex; flex-direction: column; gap: var(--s-2); }
+.uv-list { display: flex; flex-direction: column; gap: var(--s-2); }
+.uv-card { display: flex; gap: var(--s-3); text-align: left; width: 100%; padding: var(--s-3); border: 1px solid var(--border); border-radius: var(--r-2); background: var(--surface); cursor: pointer; color: inherit; font: inherit; }
+.uv-card:hover { border-color: var(--border-strong); }
+.uv-card[aria-current="true"] { border-color: var(--accent); background: var(--st-running-bg); }
+.uv-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.uv-card-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.uv-chips { display: flex; flex-wrap: wrap; gap: var(--s-1); margin: 2px 0; }
+.uv-avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text); }
+.uv-avatar.lg { width: 56px; height: 56px; font-size: 1.25rem; }
+.uv-detail { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-2); padding: var(--s-5); min-height: 160px; display: flex; flex-direction: column; gap: var(--s-4); min-width: 0; }
+.uv-detail-head { display: flex; gap: var(--s-4); align-items: center; }
+.uv-hint { padding: var(--s-6) var(--s-4); text-align: center; }
+.uv-audit { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--s-3); }
+.uv-diff { white-space: pre-wrap; color: var(--muted); font-family: var(--mono, ui-monospace, monospace); overflow-wrap: anywhere; }

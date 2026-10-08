@@ -15,6 +15,7 @@ const ROUTES = [
   [/^\/pools(?:\/(images))?$/, "pools", "Nguồn Media"],
   [/^\/templates$/, "templates", "Template"],
   [/^\/templates\/([a-z0-9_]+)$/, "studio", "Template Studio"],
+  [/^\/universe(?:\/(ch_[0-9a-f]{12}))?$/, "universe", "Kho nhân vật"],
   [/^\/settings(?:\/(\w+))?$/, "settings", "Cài đặt & Doctor"],
 ];
 

@@ -35,6 +35,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--many", type=int, default=0, help="thêm N job nhỏ (subtitle-only) để kiểm tra danh sách lớn")
+    ap.add_argument("--universe-demo", action="store_true", help="gieo vài nhân vật + một dàn nhân vật staged (kiểm tra màn Kho nhân vật/dàn nhân vật)")
     ap.add_argument("--empty", action="store_true", help="không tạo dữ liệu mẫu (kiểm tra trạng thái trống)")
     a = ap.parse_args()
     root = make_root()

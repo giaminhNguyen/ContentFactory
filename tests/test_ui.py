@@ -640,6 +640,37 @@ class HttpTest(UiCase):
         self.assertEqual(code, 200)
         self.assertNotIn("story_mode", self.o.store.get_job(ok["job_id"])["params"])
 
+    def test_universe_endpoints_end_to_end(self):
+        self.app.stop()
+        code, sm, _ = self.call("GET", "/api/universe/summary")
+        self.assertEqual((code, sm["active"], sm["revision"]), (200, 0, 0))
+        self.assertTrue({f["key"] for f in sm["fields"]} >= {"display_name", "core_personality"})
+        code, c, _ = self.call("POST", "/api/universe/characters", {"display_name": "Lan Phương", "core_personality": "Điềm tĩnh, hay nghi ngờ.", "genre_affinities": ["kinh dị"]})
+        self.assertEqual(code, 200)
+        cid, rev = c["character"]["character_id"], c["character"]["revision"]
+        self.assertEqual(self.call("POST", "/api/universe/characters", {"display_name": "lan phuong"})[1]["error"]["code"], "DUPLICATE_CHARACTER")
+        code, u, _ = self.call("PUT", f"/api/universe/characters/{cid}", {"revision": rev, "fields": {"temperament": "Lạnh"}})
+        self.assertEqual((code, u["character"]["revision"]), (200, rev + 1))
+        code, err, _ = self.call("PUT", f"/api/universe/characters/{cid}", {"revision": rev, "fields": {"temperament": "Nóng"}})
+        self.assertEqual((code, err["error"]["code"]), (400, "REVISION_CONFLICT"))
+        self.assertEqual(self.call("PUT", f"/api/universe/characters/{cid}", {"revision": "x", "fields": {}})[0], 400)
+        code, lst, _ = self.call("GET", "/api/universe/characters?q=lan%20phuong")
+        self.assertEqual((code, lst["total"]), (200, 1))
+        code, d, _ = self.call("GET", f"/api/universe/characters/{cid}")
+        self.assertEqual([e["action"] for e in d["character"]["audit"]][:3], ["conflict", "update", "create"])
+        self.assertEqual(self.call("GET", "/api/universe/characters/ch_000000000000")[0], 404)
+        code, lk, _ = self.call("POST", f"/api/universe/characters/{cid}/lock", {"revision": u["character"]["revision"]})
+        self.assertTrue(lk["character"]["locked"])
+        code, body, hdr = self.call("GET", "/api/universe/export.xlsx")
+        self.assertEqual(code, 200)
+        self.assertIn("spreadsheetml", hdr["Content-Type"])
+        self.assertEqual(body[:2], b"PK")
+        code, prev, _ = self.call("PUT", "/api/universe/import/preview", raw=body)
+        self.assertEqual((code, prev["counts"]["unchanged"], prev["can_apply"]), (200, 1, False))
+        self.assertEqual(self.call("PUT", "/api/universe/import/preview", raw=b"junk")[1]["error"]["code"], "INVALID_XLSX")
+        self.assertEqual(self.call("GET", "/api/universe/audit?limit=5")[1]["events"][0]["action"], "lock")
+        self.assertEqual(self.call("GET", "/api/universe/summary", token=False)[0], 401)
+
     def test_channel_run_endpoints(self):
         self.app.stop()                                                                    # không để vòng lặp nền chạy mất job con trong test
         self.o.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(i) for i in range(12, 0, -1)]))
