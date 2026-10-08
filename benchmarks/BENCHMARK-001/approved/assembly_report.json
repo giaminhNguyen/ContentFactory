@@ -1,0 +1,74 @@
+{
+  "chars_in": 57963,
+  "chars_out": 58293,
+  "duplicates_removed": [],
+  "headings_removed": [
+    {
+      "line": "## 第1章 Trước cánh cửa",
+      "section": 0
+    },
+    {
+      "line": "## 第2章 Cái giá của chiếc bút",
+      "section": 1
+    },
+    {
+      "line": "## 第3章 Bản đồ lệch",
+      "section": 2
+    },
+    {
+      "line": "## 第4章 Đêm trong phòng hắn",
+      "section": 3
+    },
+    {
+      "line": "## 第5章 Cấm túc",
+      "section": 4
+    },
+    {
+      "line": "## 第6章 Giấy nợ",
+      "section": 5
+    },
+    {
+      "line": "## 第7章 Tân Thế Giới",
+      "section": 6
+    },
+    {
+      "line": "## 第8章 Nửa còn lại",
+      "section": 7
+    },
+    {
+      "line": "## 第9章 Điều bố hỏi",
+      "section": 8
+    },
+    {
+      "line": "## 第10章 Sân thượng",
+      "section": 9
+    },
+    {
+      "line": "## 第11章 Phiếu cầm đồ",
+      "section": 10
+    },
+    {
+      "line": "## 第12章 Bậc thứ chín",
+      "section": 11
+    },
+    {
+      "line": "## 第13章 Khoản đầu tư",
+      "section": 12
+    },
+    {
+      "line": "## 第14章 Con đứng đây",
+      "section": 13
+    }
+  ],
+  "issues": [],
+  "joins": [],
+  "meta_removed": [],
+  "overlaps_trimmed": [],
+  "paragraphs": 696,
+  "punctuation_added": 0,
+  "recaps_removed": [],
+  "removed_ratio": -0.0057,
+  "sections": 14,
+  "sections_sha256": "14bf6324265a7948eef73df2455545351755b01f7a80a5d428e626089e068941",
+  "story_sha256": "55227fb240b1bde7e2be4ff1426100e7f9330af0882b477383a9d89679bcb4f4"
+}

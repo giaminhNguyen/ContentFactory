@@ -1,0 +1,17 @@
+{
+  "id": "BENCHMARK-001",
+  "title": "【Truyện Audio】TÁI SINH TRỞ VỀ, TÔI CẮT TÀI TRỢ KHIẾN KẺ THÙ BẼ MẶT TRƯỚC TOÀN TRƯỜNG | Tinh Hà Audio",
+  "language": "vi",
+  "source_language": "vi",
+  "origin": "workspace/job_000015/import/from_000014 (job 000014, youtube moKZ8Sd6FZ8)",
+  "source_sha256": "41bc136295f8d0486021207e59143ab1a6df8ddb209684a824def40e82c9c276",
+  "approved_story_sha256": "55227fb240b1bde7e2be4ff1426100e7f9330af0882b477383a9d89679bcb4f4",
+  "observed_source_genre": "rebirth / revenge: provocation -> counterattack -> public status reversal -> consequence",
+  "known_failure_mode": "approved Story shifted to slow suspense + moral ambiguity (psychological prose) instead of the source's fast reward loop",
+  "generation": {
+    "adapter": "story_branch (oh-story-claudecode a8dc674 via Claude Code CLI)",
+    "model": "CLI default (config story_branch.model unset)",
+    "story_profile": "defaults: target_chars=40000, chapter_chars=3000 -> 14 chapters",
+    "seed": "unsupported -> nondeterministic"
+  }
+}
