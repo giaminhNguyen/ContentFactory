@@ -6,10 +6,18 @@
 from __future__ import annotations
 
 from .base import BaseDriver, DetectedExecutable, Driver, ExecRequest, ExecResult, ProbeResult
+from .claude_cli import ClaudeCliDriver
+from .codex_cli import CodexCliDriver
 from .fake import FORBIDDEN_MARKER, FakeDriver
+from .gemini_cli import GeminiCliDriver
+from .opencode_cli import OpencodeCliDriver
 
 CLASSES: dict[str, type[BaseDriver]] = {
     "fake": FakeDriver,
+    "claude_cli": ClaudeCliDriver,
+    "codex_cli": CodexCliDriver,
+    "gemini_cli": GeminiCliDriver,
+    "opencode_cli": OpencodeCliDriver,
 }
 
 
@@ -25,6 +33,7 @@ def build(driver_id: str, cfg: dict | None = None) -> BaseDriver:
 
 
 __all__ = [
-    "BaseDriver", "CLASSES", "DetectedExecutable", "Driver", "ExecRequest", "ExecResult", "FakeDriver",
-    "FORBIDDEN_MARKER", "ProbeResult", "build", "driver_ids",
+    "BaseDriver", "CLASSES", "ClaudeCliDriver", "CodexCliDriver", "DetectedExecutable", "Driver",
+    "ExecRequest", "ExecResult", "FakeDriver", "FORBIDDEN_MARKER", "GeminiCliDriver",
+    "OpencodeCliDriver", "ProbeResult", "build", "driver_ids",
 ]

@@ -34,6 +34,15 @@ class WorkerErrorClass(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class WorkerInUse(ValueError):
+    """Xoá worker đang nằm trong pool: nêu đúng pool nào để UI/API báo dependency (không xoá im lặng)."""
+
+    def __init__(self, worker_id: str, pools: list[str]) -> None:
+        self.worker_id = worker_id
+        self.pools = pools
+        super().__init__(f"worker {worker_id} đang thuộc pool: {', '.join(pools)}")
+
+
 # Mẫu nhận dạng dùng CHUNG cho mọi driver (driver chỉ thêm mẫu riêng của mình khi thật sự cần).
 _PATTERNS: tuple[tuple[WorkerErrorClass, re.Pattern], ...] = (
     (WorkerErrorClass.QUOTA, re.compile(
