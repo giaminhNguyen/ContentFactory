@@ -23,7 +23,18 @@ from .models import (
     WorkerStatus,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Cột thêm ở schema v2 — tách riêng để `ALTER TABLE` cho db đã có (migration không mất dữ liệu).
+_V2_COLUMNS = {
+    "idle_timeout_s": "REAL NOT NULL DEFAULT 1800",
+    "hard_timeout_s": "REAL NOT NULL DEFAULT 14400",
+    "circuit_opened_at": "REAL NOT NULL DEFAULT 0",
+    "last_error_kind": "TEXT NOT NULL DEFAULT ''",
+    "last_error_code": "TEXT NOT NULL DEFAULT ''",
+    "last_error_at": "REAL NOT NULL DEFAULT 0",
+    "last_success_at": "REAL NOT NULL DEFAULT 0",
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers(
@@ -38,8 +49,15 @@ CREATE TABLE IF NOT EXISTS workers(
   profiles      TEXT NOT NULL DEFAULT '{}',
   concurrency   INTEGER NOT NULL DEFAULT 1,
   timeout_s     REAL NOT NULL DEFAULT 3600,
+  idle_timeout_s     REAL NOT NULL DEFAULT 1800,
+  hard_timeout_s     REAL NOT NULL DEFAULT 14400,
   failure_streak INTEGER NOT NULL DEFAULT 0,
   cooldown_until REAL NOT NULL DEFAULT 0,
+  circuit_opened_at REAL NOT NULL DEFAULT 0,
+  last_error_kind   TEXT NOT NULL DEFAULT '',
+  last_error_code   TEXT NOT NULL DEFAULT '',
+  last_error_at     REAL NOT NULL DEFAULT 0,
+  last_success_at   REAL NOT NULL DEFAULT 0,
   meta          TEXT NOT NULL DEFAULT '{}',
   created_at    REAL NOT NULL,
   updated_at    REAL NOT NULL
@@ -83,8 +101,16 @@ CREATE TABLE IF NOT EXISTS attempts(
   cost_usd      REAL NOT NULL DEFAULT 0,
   meta          TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS worker_health(
+  worker_id   TEXT NOT NULL,
+  state       TEXT NOT NULL,
+  changed_at  REAL NOT NULL,
+  reason      TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(worker_id, changed_at)
+);
 CREATE INDEX IF NOT EXISTS attempts_job ON attempts(job_id, started_at);
 CREATE INDEX IF NOT EXISTS attempts_work ON attempts(work_type, started_at);
+CREATE INDEX IF NOT EXISTS attempts_worker ON attempts(worker_id, started_at);
 """
 
 
@@ -144,8 +170,13 @@ class WorkerStore:
         try:
             c.execute("BEGIN IMMEDIATE")
             try:
-                if c.execute("PRAGMA user_version").fetchone()[0] < 1:
-                    c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                v = c.execute("PRAGMA user_version").fetchone()[0]
+                if v < 2:
+                    have = {r["name"] for r in c.execute("PRAGMA table_info(workers)")}
+                    for col, ddl in _V2_COLUMNS.items():
+                        if col not in have:                  # db cũ (v1) thiếu cột -> thêm
+                            c.execute(f"ALTER TABLE workers ADD COLUMN {col} {ddl}")
+                c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 c.execute("COMMIT")
             except BaseException:
                 c.execute("ROLLBACK")
@@ -161,7 +192,11 @@ class WorkerStore:
             status=WorkerStatus(r["status"]), enabled=bool(r["enabled"]), source=r["source"],
             models=[WorkerModel(**m) for m in json.loads(r["models"])],
             profiles=json.loads(r["profiles"]), concurrency=r["concurrency"], timeout_s=r["timeout_s"],
+            idle_timeout_s=r["idle_timeout_s"], hard_timeout_s=r["hard_timeout_s"],
             failure_streak=r["failure_streak"], cooldown_until=r["cooldown_until"],
+            circuit_opened_at=r["circuit_opened_at"],
+            last_error_kind=r["last_error_kind"], last_error_code=r["last_error_code"],
+            last_error_at=r["last_error_at"], last_success_at=r["last_success_at"],
             meta=json.loads(r["meta"]), created_at=r["created_at"], updated_at=r["updated_at"],
         )
 
@@ -176,21 +211,47 @@ class WorkerStore:
         with self._tx() as c:
             c.execute(
                 "INSERT INTO workers(id,name,driver_id,executable,status,enabled,source,models,profiles,"
-                "concurrency,timeout_s,failure_streak,cooldown_until,meta,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                "concurrency,timeout_s,idle_timeout_s,hard_timeout_s,failure_streak,cooldown_until,"
+                "circuit_opened_at,last_error_kind,last_error_code,last_error_at,last_success_at,"
+                "meta,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(id) DO UPDATE SET name=excluded.name,driver_id=excluded.driver_id,"
                 " executable=excluded.executable,status=excluded.status,enabled=excluded.enabled,"
                 " source=excluded.source,models=excluded.models,profiles=excluded.profiles,"
                 " concurrency=excluded.concurrency,timeout_s=excluded.timeout_s,"
+                " idle_timeout_s=excluded.idle_timeout_s,hard_timeout_s=excluded.hard_timeout_s,"
                 " failure_streak=excluded.failure_streak,cooldown_until=excluded.cooldown_until,"
+                " circuit_opened_at=excluded.circuit_opened_at,"
+                " last_error_kind=excluded.last_error_kind,last_error_code=excluded.last_error_code,"
+                " last_error_at=excluded.last_error_at,last_success_at=excluded.last_success_at,"
                 " meta=excluded.meta,updated_at=excluded.updated_at",
                 (w.id, w.name, w.driver_id, w.executable, w.status.value, int(w.enabled), w.source,
                  json.dumps([m.__dict__ for m in w.models], ensure_ascii=False),
                  json.dumps(w.profiles, ensure_ascii=False), w.concurrency, w.timeout_s,
-                 w.failure_streak, w.cooldown_until, json.dumps(w.meta, ensure_ascii=False),
-                 w.created_at, w.updated_at),
+                 w.idle_timeout_s, w.hard_timeout_s,
+                 w.failure_streak, w.cooldown_until, w.circuit_opened_at,
+                 w.last_error_kind, w.last_error_code, w.last_error_at, w.last_success_at,
+                 json.dumps(w.meta, ensure_ascii=False), w.created_at, w.updated_at),
             )
+        self._record_health(w)
         return w
+
+    def _record_health(self, w: Worker) -> None:
+        """W2.1: ghi transition health (state + reason) khi trạng thái ĐỔI — supply cho health trend/UI."""
+        state, reason = w.health()
+        last = self._q("SELECT state FROM worker_health WHERE worker_id=? ORDER BY changed_at DESC LIMIT 1",
+                       (w.id,))
+        if last and last[0]["state"] == state.value:
+            return
+        with self._tx() as c:
+            c.execute("INSERT INTO worker_health(worker_id,state,changed_at,reason) VALUES(?,?,?,?)",
+                      (w.id, state.value, time.time(), reason))
+
+    def health_history(self, worker_id: str, limit: int = 20) -> list[dict]:
+        """Lịch sử health transition (mới nhất trước) cho UI worker detail."""
+        rows = self._q("SELECT * FROM worker_health WHERE worker_id=? ORDER BY changed_at DESC LIMIT ?",
+                       (worker_id, limit))
+        return [{"state": r["state"], "changed_at": r["changed_at"], "reason": r["reason"]} for r in rows]
 
     def delete_worker(self, worker_id: str) -> bool:
         with self._tx() as c:
@@ -286,13 +347,21 @@ class WorkerStore:
     def finish_attempt(self, a: Attempt) -> Attempt:
         return self.add_attempt(a)
 
-    def attempts(self, job_id: str = "", work_type: str = "", limit: int = 100) -> list[Attempt]:
+    def attempts(self, job_id: str = "", work_type: str = "", worker_id: str = "", limit: int = 100) -> list[Attempt]:
         """Lịch sử attempt (mới nhất trước). Không bao giờ xoá: fallback/retry tạo Attempt mới."""
         sql, args = "SELECT * FROM attempts", []
+        conds: list[str] = []
         if job_id:
-            sql, args = sql + " WHERE job_id=?", [job_id]
+            conds.append("job_id=?")
+            args.append(job_id)
         elif work_type:
-            sql, args = sql + " WHERE work_type=?", [work_type]
+            conds.append("work_type=?")
+            args.append(work_type)
+        if worker_id:
+            conds.append("worker_id=?")
+            args.append(worker_id)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY started_at DESC, attempt_id DESC LIMIT ?"
         args.append(limit)
         return [self._row_attempt(r) for r in self._q(sql, tuple(args))]
@@ -302,7 +371,49 @@ class WorkerStore:
         return self._row_attempt(rows[0]) if rows else None
 
     def running_counts(self) -> dict[str, int]:
-        """Số attempt đang RUNNING theo worker — dùng cho strategy `least_busy`."""
+        """Số attempt đang RUNNING theo worker — dùng cho strategy `least_busy` + probe half-open."""
         return {r["worker_id"]: r["n"] for r in
                 self._q("SELECT worker_id, COUNT(*) AS n FROM attempts WHERE state='RUNNING'"
                         " GROUP BY worker_id")}
+
+    def running_attempts(self, limit: int = 200) -> list[Attempt]:
+        """W2.5: mọi attempt còn RUNNING (bất kể worker) — để reconciler xử lý orphan sau crash."""
+        rows = self._q("SELECT * FROM attempts WHERE state='RUNNING' ORDER BY started_at LIMIT ?", (limit,))
+        return [self._row_attempt(r) for r in rows]
+
+    # -- metrics (W2.7) -----------------------------------------------------------------------
+    def worker_stats(self) -> dict[str, dict]:
+        """Thống kê theo worker từ bảng attempts — trả lời "worker nào đang lỗi nhiều?" không cần raw log."""
+        out: dict[str, dict] = {}
+        rows = self._q(
+            "SELECT worker_id, worker_name,"
+            " COUNT(*) AS n,"
+            " SUM(CASE WHEN state='SUCCESS' THEN 1 ELSE 0 END) AS ok,"
+            " AVG(CASE WHEN ended_at IS NOT NULL THEN ended_at - started_at END) AS avg_dur,"
+            " SUM(CASE WHEN error_kind='QUOTA' THEN 1 ELSE 0 END) AS quota,"
+            " SUM(CASE WHEN error_kind='AUTH' THEN 1 ELSE 0 END) AS auth,"
+            " SUM(CASE WHEN error_kind='TIMEOUT' THEN 1 ELSE 0 END) AS timeout,"
+            " SUM(CASE WHEN error_kind='INVALID_OUTPUT' THEN 1 ELSE 0 END) AS invalid"
+            " FROM attempts GROUP BY worker_id")
+        for r in rows:
+            n = r["n"] or 0
+            out[r["worker_id"]] = {
+                "name": r["worker_name"], "attempts": n,
+                "success": int(r["ok"] or 0),
+                "success_rate": round(100.0 * (r["ok"] or 0) / n, 1) if n else 0.0,
+                "avg_duration_s": round(float(r["avg_dur"] or 0.0), 1),
+                "failures": {"QUOTA": int(r["quota"] or 0), "AUTH": int(r["auth"] or 0),
+                             "TIMEOUT": int(r["timeout"] or 0), "INVALID_OUTPUT": int(r["invalid"] or 0)},
+            }
+        return out
+
+    def attempts_per_task(self, limit: int = 200) -> list[dict]:
+        """Số attempt mỗi task (job_id + work_type) + có fallback hay không (nhiều worker khác nhau)."""
+        rows = self._q(
+            "SELECT job_id, work_type, COUNT(*) AS n, COUNT(DISTINCT worker_id) AS workers,"
+            " SUM(CASE WHEN state='SUCCESS' THEN 1 ELSE 0 END) AS ok"
+            " FROM attempts WHERE job_id != '' GROUP BY job_id, work_type"
+            " ORDER BY MAX(started_at) DESC LIMIT ?", (limit,))
+        return [{"job_id": r["job_id"], "work_type": r["work_type"], "attempts": r["n"],
+                 "workers": r["workers"], "fallback": bool(r["workers"] > 1), "ok": bool(r["ok"] > 0)}
+                for r in rows]

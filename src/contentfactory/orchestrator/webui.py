@@ -131,7 +131,7 @@ class Api:
     @route("GET", "/api/workers")
     def workers_list(app, m, q, b):
         return {"drivers": app.workers.drivers(), "workers": app.workers.workers(), "pools": app.workers.pools(),
-                "routing": app.workers.routing()}
+                "routing": app.workers.routing(), "summary": app.workers.summary()}
 
     @route("POST", "/api/workers/scan")
     def workers_scan(app, m, q, b):
@@ -201,8 +201,29 @@ class Api:
     def worker_attempts(app, m, q, b):
         return {"attempts": app.workers.attempts(job_id=q.get("job_id", [""])[0] or "",
                                                  work_type=q.get("work_type", [""])[0] or "",
+                                                 worker_id=q.get("worker_id", [""])[0] or "",
                                                  stage=q.get("stage", [""])[0] or "",
                                                  limit=_int(q, "limit", 100, 1, 500))}
+
+    @route("GET", "/api/workers/summary")
+    def workers_summary(app, m, q, b):
+        return app.workers.summary()
+
+    @route("GET", "/api/workers/stats")
+    def workers_stats(app, m, q, b):
+        return app.workers.stats()
+
+    @route("GET", r"/api/workers/(?P<id>wkr_\w+)/detail")
+    def worker_detail(app, m, q, b):
+        return app.workers.worker_detail(m["id"])
+
+    @route("GET", r"/api/workers/(?P<id>wkr_\w+)/impact")
+    def worker_impact(app, m, q, b):
+        return app.workers.impact(m["id"])
+
+    @route("GET", r"/api/workers/pools/(?P<name>[^/]+)/impact")
+    def pool_impact(app, m, q, b):
+        return app.workers.pool_impact(m["name"])
 
     @route("GET", "/api/runtime")
     def runtime(app, m, q, b):

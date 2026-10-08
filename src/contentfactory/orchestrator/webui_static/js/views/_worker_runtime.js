@@ -4,8 +4,9 @@
 import { api } from "../api.js";
 import { h, clear, loadCss } from "../dom.js";
 import { icon } from "../icons.js";
-import { btn, busy, field, input, select, switchCtl, badge, emptyState, errorState, skeleton, toast, toastError, confirmDialog, openDialog, kv } from "../components.js";
+import { btn, busy, field, input, select, switchCtl, badge, emptyState, errorState, skeleton, toast, toastError, confirmDialog, openDialog, kv, alertBox, disclosure } from "../components.js";
 import { createPoller } from "../poller.js";
+import { relTime, duration } from "../format.js";
 
 const STATUS = {
   READY: { tone: "done", icon: "check-circle", label: "Sẵn sàng" },
@@ -17,10 +18,39 @@ const STATUS = {
 };
 const sm = (s) => STATUS[s] || { tone: "off", icon: "dot", label: s || "—" };
 
+// W2.1: health state (cùng nguồn với router/backend — chỉ hiển thị, không tự phán đoán).
+const HEALTH = {
+  HEALTHY: { tone: "done", icon: "check-circle", label: "Khoẻ" },
+  DEGRADED: { tone: "wait", icon: "alert", label: "Suy giảm" },
+  AUTH_BLOCKED: { tone: "fail", icon: "lock", label: "Cần đăng nhập" },
+  QUOTA_BLOCKED: { tone: "fail", icon: "zap", label: "Hết quota" },
+  COOLDOWN: { tone: "wait", icon: "clock", label: "Cooldown" },
+  UNAVAILABLE: { tone: "off", icon: "x-circle", label: "Không dùng được" },
+  DISABLED: { tone: "off", icon: "pause", label: "Đã tắt" },
+};
+const hm = (s) => HEALTH[s] || { tone: "off", icon: "dot", label: s || "—" };
+const CIRCUIT_LABEL = { OPEN: "Circuit mở", HALF_OPEN: "Đang probe thử lại", CLOSED: "" };
+
+const ERROR_LABEL = { QUOTA: "Hết quota", AUTH: "Chưa đăng nhập", TIMEOUT: "Quá giờ", INVALID_OUTPUT: "Output hỏng", UNKNOWN: "Lỗi lạ", ORPHANED: "Mồ côi sau restart" };
+const errorLabel = (k) => ERROR_LABEL[k] || k;
+
+// W2.UI.3: hệ quả disable/xoá worker/pool — hiện TRƯỚC khi xác nhận phá.
+function impactAlert(imp, kind = "Thay đổi sẽ ảnh hưởng") {
+  const parts = [];
+  if (imp.pools?.length) parts.push(`${imp.pools.length} pool`);
+  if (imp.work_types?.length) parts.push(`${imp.work_types.length} work type: ${imp.work_types.join(", ")}`);
+  if (imp.running) parts.push(`${imp.running} task ĐANG chạy`);
+  if (!parts.length) return h("p", { class: "muted small" }, "Không ảnh hưởng worker nào khác — có thể thay đổi an toàn.");
+  return alertBox({ tone: "attn", iconName: "alert", title: kind, body: h("div", { class: "stack", style: "gap: var(--s-2)" },
+    h("div", { class: "row", style: "flex-wrap: wrap" }, ...imp.pools.map((p) => h("span", { class: "chip" }, p)), ...imp.work_types.map((w) => h("code", { class: "mono" }, w))),
+    imp.running ? h("p", { class: "small" }, `${imp.running} attempt đang chạy trên worker này — nếu thay đổi, attempt có thể bị đứt giữa chừng và sẽ được reconcile khi app khởi động lại.`) : h("p", { class: "small muted" }, "Không có attempt nào đang chạy.")) });
+}
+
 export function workersPanel(host) {
   loadCss("/css/settings.css");
   let data = null, sig = "", failedOnce = false;
   const list = h("div", { class: "wk-list" });
+  const health = h("section", { class: "wk-health", role: "status", "aria-atomic": "true" });
 
   const scanBtn = btn({ label: "Quét CLI", icon: "refresh", size: "sm" });
   const addBtn = btn({ label: "Thêm worker…", icon: "plus", size: "sm", kind: "primary" });
@@ -28,7 +58,10 @@ export function workersPanel(host) {
       h("div", null, h("h3", null, "Workers"),
         h("p", { class: "muted small" }, "Mỗi worker là một CLI cụ thể (Claude/Codex/Gemini/OpenCode). “Quét CLI” tự tìm CLI có trên PATH; worker chưa vào pool thì job dùng chế độ runtime trực tiếp.")),
       h("div", { class: "row" }, scanBtn, addBtn)),
-    list);
+    health,
+    list,
+    h("h3", { class: "wk-title" }, "Lịch sử chạy gần đây"),
+    timelineBlock());
   list.append(skeleton(3));
 
   const poller = createPoller(async (signal) => {
@@ -42,8 +75,31 @@ export function workersPanel(host) {
     return "idle";
   }, { fast: 4000, idle: 10000 });
 
+  function paintHealth() {
+    const s = data.summary || {};
+    const items = [
+      ["HEALTHY", "Khoẻ"],
+      ["DEGRADED", "Suy giảm"],
+      ["AUTH_BLOCKED", "Cần đăng nhập"],
+      ["QUOTA_BLOCKED", "Hết quota"],
+      ["COOLDOWN", "Cooldown"],
+      ["UNAVAILABLE", "Không dùng được"],
+    ].map(([k, label]) => {
+      const n = (s.counts || {})[k] || 0;
+      const m = hm(k);
+      return h("button", { type: "button", class: "wk-health-cell", dataset: { tone: n ? m.tone : "off" },
+        title: label, disabled: !n, "aria-label": `${label}: ${n} worker` },
+        h("strong", null, String(n)), h("span", null, label));
+    });
+    const circ = s.circuits && s.circuits.length ? h("span", { class: "wk-health-circ" },
+      badge({ tone: "wait", icon: "activity", label: `${s.circuits.length} circuit mở` }),
+      h("span", { class: "muted small" }, s.circuits.map((c) => c.name).join(", "))) : null;
+    health.replaceChildren(h("div", { class: "row wrap" }, ...items), circ || h("div", null, h("span", { class: "muted small" }, "Không có circuit nào đang mở.")));
+  }
+
   function paint() {
     const s = JSON.stringify([data.workers, data.pools]);
+    paintHealth();
     if (s === sig) return;
     sig = s;
     clear(list);
@@ -64,32 +120,40 @@ export function workersPanel(host) {
 
   function card(w) {
     const st = sm(w.status);
+    const hState = hm(w.health);
     const drv = (data.drivers || []).find((d) => d.id === w.driver_id);
+    const detailBtn = btn({ label: "Chi tiết", icon: "activity", size: "sm", kind: "ghost", ariaLabel: `Chi tiết sức khoẻ worker ${w.name}` });
     const testBtn = btn({ label: "Test", icon: "stethoscope", size: "sm", title: "Probe lại CLI", disabled: w.status === "DISABLED" });
     const editBtn = btn({ label: "Sửa", icon: "settings", size: "sm", kind: "ghost" });
     const sw = switchCtl({ label: "", checked: !!w.enabled, onChange: (v) => toggle(w, sw, v) });
     sw.input.setAttribute("aria-label", `Bật/tắt worker ${w.name}`);
     sw.querySelector(".state").textContent = w.enabled ? "Bật" : "Tắt";
     const delBtn = btn({ label: "Xoá", icon: "trash", size: "sm", kind: "ghost danger" });
+    detailBtn.addEventListener("click", () => detail(w, detailBtn));
     testBtn.addEventListener("click", () => doTest(w, testBtn));
     editBtn.addEventListener("click", () => dialog(w));
     delBtn.addEventListener("click", () => remove(w, delBtn));
     const bits = [w.version ? `v${w.version}` : null, w.auth && w.auth !== "unknown" ? `auth: ${w.auth}` : null].filter(Boolean).join(" · ");
     const notReady = !w.routable.ok && w.enabled ? h("p", { class: "small", style: "color: var(--st-wait-fg)" }, icon("alert", { size: 14 }), " ", w.routable.reason, w.cooldown_s > 0 ? ` (cooldown ${Math.ceil(w.cooldown_s)}s)` : "") : null;
     const detail = w.detail && w.status !== "READY" ? h("p", { class: "small muted" }, w.detail) : null;
+    let circuit = null;
+    if (w.circuit && w.circuit !== "CLOSED") circuit = badge({ tone: "wait", icon: "activity", label: CIRCUIT_LABEL[w.circuit] || w.circuit });
+    const lastErr = w.last_error ? h("p", { class: "small", style: "color: var(--st-fail-fg)" },
+      icon("x-circle", { size: 14 }), " ", `${errorLabel(w.last_error.kind) || w.last_error.kind}${w.last_error.code ? ` (${w.last_error.code})` : ""}`, " · ", relTime(w.last_error.at)) : null;
     const meta = kv([
       ["Model mặc định", w.default_model || "—"],
       ["Model khả dụng", w.models.length ? w.models.join(", ") : "—"],
       ["Song song", String(w.concurrency)],
-      ["Timeout", w.timeout_s ? `${w.timeout_s}s` : "—"],
+      ["Idle timeout", w.idle_timeout_s ? `${Math.round(w.idle_timeout_s)}s` : "—"],
+      ["Hard timeout", w.hard_timeout_s ? `${Math.round(w.hard_timeout_s)}s` : "—"],
     ]);
     return h("section", { class: "card wk-card", "aria-label": `Worker ${w.name}` },
       h("div", { class: "row spread" },
-        h("div", { class: "row" }, h("h3", { class: "wk-name" }, w.name), badge(st), h("span", { class: "chip" }, drv?.label || w.driver_id)),
-        h("div", { class: "row" }, testBtn, editBtn, sw, delBtn)),
+        h("div", { class: "row" }, h("h3", { class: "wk-name" }, w.name), badge(st), badge(hState), circuit, h("span", { class: "chip" }, drv?.label || w.driver_id)),
+        h("div", { class: "row" }, detailBtn, testBtn, editBtn, sw, delBtn)),
       h("p", { class: "mono small", title: w.executable }, w.executable),
       bits ? h("p", { class: "small muted" }, bits) : null,
-      notReady, detail,
+      notReady, detail, lastErr,
       h("div", { class: "wk-meta" }, meta),
       h("div", { class: "row" }, h("span", { class: "muted small" }, "Pool:"), membership(w)));
   }
@@ -115,6 +179,16 @@ export function workersPanel(host) {
   }
 
   async function toggle(w, sw, checked) {
+    if (!checked && w.enabled) {
+      try {
+        const imp = await api.get(`/api/workers/${w.id}/impact`);
+        if (imp.running > 0 || imp.work_types.length) {
+          if (!(await confirmDialog({ title: `Tắt worker “${w.name}”?`, body: impactAlert(imp), confirmLabel: "Tắt worker", danger: true }))) {
+            sw.input.checked = true; sw.querySelector(".state").textContent = "Bật"; return;
+          }
+        }
+      } catch (e) { toastError(e, "Không xem được ảnh hưởng"); }
+    }
     try {
       await api.post(`/api/workers/${w.id}/${checked ? "enable" : "disable"}`, {});
       w.enabled = checked;
@@ -125,9 +199,14 @@ export function workersPanel(host) {
   }
 
   async function remove(w, b) {
+    let imp = null;
+    try { imp = await api.get(`/api/workers/${w.id}/impact`); } catch (e) { /* để confirm mặc định */ }
     const used = (data.pools || []).filter((p) => p.members.includes(w.id));
     const dep = used.length ? ` Worker sẽ bị gỡ khỏi pool: ${used.map((p) => p.display_name || p.name).join(", ")}.` : "";
-    if (!(await confirmDialog({ title: `Xoá worker “${w.name}”?`, body: `Xoá khỏi cấu hình; lịch sử attempt vẫn giữ.${dep}`, confirmLabel: "Xoá worker", danger: true }))) return;
+    const body = h("div", { class: "stack", style: "gap: var(--s-3)" },
+      h("p", null, `Xoá khỏi cấu hình; lịch sử attempt vẫn giữ.${dep}`),
+      imp ? impactAlert(imp, "Hệ quả xoá") : null);
+    if (!(await confirmDialog({ title: `Xoá worker “${w.name}”?`, body, confirmLabel: "Xoá worker", danger: true }))) return;
     await busy(b, async () => {
       try { await api.del(`/api/workers/${w.id}`); toast({ title: "Đã xoá worker", tone: "done" }); }
       catch (e) { toastError(e, "Không xoá được"); }
@@ -181,6 +260,92 @@ export function workersPanel(host) {
   addBtn.addEventListener("click", () => dialog());
   poller.start();
   return { destroy() { poller.stop(); } };
+}
+
+// ------------------------------------------------------------------ W2.UI.1 worker detail (health + history)
+function attemptLine(a) {
+  const meta = a.state === "SUCCESS" ? { tone: "done", icon: "check-circle", label: "OK" }
+    : a.state === "RUNNING" ? { tone: "wait", icon: "clock", label: "Đang chạy" }
+    : { tone: "fail", icon: "x-circle", label: errorLabel(a.error_kind) || "Lỗi" };
+  const bits = [a.job_id ? h("code", { class: "mono small" }, a.job_id) : null,
+    a.work_type ? h("span", { class: "chip" }, a.work_type) : null,
+    a.duration_s ? h("span", { class: "muted small" }, duration(a.duration_s)) : null,
+    h("span", { class: "muted small" }, relTime(a.started_at))].filter(Boolean);
+  return h("div", { class: "row wrap wk-tl-cell" }, h("span", { class: "wk-tl-worker" }, a.worker_name || a.worker_id),
+    badge(meta), a.error_code ? h("code", { class: "mono small" }, a.error_code) : null, ...bits);
+}
+
+async function detail(w, b) {
+  await busy(b, async () => {
+    try {
+      const d = await api.get(`/api/workers/${w.id}/detail`);
+      const hB = hm(d.health);
+      const circ = d.circuit && d.circuit !== "CLOSED" ? badge({ tone: "wait", icon: "activity", label: CIRCUIT_LABEL[d.circuit] || d.circuit }) : null;
+      const st = sm(d.status);
+      const stats = d.stats || {};
+      const hist = d.health_history?.length ? h("div", { class: "stack", style: "gap: var(--s-2)" }, ...d.health_history.map((r) =>
+        h("div", { class: "row wrap" }, badge(hm(r.state)), h("span", { class: "muted small" }, relTime(r.changed_at)), r.reason ? h("span", { class: "small" }, r.reason) : null))) : h("p", { class: "muted small" }, "Chưa có lịch sử.");
+      const atts = d.recent_attempts?.length ? h("div", { class: "stack", style: "gap: var(--s-2)" }, ...d.recent_attempts.map(attemptLine)) : h("p", { class: "muted small" }, "Chưa có attempt nào.");
+      const body = h("div", { class: "stack" },
+        h("div", { class: "row wrap" }, h("h3", null, d.name), badge(st), badge(hB), circ),
+        h("dl", { class: "kv" },
+          h("dt", null, "Executable"), h("dd", { class: "mono" }, d.executable),
+          h("dt", null, "Driver"), h("dd", null, d.driver_id),
+          h("dt", null, "Tỉ lệ thành công"), h("dd", null, stats.success_rate != null ? `${stats.success_rate}%` : "—"),
+          h("dt", null, "Attempts"), h("dd", null, String(stats.attempts ?? 0)),
+          h("dt", null, "Thời lượng TB"), h("dd", null, stats.avg_duration_s ? duration(stats.avg_duration_s) : "—"),
+          h("dt", null, "Thành công gần nhất"), h("dd", null, relTime(d.last_success_at)),
+          h("dt", null, "Idle / Hard timeout"), h("dd", null, `${d.idle_timeout_s ? Math.round(d.idle_timeout_s) : "—"}s / ${d.hard_timeout_s ? Math.round(d.hard_timeout_s) : "—"}s`)),
+        d.last_error ? alertBox({ tone: "fail", title: "Lỗi gần nhất", body: `${errorLabel(d.last_error.kind) || d.last_error.kind}${d.last_error.code ? ` (${d.last_error.code})` : ""} — ${relTime(d.last_error.at)}` }) : null,
+        h("h4", { class: "wk-title" }, "Sức khoẻ theo thời gian"), hist,
+        h("h4", { class: "wk-title" }, "Attempt gần đây"), atts);
+      openDialog({ title: `Chi tiết worker “${d.name}”`, content: body, wide: true, actions: [{ label: "Đóng", value: null }] });
+    } catch (e) { toastError(e, "Không tải được chi tiết"); }
+  });
+}
+
+// ------------------------------------------------------------------ W2.UI.2 attempt timeline (human-readable, raw ở Advanced)
+function timelineBlock() {
+  const out = h("div", { class: "wk-tl", "aria-live": "polite" });
+  const poller = createPoller(async (signal) => {
+    const r = await api.get("/api/workers/attempts?limit=40", { signal });
+    paint(r.attempts || []);
+    return "idle";
+  }, { idle: 15000 });
+  function paint(atts) {
+    if (!atts.length) { out.replaceChildren(h("p", { class: "muted small" }, "Chưa có attempt nào — chạy một lần likes/copy qua routing để thấy chuỗi thử (ví dụ Worker A hết quota → Worker B thành công).")); return; }
+    const groups = new Map();
+    for (const a of atts) {
+      const key = `${a.job_id}::${a.work_type}`;
+      if (!groups.has(key)) groups.set(key, { job_id: a.job_id, work_type: a.work_type, attempts: [] });
+      groups.get(key).attempts.push(a);
+    }
+    out.replaceChildren(...[...groups.values()].map(taskLine));
+  }
+  function seqCell(a) {
+    const meta = a.state === "SUCCESS" ? { tone: "done", icon: "check-circle", label: "OK" }
+      : a.state === "RUNNING" ? { tone: "wait", icon: "clock", label: "Đang chạy" }
+      : { tone: "fail", icon: "x-circle", label: errorLabel(a.error_kind) || "Lỗi" };
+    return h("div", { class: "wk-tl-cell", "aria-label": `Attempt: ${a.worker_name} — ${meta.label}` },
+      h("span", { class: "wk-tl-worker" }, a.worker_name || a.worker_id),
+      badge(meta),
+      a.error_code ? h("code", { class: "mono small" }, a.error_code) : null,
+      a.duration_s ? h("span", { class: "muted small" }, duration(a.duration_s)) : null);
+  }
+  function taskLine(g) {
+    const ok = g.attempts.some((a) => a.state === "SUCCESS");
+    const line = [];
+    g.attempts.forEach((a, i) => { if (i) line.push(icon("arrow-right", { size: 14, cls: "wk-tl-arrow" })); line.push(seqCell(a)); });
+    const head = h("div", { class: "row wrap" },
+      h("code", { class: "mono small" }, g.job_id || "?"),
+      h("span", { class: "chip" }, g.work_type),
+      badge({ tone: ok ? "done" : "fail", icon: ok ? "check-circle" : "x-circle", label: ok ? "Thành công" : "Thất bại" }),
+      h("span", { class: "muted small" }, `${g.attempts.length} attempt`));
+    return h("div", { class: "wk-tl-task" }, head, h("div", { class: "wk-tl-seq" }, ...line),
+      disclosure({ label: "Chi tiết kỹ thuật (raw)", content: h("pre", { class: "cfg-pre" }, JSON.stringify(g.attempts, null, 2)) }));
+  }
+  poller.start();
+  return out;
 }
 
 // ------------------------------------------------------------------------------------------ Pools (W1.UI.4)
@@ -301,8 +466,13 @@ export function poolsPanel(host) {
 
   async function remove(p, b) {
     const used = routesOf(p.name);
+    let imp = null;
+    try { imp = await api.get(`/api/workers/pools/${encodeURIComponent(p.name)}/impact`); } catch (e) { /* confirm mặc định */ }
     const dep = used.length ? ` Đang được gán cho: ${used.join(", ")} — pool bị xoá thì routing đó cũng mất.` : "";
-    if (!(await confirmDialog({ title: `Xoá pool “${p.display_name || p.name}”?`, body: `Xoá cấu hình pool; worker không bị xoá.${dep}`, confirmLabel: "Xoá pool", danger: true }))) return;
+    const body = h("div", { class: "stack", style: "gap: var(--s-3)" },
+      h("p", null, `Xoá cấu hình pool; worker không bị xoá.${dep}`),
+      imp ? impactAlert(imp, "Hệ quả xoá pool") : null);
+    if (!(await confirmDialog({ title: `Xoá pool “${p.display_name || p.name}”?`, body, confirmLabel: "Xoá pool", danger: true }))) return;
     await busy(b, async () => {
       try { await api.del(`/api/workers/pools/${encodeURIComponent(p.name)}`); toast({ title: "Đã xoá pool", tone: "done" }); }
       catch (e) { toastError(e, "Không xoá được pool"); }

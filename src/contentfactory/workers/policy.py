@@ -21,6 +21,7 @@ DEFAULT_POLICY: dict = {
     )},
     "cooldown_after": 3,              # N lỗi liên tiếp -> cooldown
     "cooldown_s": 300.0,
+    "max_no_progress": 4,             # W2.6: cùng một lỗi lặp N lần trên một task không tiến triển -> dừng
 }
 
 _RETRY_KEYS = tuple(k.value for k in WorkerErrorClass)
@@ -36,7 +37,7 @@ def validate(cfg: dict | None) -> dict:
     bad = set(retry) - set(_RETRY_KEYS)
     if bad:
         raise ValueError(f"retry_on có loại lỗi lạ: {sorted(bad)}; hợp lệ: {_RETRY_KEYS}")
-    for k in ("max_total_attempts", "max_distinct_workers", "cooldown_after"):
+    for k in ("max_total_attempts", "max_distinct_workers", "cooldown_after", "max_no_progress"):
         if k in cfg and int(cfg[k]) < 1:
             raise ValueError(f"{k} phải >= 1")
     if "cooldown_s" in cfg and float(cfg["cooldown_s"]) < 0:

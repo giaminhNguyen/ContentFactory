@@ -18,7 +18,7 @@ import time
 from contentfactory.contracts import ErrorClass, StageError
 from contentfactory.workers.errors import WorkerError, WorkerErrorClass
 
-from .base import BaseDriver, ExecRequest, ExecResult
+from .base import BaseDriver, ExecRequest, ExecResult, kill_tree
 
 DEFAULT_ALLOWED = ["Read", "Write", "Edit", "Glob", "Grep", "Skill", "TodoWrite",
                     "Bash(python:*)", "Bash(python3:*)", "Bash(py:*)", "Bash(node:*)", "Bash(bash:*)", "Bash(sh:*)",
@@ -89,7 +89,7 @@ class ClaudeCliDriver(BaseDriver):
             return self._drive(p, req)
         finally:
             if p.poll() is None:
-                p.kill()
+                kill_tree(p)
             for f in (p.stdin, p.stdout, p.stderr):
                 try:
                     f.close()
@@ -114,10 +114,15 @@ class ClaudeCliDriver(BaseDriver):
         outstanding: set = set()
         closed, start, drained_at = False, time.time(), None
         last = start
-        hard_s = min(self.hard_s, req.timeout_s) if req.timeout_s else self.hard_s
+        got_first = False                              # đã nhận event đầu tiên chưa (startup window)
+        startup_s = max(1.0, req.startup_timeout_s)
+        idle_s = max(1.0, req.idle_timeout_s)
+        hard_s = req.hard_timeout_s
+        if req.timeout_s:
+            hard_s = min(hard_s, req.timeout_s)
         while True:
             if req.cancel.is_set():
-                p.kill()
+                kill_tree(p)
                 raise StageError(ErrorClass.CANCELLED, "CANCELLED", "huỷ giữa lượt agent")
             try:
                 line = q.get(timeout=1)
@@ -127,6 +132,8 @@ class ClaudeCliDriver(BaseDriver):
             if line is None:
                 break
             if line:
+                if not got_first:
+                    got_first = True
                 last = now
                 try:
                     d = json.loads(line)
@@ -142,15 +149,20 @@ class ClaudeCliDriver(BaseDriver):
                     if not outstanding and not closed:
                         p.stdin.close()
                         closed = True
+            # W2.4: không nhận event nào trong startup window -> khởi động treo
+            if not got_first and now - start > startup_s:
+                kill_tree(p)
+                raise StageError(ErrorClass.TRANSIENT, "AGENT_STARTUP_TIMEOUT",
+                                 f"không có phản hồi trong {startup_s:.0f}s đầu")
             # tác vụ nền đã xong mà CLI không phát thêm result nào: đừng chờ tới idle timeout
             if not closed and result and drained_at and now - drained_at > self.grace_s:
                 p.stdin.close()
                 closed = True
-            if not closed and (now - last > self.idle_s or now - start > hard_s):
-                p.kill()
-                raise StageError(ErrorClass.TRANSIENT, "AGENT_TIMEOUT", f"quá {self.idle_s:.0f}s không có hoạt động")
+            if not closed and (now - last > idle_s or now - start > hard_s):
+                kill_tree(p)
+                raise StageError(ErrorClass.TRANSIENT, "AGENT_TIMEOUT", f"quá {idle_s:.0f}s không có hoạt động")
             if closed and now - last > 120:             # đã đóng stdin mà tiến trình không thoát
-                p.kill()
+                kill_tree(p)
                 break
         p.wait(timeout=60)
         text = str(result.get("result", ""))

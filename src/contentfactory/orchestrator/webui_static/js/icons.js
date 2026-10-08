@@ -52,6 +52,7 @@ const P = {
   save: '<path d="M5 3h11l4 4v13a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/>',
   dot: '<circle cx="12" cy="12" r="3"/>',
   "grip-vertical": '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
+  "arrow-right": '<path d="M5 12h14M12 5l7 7-7 7"/>',
 };
 
 export function icon(name, { size = 18, label = null, cls = "" } = {}) {

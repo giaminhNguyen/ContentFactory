@@ -15,8 +15,10 @@ Driver ĐƯỢC PHÉP biết vendor. Không driver nào được ghi secret/toke
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -33,6 +35,35 @@ OUT_LIMIT = 400        # cắt output của probe để không tràn log
 
 def _clip(raw: str, limit: int = OUT_LIMIT) -> str:
     return (raw or "").strip()[:limit]
+
+
+def kill_tree(p: subprocess.Popen, timeout_s: float = 5.0) -> None:
+    """W2.4: kill SẠCH cả process tree (không để sub-agent/con cháu sống mồ côi).
+
+    Windows: taskkill /T /F (cây PID). POSIX: SIGTERM rồi SIGKILL theo process group.
+    """
+    if p.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                           capture_output=True, timeout=timeout_s)
+            p.wait(timeout=timeout_s)
+        else:
+            os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            try:
+                p.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                p.wait(timeout=timeout_s)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    finally:
+        if p.poll() is None:                       # nếu mọi cách đều không ăn -> kill cha
+            try:
+                p.kill()
+            except OSError:
+                pass
 
 
 @dataclass
@@ -63,13 +94,20 @@ class ProbeResult:
 
 @dataclass
 class ExecRequest:
-    """Yêu cầu thực thi một lượt. `cwd` là ATTEMPT WORKSPACE riêng của lần thử (W1.12)."""
+    """Yêu cầu thực thi một lượt. `cwd` là ATTEMPT WORKSPACE riêng của lần thử (W1.12).
+
+    W2.4: tách timeout thành startup (chờ event đầu) / idle (im lặng) / hard (tổng lượt).
+    Manager lấy giá trị từ worker config; driver có thể chặn mềm hơn (min).
+    """
     work_type: str
     prompt: str
     cwd: Path
     model: str | None = None
     session: str | None = None
     timeout_s: float = 3600.0
+    startup_timeout_s: float = 60.0
+    idle_timeout_s: float = 1800.0
+    hard_timeout_s: float = 14400.0
     cancel: CancelToken = field(default_factory=CancelToken)
     meta: dict = field(default_factory=dict)
 

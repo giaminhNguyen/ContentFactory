@@ -187,7 +187,8 @@ export function openDialog({ title, content, actions, wide = false, describe, on
 }
 
 export async function confirmDialog({ title, body, confirmLabel = "Đồng ý", danger = false }) {
-  const r = await openDialog({ title, content: h("p", null, body), actions: [{ label: "Huỷ", value: false }, { label: confirmLabel, kind: danger ? "danger solid" : "primary", value: true }] });
+  const r = await openDialog({ title, content: typeof body === "string" ? h("p", null, body) : body,
+    actions: [{ label: "Huỷ", value: false }, { label: confirmLabel, kind: danger ? "danger solid" : "primary", value: true }] });
   return r === true;
 }
 

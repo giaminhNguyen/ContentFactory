@@ -73,6 +73,8 @@ class WorkerManager:
         reason = ""
         session = (meta or {}).get("session")
         session_owner: str | None = None            # worker đang giữ session (W1.13): worker khác không kế thừa
+        fingerprints: dict[str, int] = {}           # W2.6: lỗi lặp lại cùng dạng -> poison task
+        no_progress_max = int(policy["max_no_progress"])
 
         while len(attempts) < int(policy["max_total_attempts"]):
             if cancel is not None and cancel.is_set():
@@ -82,7 +84,7 @@ class WorkerManager:
                 target = pending
                 pending = None
             else:
-                target, why = self.reg.pick(work_type, exclude=tuple(used))
+                target, why = self.reg.pick(work_type, now=self.now(), exclude=tuple(used))
                 if target is None:
                     reason = why
                     break
@@ -112,6 +114,14 @@ class WorkerManager:
                 self._register_failure(target.worker, err, policy)
                 reason = f"{target.worker.name}: {err.kind.value} {err.code}"
                 last_error = err
+                # W2.6: cùng một lỗi lặp lại trên task này mà không tiến triển -> dừng, cần người xem
+                fp = f"{work_type}|{err.kind.value}:{err.code}"
+                fingerprints[fp] = fingerprints.get(fp, 0) + 1
+                if fingerprints[fp] >= no_progress_max:
+                    reason = (f"poison task: lặp {fingerprints[fp]} lần không tiến triển "
+                              f"({err.kind.value} {err.code})"
+                              + (f"; lỗi cuối: {reason}" if reason else ""))
+                    break
                 pending = self._retry_or_fallback(target, err, policy, tries, used)
                 continue
 
@@ -134,6 +144,7 @@ class WorkerManager:
             promoted = self._promote(result.output_path, output)
             attempts.append(self._finish(attempt, AttemptState.SUCCESS, None, result))
             self._register_success(target.worker)
+            fingerprints = {}                                # W2.6: có tiến triển, reset bộ đếm poison
             return RunResult(ok=True, work_type=work_type, attempts=attempts, output_path=promoted,
                              text=result.text, session_id=result.session_id, cost_usd=result.cost_usd,
                              reason=f"thành công qua {len(attempts)} attempt: {target.worker.name}")
@@ -167,6 +178,8 @@ class WorkerManager:
         req = ExecRequest(work_type=attempt.work_type, prompt=prompt, cwd=work_dir,
                           model=target.model, session=session,
                           timeout_s=timeout_s or w.timeout_s,
+                          startup_timeout_s=float(w.meta.get("startup_timeout_s", 60.0)),
+                          idle_timeout_s=w.idle_timeout_s, hard_timeout_s=w.hard_timeout_s,
                           cancel=cancel or CancelToken(), meta=dict(meta or {}))
         try:
             return self.reg.driver(w.driver_id).execute(req)
@@ -205,27 +218,56 @@ class WorkerManager:
         used.append(wid)
         return None
 
-    # -- trạng thái worker ------------------------------------------------------------------------
+    # -- trạng thái worker (W1.9/W1.10 + W2.1 health/circuit) -----------------------------------
     def _register_failure(self, w: Worker, err: WorkerError, policy: dict) -> None:
-        """Streak + cooldown + AUTH/QUOTA (W1.9, W1.10). Không xoá lịch sử attempt."""
+        """Streak + cooldown/circuit + AUTH/QUOTA. Không xoá lịch sử attempt.
+
+        W2.2: cooldown = circuit OPEN. Lỗi khi HALF_OPEN (probe thử lại) -> mở lại circuit
+        (kéo dài cooldown) — probe có giới hạn, không để provider lia lửa.
+        """
         w = self.reg.get(w.id)
         streak = w.failure_streak + 1
         cooldown = 0.0
         if err.kind is WorkerErrorClass.QUOTA:              # block ngay thời điểm đó
             cooldown = self.now() + float(policy["cooldown_s"])
+        elif w.circuit_opened_at and (
+                w.cooldown_until <= self.now()):            # HALF_OPEN probe hỏng -> mở lại circuit
+            cooldown = self.now() + float(policy["cooldown_s"])
         elif streak >= int(policy["cooldown_after"]):
             cooldown = self.now() + float(policy["cooldown_s"])
-        kw: dict = {"failure_streak": streak}
+        kw: dict = {"failure_streak": streak,
+                    "last_error_kind": err.kind.value, "last_error_code": err.code,
+                    "last_error_at": self.now()}
         if cooldown:
             kw["cooldown_until"] = max(cooldown, w.cooldown_until)
+            kw["circuit_opened_at"] = w.circuit_opened_at or self.now()
         if err.kind is WorkerErrorClass.AUTH:
             kw["status"] = WorkerStatus.AUTH_REQUIRED
         self.reg.store.save_worker(w.with_updates(**kw))
 
     def _register_success(self, w: Worker) -> None:
         w = self.reg.get(w.id)
-        if w.failure_streak or w.cooldown_until:
-            self.reg.store.save_worker(w.with_updates(failure_streak=0, cooldown_until=0.0))
+        if (w.failure_streak or w.cooldown_until or w.circuit_opened_at or w.last_error_kind
+                or w.last_error_at or w.last_error_code):
+            self.reg.store.save_worker(w.with_updates(
+                failure_streak=0, cooldown_until=0.0, circuit_opened_at=0.0,
+                last_error_kind="", last_error_code="", last_error_at=0.0, last_success_at=self.now()))
+
+    # -- reconciler W2.5 -------------------------------------------------------------------------
+    def reconcile_orphans(self) -> list[Attempt]:
+        """Sau khi app crash giữa attempt: không để RUNNING vĩnh viễn.
+
+        Attempt workspace chỉ được promote qua atomic_write SAU validation gate nên canonical
+        không thể nửa chừng/corrupt — attempt đang RUNNING lúc crash đều là orphan hợp lệ.
+        """
+        orphans: list[Attempt] = []
+        for a in self.reg.store.running_attempts():
+            done = replace(a, state=AttemptState.FAILED, ended_at=self.now(),
+                           error_kind="UNKNOWN", error_code="ORPHANED",
+                           error_message="restart giữa attempt (orphan)")
+            self.reg.store.add_attempt(done)
+            orphans.append(done)
+        return orphans
 
     # -- promote ------------------------------------------------------------------------------------
     @staticmethod

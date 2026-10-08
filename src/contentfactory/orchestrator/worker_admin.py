@@ -17,12 +17,19 @@ REAL_DRIVERS = ("claude_cli", "codex_cli", "gemini_cli", "opencode_cli")
 
 def worker_dump(w) -> dict:
     ok, reason = w.routable()
+    health_state, health_reason = w.health()
     return {
         "id": w.id, "name": w.name, "driver_id": w.driver_id, "executable": w.executable,
         "status": w.status.value, "enabled": w.enabled, "source": w.source,
         "models": [m.id for m in w.models], "default_model": w.default_model,
         "profiles": dict(w.profiles), "concurrency": w.concurrency, "timeout_s": w.timeout_s,
+        "idle_timeout_s": w.idle_timeout_s, "hard_timeout_s": w.hard_timeout_s,
         "failure_streak": w.failure_streak, "cooldown_s": round(max(0.0, w.cooldown_until - time.time()), 1),
+        "circuit": w.circuit().value, "circuit_opened_at": w.circuit_opened_at,
+        "health": health_state.value, "health_reason": health_reason,
+        "last_error": {"kind": w.last_error_kind, "code": w.last_error_code, "at": w.last_error_at}
+            if w.last_error_at else None,
+        "last_success_at": w.last_success_at,
         "routable": {"ok": ok, "reason": reason},
         "version": w.meta.get("version") or "", "auth": w.meta.get("auth") or "unknown",
         "detail": w.meta.get("detail") or "",
@@ -139,8 +146,67 @@ class WorkerService:
         return self.registry.simulate(work_type)
 
     # -- attempts (timeline) ----------------------------------------------------------------------
-    def attempts(self, job_id: str = "", work_type: str = "", stage: str = "", limit: int = 100) -> list[dict]:
+    def attempts(self, job_id: str = "", work_type: str = "", stage: str = "",
+                 worker_id: str = "", limit: int = 100) -> list[dict]:
         atts = self.store.attempts(job_id=job_id, work_type=work_type, limit=limit)
+        if worker_id:
+            atts = [a for a in atts if a.worker_id == worker_id]
         if stage:
             atts = [a for a in atts if a.stage == stage]
         return [attempt_dump(a) for a in atts]
+
+    # -- W2.7 metrics ----------------------------------------------------------------------------
+    def stats(self) -> dict:
+        return {"workers": self.store.worker_stats(), "tasks": self.store.attempts_per_task()}
+
+    # -- W2.UI.4 health summary -------------------------------------------------------------------
+    def summary(self) -> dict:
+        """Tổng hợp một dòng cho Health Center: worker khoẻ/lỗi + circuit đang mở."""
+        counts: dict[str, int] = {}
+        circuits: list[dict] = []
+        quota: list[str] = []
+        auth: list[str] = []
+        for w in self.registry.list():
+            state, reason = w.health()
+            counts[state.value] = counts.get(state.value, 0) + 1
+            if w.circuit().value in ("OPEN", "HALF_OPEN"):
+                circuits.append({"worker_id": w.id, "name": w.name,
+                                 "state": w.circuit().value, "reason": reason})
+            if state.value == "QUOTA_BLOCKED":
+                quota.append(w.name)
+            if state.value == "AUTH_BLOCKED":
+                auth.append(w.name)
+        workers = self.registry.list()
+        healthy = sum(1 for w in workers if not w.enabled or w.health()[0] is not None)  # đếm riêng
+        return {"counts": counts,
+                "healthy": sum(1 for w in workers if w.health()[0].value == "HEALTHY"),
+                "total": len(workers), "circuits": circuits,
+                "quota_blocked": quota, "auth_blocked": auth}
+
+    # -- W2.UI.3 impact preview -------------------------------------------------------------------
+    def impact(self, worker_id: str) -> dict:
+        """Hệ quả nếu disable/xoá worker này: pool liên quan, work types bị ảnh hưởng, task đang chạy."""
+        pools = [p.name for p in self.registry.store.pools() if worker_id in p.members]
+        running = sum(1 for a in self.registry.store.running_attempts() if a.worker_id == worker_id)
+        work_types = sorted(wt for wt, cfg in self.registry.routing().items() if cfg.get("pool") in pools)
+        return {"worker_id": worker_id, "pools": pools, "work_types": work_types, "running": running}
+
+    def pool_impact(self, name: str) -> dict:
+        """Hệ quả nếu xoá pool: work types trỏ vào + attempt đang chạy trên worker của pool."""
+        work_types = sorted(wt for wt, cfg in self.registry.routing().items() if cfg.get("pool") == name)
+        p = self.registry.store.pool(name)
+        running = sum(1 for a in self.registry.store.running_attempts()
+                      if p is not None and a.worker_id in p.members)
+        return {"pool": name, "work_types": work_types, "running": running}
+
+    # -- W2.UI.1 worker detail --------------------------------------------------------------------
+    def worker_detail(self, worker_id: str) -> dict:
+        w = self.registry.get(worker_id)
+        wd = worker_dump(w)
+        wd["health_history"] = self.store.health_history(worker_id)
+        stats = self.store.worker_stats().get(worker_id, {})
+        wd["stats"] = stats
+        wd["recent_attempts"] = [attempt_dump(a) for a in
+                                 self.store.attempts(work_type="", limit=50)
+                                 if a.worker_id == worker_id][:10]
+        return wd

@@ -84,7 +84,7 @@ class WorkerRegistry:
     def update(self, worker_id: str, **fields) -> Worker:
         w = self.get(worker_id)
         allowed = {"name", "executable", "enabled", "models", "profiles", "concurrency",
-                   "timeout_s", "driver_id"}
+                   "timeout_s", "idle_timeout_s", "hard_timeout_s", "driver_id"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"trường không cho sửa: {sorted(bad)}")
@@ -318,7 +318,8 @@ class WorkerRegistry:
             return None, [], [], f"pool {pool_name!r} rỗng — không có worker nào để route"
         profile = routing.get("model_profile") or None
         workers = {w.id: w for w in self.store.workers()}
-        running = self.store.running_counts() if pool.strategy is PoolStrategy.LEAST_BUSY else {}
+        # running counts LUÔN tính (không chỉ least_busy): circuit HALF_OPEN cần biết có đang probe hay không (W2.2)
+        running = self.store.running_counts()
 
         eligible: list[tuple[Worker, str, str]] = []       # (worker, model, lý do)
         blocked: list[tuple[str, str, str]] = []           # (worker_id, tên, lý do)
@@ -331,7 +332,7 @@ class WorkerRegistry:
             if wid in excluded:
                 blocked.append((wid, w.name, "đã lỗi trong lần thử này"))
                 continue
-            ok, reason = w.routable(now)
+            ok, reason = w.routable(now, running.get(wid, 0))
             if not ok:
                 blocked.append((wid, w.name, reason))
                 continue
