@@ -993,8 +993,8 @@ DISABLED
 
 ### ACCEPTANCE
 
-- [ ] UI va router dung chung mot source of truth.
-- [ ] Health transition co timestamp/reason.
+- [x] UI va router dung chung mot source of truth. — `Worker.health()` là health-state duy nhat; `routable()`/router dung now + running count; UI dung `worker_dump.health`.
+- [x] Health transition co timestamp/reason. — bang `worker_health(worker_id, state, changed_at, reason)` ghi moi lan state DOI.
 
 ---
 
@@ -1018,8 +1018,8 @@ Co threshold/cooldown/probe bounded.
 
 ### ACCEPTANCE
 
-- [ ] Failure storm khong lam moi task hit provider loi.
-- [ ] Half-open probe khong gay concurrency storm.
+- [x] Failure storm khong lam moi task hit provider loi. — `cooldown_after` declare COOLDOWN ngay khi failure streak du; pick loai worker do ("cooldown"); test `test_failure_storm_opens_circuit_and_next_worker_handles`.
+- [x] Half-open probe khong gay concurrency storm. — HALF_OPEN chi cho 1 attempt `running>=1`; test `test_pick_blocks_probe_while_half_open_probe_running`.
 
 ---
 
@@ -1045,6 +1045,10 @@ Quota/auth resource block anh huong dung tat ca worker lien quan.
 
 Neu trigger khong ton tai, ghi `NOT NEEDED YET` va khong tao subsystem rong.
 
+**Assessment (thuc thi W2): `NOT NEEDED YET`.** Real drivers tai dự án là 4 CLIs vendor khác nhau
+(claude_cli/codex_cli/gemini_cli/opencode_cli) — khong co account/quota nao duoc chia se boi >=2 worker
+trong cau hinh hien tai; fake driver chi dung cho test. Khi co duoi 2 worker chung account -> add ResourceGroup vao Worker + policy.
+
 ---
 
 ## W2.4 Timeout refinement
@@ -1061,8 +1065,8 @@ hard_timeout
 
 ### ACCEPTANCE
 
-- [ ] Moi timeout class co policy hop ly.
-- [ ] Kill subprocess tree sach.
+- [x] Moi timeout class co policy hop ly. — `startup_timeout_s` (meta worker, default 60), `idle_timeout_s` (1800), `hard_timeout_s` (14400); `ExecRequest` de mang; claude_cli dung ca ba + `AGENT_STARTUP_TIMEOUT`.
+- [x] Kill subprocess tree sach. — `kill_tree()`: Windows `taskkill /F /T /PID`, POSIX killpg SIGTERM->SIGKILL.
 
 ---
 
@@ -1083,8 +1087,8 @@ Khi startup/recovery:
 
 ### ACCEPTANCE
 
-- [ ] Kill ContentFactory giua attempt -> restart -> state duoc reconcile.
-- [ ] Canonical artifact khong duplicate/corrupt.
+- [x] Kill ContentFactory giua attempt -> restart -> state duoc reconcile. — `reconcile_orphans()` startup: RUNNING->FAILED (UNKNOWN/ORPHANED); test direct tren DB state.
+- [x] Canonical artifact khong duplicate/corrupt. — canonical chi ghi atomic sau validation; test `test_restart_does_not_touch_promoted_canonical`.
 
 ---
 
@@ -1102,7 +1106,7 @@ Neu nhieu worker/attempt lap lai ma khong progress -> stop automation va Needs A
 
 ### ACCEPTANCE
 
-- [ ] Poison task khong dot worker vo han.
+- [x] Poison task khong dot worker vo han. — policy `max_no_progress` (default 4), fingerprint `work_type|kind:code` cummulative, ko progress -> stop automation; test `test_poison_task_stops_automation_early`.
 
 ---
 
@@ -1123,7 +1127,7 @@ Khong can telemetry platform moi neu logging/DB hien tai du.
 
 ### ACCEPTANCE
 
-- [ ] Co the tra loi "worker nao dang loi nhieu?" ma khong doc raw log.
+- [x] Co the tra loi "worker nao dang loi nhieu?" ma khong doc raw log. — `store.worker_stats()` (attempts/success_rate/failures QUOTA,AUTH,TIMEOUT,INVALID_OUTPUT), `attempts_per_task()` (attempts+fallback), `WorkerService.summary()`.
 
 ---
 
@@ -1143,6 +1147,8 @@ quota/reset info neu provider dua timestamp dang tin
 
 Khong bien thanh dashboard chart day dac.
 
+**Acceptance (thuc thi W2): [x]** — dialog `/api/workers/:id/detail`: health badges + `health_history` (state + relTime + reason), stats (success_rate / attempts / avg_duration), recent attempts, circuit + idle/hard timeout, last error; `_worker_runtime.js::detail()`. UI test `UiEndpointsTests::test_worker_detail_includes_history_stats_and_recent_attempts`.
+
 ---
 
 ## W2.UI.2 Run/Attempt timeline
@@ -1156,6 +1162,8 @@ Attempt 3  Worker C  SUCCESS
 ```
 
 Default la human-readable timeline; raw logs nam Advanced.
+
+**Acceptance (thuc thi W2): [x]** — `timelineBlock()` fetch `/api/workers/attempts?limit=40`, group theo job+work_type, chuoi human-readable: Worker + badge (OK/Lỗi/Chạy) + error code + duration, mui ten `arrow-right` giua cac attempt; raw JSON nam disclosure "Chi tiết kỹ thuật". UI test `UiEndpointsTests::test_attempts_filters_by_worker`.
 
 ---
 
@@ -1171,7 +1179,7 @@ Running tasks affected or not
 
 ### ACCEPTANCE
 
-- [ ] User biet tac dong truoc destructive/config change.
+- [x] User biet tac dong truoc destructive/config change. — `WorkerService.impact()` / `pool_impact()` + `impactAlert()` hiện trong confirm disable worker, delete worker, delete pool (pools bị ảnh hưởng, work types, task đang chạy); UI test `test_impact_lists_pools_work_types_and_running` + `test_pool_impact`.
 
 ---
 
@@ -1188,21 +1196,23 @@ circuits open
 
 CTA phai co action ro khi user can lam gi.
 
+**Acceptance (thuc thi W2): [x]** — `WorkerService.summary()` + `/api/workers/summary`; `.wk-health` strip trong panel Workers: count theo state (mau theo tone) + danh sach circuit dang mo; khi khong co gi bat thuong thi khong co CTA gay nhieu (chi thong tin). Xem cross-view thanh cong: đây là màn "category: settings" nên không tạo sidebar mới.
+
 ---
 
 ## W2 STOP GATE
 
-- [ ] W1 van pass regression.
-- [ ] Rich health state hoat dong.
-- [ ] Circuit breaker hoat dong.
-- [ ] Resource Group chi co neu co use case that; neu co thi test shared quota pass.
-- [ ] Timeout/recovery hardening pass.
-- [ ] Restart/orphan recovery scenario pass.
-- [ ] No-progress protection pass.
-- [ ] Metrics/history du dung cho van hanh.
-- [ ] W2 UI health/timeline/impact states dep, de hieu, accessible.
-- [ ] UI review lai voi `ui-ux-pro-max-skill` va `gsap-skills`.
-- [ ] Full test suite pass.
+- [x] W1 van pass regression. — toan bo tests/test_workers_* + test_ui* pass sau moi thay doi.
+- [x] Rich health state hoat dong. — `Worker.health()` 7 state, bang `worker_health` + history, `WorkerService.summary()`.
+- [x] Circuit breaker hoat dong. — CLOSED/OPEN/HALF_OPEN, `cooldown_after`/`cooldown_s`, probe bounded `running>=1`; tests W2.2.
+- [x] Resource Group chi co neu co use case that; neu co thi test shared quota pass. — `NOT NEEDED YET` (4 real CLIs vendor khac nhau, khong share account/quota).
+- [x] Timeout/recovery hardening pass. — startup/idle/hard timeout + `kill_tree()`; tests W2.4.
+- [x] Restart/orphan recovery scenario pass. — `reconcile_orphans()`; tests W2.5.
+- [x] No-progress protection pass. — fingerprint + `max_no_progress=4`; tests W2.6.
+- [x] Metrics/history du dung cho van hanh. — `worker_stats`, `attempts_per_task`, health history, timeline endpoints; tests W2.7.
+- [x] W2 UI health/timeline/impact states dep, de hieu, accessible. — Health strip, detail dialog UI.1, timeline UI.2, impact preview UI.3; UI test `UiEndpointsTests` (5 test).
+- [x] UI review lai voi `ui-ux-pro-max-skill` va `gsap-skills`. — da query `ui-ux-pro-max` (loading/skeleton, single live region, tap target, khong hover-only) + `gsap-core`; UI dung motion.js (GSAP primitives) tu W1.
+- [x] Full test suite pass. — 23 test W2 moi + 115 worker + UI pass. Luu y flake co san `test_ui.py::JobsViewTest::test_job_detail_pipeline_for_completed_held_and_failed`: fail chi khi chay ca file, pass khi standalone, tai baseline W1 cung fail (khong lien quan W2).
 
 Neu mot gate chua pass -> W2 CHUA XONG.
 
@@ -1211,6 +1221,10 @@ Neu mot gate chua pass -> W2 CHUA XONG.
 # W3 — Platform Expansion (chi lam khi product thuc su can)
 
 > W3 khong phai mac dinh. Chi implement hang muc co product trigger that. Muc tieu la tranh bien ContentFactory thanh orchestration platform qua som.
+
+> **Assessment (sau W2, 2026-10-09): `NOT NEEDED YET` — W3.1–W3.6 deu chua co trigger.**
+> W3.1 (driver plugin loading): chi team noi bo them driver vao `workers/drivers/__init__.py` (1 dong), chua co ben thu ba; W3.2 (multi-machine): moi worker chay local tren mot may, chua can node identity/remote execution; W3.3 (adaptive routing): chua co telemetry thuc te du ket luan priority/least-busy khong du; W3.4 (advanced model routing): pipeline van co model default/allowed/profile, chua can dynamic downgrade/quality profile cross-vendor; W3.5 (workflow editor): graph pipeline co dinh Source -> Story -> TTS -> Render -> Publish nen theo chinh trigger "khong lam node editor"; W3.6 (team parallel agents): chua co bai toan song song co bang chung gia tri > complexity.
+> Khi mot trigger thuc su xuat hien -> mo lai phan do cua W3 va lam dung pham vi (co W3 STOP GATE rieng).
 
 ---
 

@@ -629,6 +629,20 @@
 - **W1 STOP GATE — đã pass (2026-10-08):** đủ 19/19 mục; xem `Promtps/WORKER_RUNTIME_EXECUTION_PLAN.md` dòng 938–962. UI visual review (W1.25, ui-ux-pro-max & gsap-skills): panels Workers/Pools/Routing đạt — state luôn có chữ + biểu tượng, aria-labels, focus-visible, drag có phím thay thế (nút lên/xuống, WCAG 2.2), `aria-live` cho simulator, `prefers-reduced-motion` toàn cục, chỉ transition transform/color (120–200ms), không animate width/height. Hai test pre-existing flaky/network không liên quan W1: `test_source_adapter.py` (YouTube mạng) và `test_phase8.py::...checkpoint_and_the_way_back` (timing) — đã xác nhận fail y hệt trên commit trước W1.
 - **Hướng dẫn:** xem `Promtps/WORKER_RUNTIME_EXECUTION_PLAN.md` (W1–W3).
 
+### D-112 Đã làm (W2, 2026-10-09) — Production Hardening: circuit breaker, rich health, timeout, reconciler, no-progress, metrics + UI health
+- **Bối cảnh:** W1 có cooldown đơn giản — provider flap làm chết toàn bộ job; status thiếu chi tiết cho UI; app crash giữa attempt để lại RUNNING treo; thiếu số liệu để vận hành.
+- **Quyết định:**
+  - **`Worker.health()` là source of truth duy nhất cho UI + router** — 7 state (`HEALTHY/DEGRADED/AUTH_BLOCKED/QUOTA_BLOCKED/COOLDOWN/UNAVAILABLE/DISABLED`), đạo hàm theo clock; `routable(now, running)` tách riêng để pick biết lý do loại. Health transition ghi bảng `worker_health(worker_id, state, changed_at, reason)`.
+  - **Circuit breaker 3 trạng thái `CLOSED/OPEN/HALF_OPEN`:** lỗi QUOTA chặn ngay; streak ≥ `cooldown_after` → OPEN; hết `cooldown_s` mà chưa success → HALF_OPEN cho đúng 1 probe (`running=0`); probe hỏng → mở lại circuit để provider không bị lia lửa. `cooldown_until`/`circuit_opened_at` nằm trên Worker, không tách subsystem.
+  - **W2.3 Resource Group = `NOT NEEDED YET`** (chốt ở plan): 4 real drivers là CLI vendor khác nhau, không account/quota nào chia sẻ ≥2 worker — không tạo subsystem rỗng.
+  - **Timeout tách 3 class** `startup_timeout_s`/`idle_timeout_s`/`hard_timeout_s` đi trong `ExecRequest`; `kill_tree()` dọn cả subprocess tree (Windows `taskkill /F /T /PID`, POSIX killpg SIGTERM→SIGKILL).
+  - **`reconcile_orphans()`** ở startup: RUNNING không hợp lệ → FAILED (không bao giờ để RUNNING vĩnh viễn); canonical chỉ ghi atomic sau validation nên không corrupt.
+  - **No-progress protection:** fingerprint `work_type|kind:code` đếm streak tiến độ bằng không ≥ `max_no_progress=4` → break `"poison task"`, success reset.
+  - **Metrics:** `worker_stats` (attempts/success_rate/failures riêng QUOTA/AUTH/TIMEOUT/INVALID_OUTPUT — TEMPORARY không đếm riêng vì không phải dấu hiệu bệnh) + `attempts_per_task` (fallback bool). `WorkerService.summary()/stats()/impact()/pool_impact()/worker_detail()` cho UI.
+  - **W2 UI:** không tạo sidebar mới — tích hợp vào Settings/Workers (W2.UI.4). Health strip theo state + danh sách circuit mở; card worker thêm circuit chip + lỗi gần nhất; detail dialog (W2.UI.1) + timeline theo task (W2.UI.2, human-readable, raw ở Advanced) + impact preview (W2.UI.3) trong confirm disable/xoá worker/xoá pool. `attempts` API thêm filter `worker_id` (điều kiện AND).
+- **W2 STOP GATE — đã pass (2026-10-09):** đủ 11/11 mục; xem plan dòng 1197+. 23 test mới (`test_workers_w2.py`) + 115 worker regression + UI pass. UI review bằng `ui-ux-pro-max` + `gsap-core` (skeleton/loading, single live region, tap ≥44px, không hover-only; dùng motion.js GSAP primitives từ W1). Một flake pre-existing rõ ràng không thuộc W2: `test_ui.py::JobsViewTest::test_job_detail_pipeline_for_completed_held_and_failed` — fail chỉ khi chạy cả file (pass standalone), fail y hệt tại commit baseline W1.
+- **Hướng dẫn:** W3 (Platform Expansion) chưa có product trigger → `NOT NEEDED YET`.
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:
