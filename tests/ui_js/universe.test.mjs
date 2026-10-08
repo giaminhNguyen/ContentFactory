@@ -68,3 +68,12 @@ test("sơ đồ quan hệ: node theo vòng tròn, không có cạnh mồ côi", 
   assert.equal(L.fitText({ fit: 0.456 }), "Hợp 46%");
   assert.match(L.relText({ a_id: "a", b_id: "b", type: "enemy_of" }, (i) => i.toUpperCase()), /A — enemy of — B/);
 });
+
+test("nhật ký cập nhật kho: tóm tắt dễ hiểu và chỉ hoàn tác bản đang áp dụng", async () => {
+  const L = await load("universe_logic.js");
+  const c = { created: [{ display_name: "Kiều An" }, { display_name: "Võ Quyết" }], reused: 1, merged: 0, appearances: 3, relationships: 2, status: "applied" };
+  assert.match(L.changeSummary(c), /thêm 2 nhân vật mới \(Kiều An, Võ Quyết\).*dùng lại 1.*3 lần xuất hiện.*2 quan hệ/);
+  assert.match(L.changeSummary({ ...c, created: [], merged: 2 }), /không thêm nhân vật mới.*gộp 2/);
+  assert.equal(L.canRevert(c), true);
+  assert.equal(L.canRevert({ ...c, status: "reverted" }), false);
+});

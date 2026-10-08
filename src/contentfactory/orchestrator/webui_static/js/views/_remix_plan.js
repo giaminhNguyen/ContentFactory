@@ -3,7 +3,7 @@
 import { api } from "../api.js";
 import { h, clear } from "../dom.js";
 import { badge, btn, busy, disclosure, alertBox, field, input, toast, toastError } from "../components.js";
-import { decisionView, costLine, premiseRows, qualityIssues, stopActions, writeProgress, budgetValid } from "../remix_logic.js";
+import { decisionView, costLine, universeLine, premiseRows, qualityIssues, stopActions, writeProgress, budgetValid } from "../remix_logic.js";
 import { roleLabel } from "../universe_logic.js";
 
 export function remixPlanCard(jobId, d, { after } = {}) {
@@ -25,6 +25,11 @@ export function remixPlanCard(jobId, d, { after } = {}) {
       after?.();
       load();
     } catch (e) { toastError(e, "Chưa tiếp tục được"); }
+  }
+
+  async function publishNow() {
+    try { const r = await api.post(`/api/jobs/${jobId}/universe/publish`, {}); toast({ title: "Đã cập nhật Kho nhân vật", message: `Trạng thái: ${r.universe_publish.status}`, tone: "done" }); load(); }
+    catch (e) { toastError(e, "Chưa cập nhật được"); }
   }
 
   function stopBox(p) {
@@ -53,7 +58,8 @@ export function remixPlanCard(jobId, d, { after } = {}) {
       host.append(disclosure({ label: `QA cuối truyện: ${p.final_qa.accepted ? "đạt" : "chưa đạt"}`, open: !p.final_qa.accepted, content: h("div", { class: "stack small" },
         badge({ tone: p.final_qa.accepted ? "done" : "fail", icon: p.final_qa.accepted ? "check-circle" : "alert", label: p.final_qa.accepted ? "Đạt — đủ điều kiện cập nhật Kho nhân vật" : "Chưa đạt — Kho nhân vật không bị thay đổi" }),
         ...(p.final_qa.problems.length ? [h("ul", null, ...p.final_qa.problems.map((x) => h("li", null, x.message)))] : []),
-        p.final_qa.universe_publish ? h("p", { class: "muted" }, `Kho nhân vật: ${p.final_qa.universe_publish.status}${p.final_qa.universe_publish.reason ? " — " + p.final_qa.universe_publish.reason : ""}`) : null) }));
+        p.final_qa.universe_publish ? h("p", { class: "muted" }, universeLine(p.final_qa.universe_publish)) : null,
+        p.final_qa.accepted && ["skipped", "failed"].includes(p.final_qa.universe_publish?.status) ? btn({ label: "Cập nhật Kho nhân vật", icon: "database", onClick: (e) => busy(e.currentTarget, publishNow) }) : null) }));
     }
     if (p.dna) host.append(disclosure({ label: "DNA của nguồn (trừu tượng — không có tên/tình tiết riêng)", content: h("div", { class: "stack small" },
       h("p", null, h("strong", null, "Thể loại: "), p.dna.genre), h("p", null, h("strong", null, "Lời hứa cảm xúc: "), p.dna.emotional_promise), h("p", null, h("strong", null, "Cơ chế thưởng: "), p.dna.reward_types.join("; ")),

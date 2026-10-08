@@ -30,3 +30,11 @@ test("danh sách ý tưởng: được chọn lên đầu, điểm hiển thị 
   assert.equal(rows[2].score, "—");
   assert.equal(R.qualityIssues({ issues: [{ message: "x" }] })[0], "x");
 });
+
+test("dòng trạng thái cập nhật kho dùng ngôn ngữ thường và nêu lỗi", async () => {
+  const R = await load("remix_logic.js");
+  assert.match(R.universeLine({ status: "applied" }), /đã cập nhật/);
+  assert.match(R.universeLine({ status: "failed", error: "db locked" }), /thử lại.*db locked/);
+  assert.match(R.universeLine({ status: "not_accepted", reason: "chưa đạt QA cuối" }), /không cập nhật.*chưa đạt QA cuối/);
+  assert.match(R.universeLine({ status: "weird" }), /weird/);
+});

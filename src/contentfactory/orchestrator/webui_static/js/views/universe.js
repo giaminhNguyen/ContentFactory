@@ -6,6 +6,7 @@ import { icon } from "../icons.js";
 import { btn, busy, field, input, select, textarea, badge, alertBox, emptyState, errorState, skeleton, pageHead, toast, toastError, confirmDialog, openDialog, tabs, disclosure } from "../components.js";
 import * as L from "../universe_logic.js";
 import { mountStories } from "./_universe_stories.js";
+import { mountChanges } from "./_universe_changes.js";
 
 const STATUS_TONE = { active: { tone: "done", icon: "check-circle" }, archived: { tone: "off", icon: "folder" }, staged: { tone: "wait", icon: "hourglass" } };
 
@@ -24,16 +25,19 @@ export async function mount(root, ctx) {
   const impBtn = btn({ label: "Nhập Excel", icon: "upload", onClick: () => openImport() });
   const charsPane = h("div", { id: "panel-chars", role: "tabpanel", "aria-labelledby": "tab-chars" }, h("div", { class: "uv-layout" }, h("div", { class: "stack uv-left" }, filters(), listHost), detailHost));
   const storiesPane = h("div", { id: "panel-stories", role: "tabpanel", "aria-labelledby": "tab-stories", hidden: true });
-  let storiesInst = null;
+  const changesPane = h("div", { id: "panel-changes", role: "tabpanel", "aria-labelledby": "tab-changes", hidden: true });
+  let storiesInst = null, changesInst = null;
   function showTop(t) {
     charsPane.hidden = t !== "chars";
     storiesPane.hidden = t !== "stories";
+    changesPane.hidden = t !== "changes";
+    if (t === "changes") { if (changesInst) changesInst.reload(); else changesInst = mountChanges(changesPane, { onChanged: async () => { await loadSummary(); loadList(); } }); }
     if (t === "stories" && !storiesInst) storiesInst = mountStories(storiesPane, { onOpenCharacter: (id) => { setUrl(id); selected = id; document.querySelector("#tab-chars")?.click(); loadDetail(); loadList(); } });
   }
 
   root.append(pageHead("Kho nhân vật", "Nhân vật tự được tạo và dùng lại khi Story Remix viết truyện. Bạn không cần làm gì ở đây — chỉ xem, sửa hồ sơ hoặc lưu trữ khi muốn.",
-    h("div", { class: "row" }, addBtn, expBtn, impBtn)), dash, h("div", { class: "uv-tabs" }, tabs({ items: [["chars", "Nhân vật"], ["stories", "Truyện & dàn nhân vật"]], active: "chars", onSelect: (t) => showTop(t), label: "Kho nhân vật" })),
-    charsPane, storiesPane);
+    h("div", { class: "row" }, addBtn, expBtn, impBtn)), dash, h("div", { class: "uv-tabs" }, tabs({ items: [["chars", "Nhân vật"], ["stories", "Truyện & dàn nhân vật"], ["changes", "Nhật ký cập nhật"]], active: "chars", onSelect: (t) => showTop(t), label: "Kho nhân vật" })),
+    charsPane, storiesPane, changesPane);
 
   // ---------------------------------------------------------------- bảng điều khiển
   function stat(label, value, hint) {

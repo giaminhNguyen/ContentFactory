@@ -52,7 +52,10 @@ class E2E(RootCase):
         cast = json.loads((r / "character_cast.json").read_text(encoding="utf-8"))
         for m in cast["members"]:
             self.assertIn(m["display_name"].split()[-1], text)                                                  # mọi nhân vật trong dàn có mặt trong truyện
-        self.assertEqual(self.uni.list_characters(status="")["total"], 0)                                       # publish thuộc Phase 6; staged chưa vào kho
+        fq = json.loads((r / "final_qa.json").read_text(encoding="utf-8"))
+        self.assertEqual(fq["universe_publish"]["status"], "applied")                                           # đạt QA ⇒ kho được cập nhật nguyên tử
+        self.assertEqual(self.uni.summary()["active"], 3)
+        self.assertEqual(self.uni.summary()["stories"], 1)
 
     def test_old_story_mode_is_untouched_by_the_router(self):
         jid = self.orc_.submit(params(), mode="STORY_ONLY")
@@ -137,6 +140,7 @@ class E2E(RootCase):
         self.assertIn("ORIGINALITY_BLOCKED", json.dumps(self.stage(jid), default=str))
         self.assertFalse(any(c["step"].startswith("chapter_") for c in llm.calls))                              # không tốn chi phí viết dài
         self.assertFalse((self.sdir(jid) / "remix" / "chapters").exists())
+        self.assertEqual(self.uni.list_characters(status="")["total"], 0)                                       # job lỗi: kho chính thức không đổi (LU-006)
 
     def test_final_qa_accepted_but_publish_not_configured_leaves_universe_untouched(self):
         llm = FakeRemixLLM()
@@ -144,7 +148,68 @@ class E2E(RootCase):
         jid = self.run_job()
         fq = json.loads((self.sdir(jid) / "remix" / "final_qa.json").read_text(encoding="utf-8"))
         self.assertTrue(fq["accepted"])
-        self.assertEqual(fq["universe_publish"]["status"], "skipped")                                            # Phase 6 nối publisher; ở đây không ghi gì vào kho
+        self.assertEqual(fq["universe_publish"]["status"], "skipped")
+
+
+class Publish(E2E):
+    def svc(self):
+        from contentfactory.orchestrator.service_universe import UniverseService
+        return UniverseService(self.orc_)
+
+    def test_publish_is_idempotent_on_resume_and_undoable_from_the_api(self):
+        jid = self.run_job()
+        self.assertEqual(self.uni.summary()["active"], 3)
+        adapter = self.orc_.adapters["story"].remix
+        from contentfactory.contracts import CancelToken, StageContext
+        sd = self.sdir(jid)
+        ctx = StageContext(job_id=jid, stage="story", attempt=1, stage_key="k", workspace=self.job_dir(jid), stage_dir=sd, params=self.orc_.store.get_job(jid)["params"], inputs={}, config={},
+                           cancel=CancelToken(), log=lambda *a, **k: None)
+        adapter.finalize((sd / "story.txt").read_text(encoding="utf-8"), ctx)                                   # resume: chạy lại bước chốt
+        self.assertEqual((self.uni.summary()["active"], self.uni.summary()["stories"]), (3, 1))
+        self.assertEqual(self.uni.db.one("SELECT COUNT(*) AS n FROM appearances")["n"], 3)
+        ch = self.svc().changes()["changes"]
+        self.assertEqual((len(ch), ch[0]["status"], len(ch[0]["created"])), (1, "applied", 3))
+        out = self.svc().revert(ch[0]["publish_id"])
+        self.assertEqual(len(out["removed_characters"]), 3)
+        self.assertEqual((self.uni.summary()["active"], out["changes"][0]["status"]), (0, "reverted"))
+
+    def test_auto_update_off_then_manual_publish(self):
+        off = {**REMIX, "character_universe": {"auto_update_after_qa": False}}
+        jid = self.run_job(story_mode=off)
+        fq = json.loads((self.sdir(jid) / "remix" / "final_qa.json").read_text(encoding="utf-8"))
+        self.assertEqual(self.uni.summary()["active"], 0)
+        self.assertEqual(fq["universe_publish"]["status"], "skipped")
+        res = self.svc().publish_job(jid)
+        self.assertEqual(res["universe_publish"]["status"], "applied")
+        self.assertEqual(self.svc().publish_job(jid)["universe_publish"]["status"], "noop")
+        self.assertEqual(self.uni.summary()["active"], 3)
+
+    def test_publish_failure_does_not_fail_the_accepted_story_and_can_be_retried(self):
+        bridge = UniverseBridge(self.uni)
+        boom = {"on": True}
+
+        def publisher(ctx, cast, qa, text, mode):
+            if boom["on"]:
+                raise RuntimeError("db locked")
+            return bridge.publish(ctx, cast, qa, text, mode)
+        self.orc_.adapters["story"] = StoryModeRouter(fake.FakeStory(), lambda: StoryRemixAdapter(FakeRemixLLM(), lambda: bridge, publisher=publisher))
+        jid = self.run_job()
+        self.assertEqual(self.orc_.store.get_job(jid)["state"], "STORY_READY")                                  # truyện vẫn hợp lệ
+        fq = json.loads((self.sdir(jid) / "remix" / "final_qa.json").read_text(encoding="utf-8"))
+        self.assertEqual(fq["universe_publish"]["status"], "failed")
+        self.assertEqual(self.uni.summary()["active"], 0)
+        self.assertEqual(self.svc().publish_job(jid)["universe_publish"]["status"], "applied")
+
+    def test_story_that_fails_final_qa_never_touches_universe_and_cannot_be_force_published(self):
+        jid = self.run_job()
+        qa_path = self.sdir(jid) / "remix" / "final_qa.json"
+        self.orc_.adapters["story"].remix.publisher = None
+        qa = json.loads(qa_path.read_text(encoding="utf-8"))
+        qa["accepted"] = False
+        qa_path.write_text(json.dumps(qa), encoding="utf-8")
+        with self.assertRaises(StageError) as e:
+            self.svc().publish_job(jid)
+        self.assertEqual(e.exception.code, "QA_NOT_ACCEPTED")
 
 
 class Controls(E2E):

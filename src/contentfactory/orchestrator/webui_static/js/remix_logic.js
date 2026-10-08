@@ -43,3 +43,9 @@ export function writeProgress(plan) {
 }
 
 export const budgetValid = (v) => v !== "" && Number.isFinite(Number(v)) && Number(v) >= 1 && Number(v) <= 5000;
+
+const PUBLISH_LABEL = { applied: "đã cập nhật (nhân vật mới + lịch sử xuất hiện)", noop: "đã được cập nhật trước đó", already_published: "đã được cập nhật trước đó", skipped: "chưa cập nhật", failed: "cập nhật lỗi — có thể thử lại", not_accepted: "không cập nhật vì truyện chưa đạt QA", reverted_earlier: "bản cập nhật này đã bị hoàn tác" };
+
+export function universeLine(p) {
+  return `Kho nhân vật: ${PUBLISH_LABEL[p.status] || p.status}${p.reason ? " — " + p.reason : ""}${p.error ? " — " + p.error : ""}.`;
+}

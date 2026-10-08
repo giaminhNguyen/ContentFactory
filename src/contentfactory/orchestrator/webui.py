@@ -228,6 +228,18 @@ class Api:
     def universe_replace(app, m, q, b):
         return app.universe.replace(m["sid"], b)
 
+    @route("GET", "/api/universe/changes")
+    def universe_changes(app, m, q, b):
+        return app.universe.changes()
+
+    @route("POST", r"/api/universe/changes/(?P<pid>pb_[0-9a-f]+)/revert")
+    def universe_revert(app, m, q, b):
+        return app.universe.revert(m["pid"])
+
+    @route("POST", r"/api/jobs/(?P<id>[\w\-]+)/universe/publish")
+    def job_universe_publish(app, m, q, b):
+        return app.universe.publish_job(m["id"])
+
     @route("GET", "/api/universe/audit")
     def universe_audit(app, m, q, b):
         return app.universe.audit(q)

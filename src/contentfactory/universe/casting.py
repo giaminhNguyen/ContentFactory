@@ -262,7 +262,9 @@ def cast_story(uni: Universe, raw_request: dict, factory=None, *, job_id: str | 
     fp = _fingerprint(req)
     existing = get_cast(uni, req["story_id"])
     if existing:
-        if existing["fingerprint"] == fp or existing["state"] != "staged":
+        if existing["state"] == "reverted":
+            discard_story(uni, req["story_id"])                      # truyện từng bị hoàn tác: lập dàn mới thay vì kẹt ở dàn cũ
+        elif existing["fingerprint"] == fp or existing["state"] != "staged":
             return existing
         discard_story(uni, req["story_id"])                          # yêu cầu đổi khi chưa publish: lập lại dàn (dàn cũ staged bị bỏ)
     return _build(uni, req, fp, factory, job_id, actor, cast_revision=1, raw=raw_request)

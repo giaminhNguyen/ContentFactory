@@ -33,3 +33,4 @@
 .uv-node.new { stroke-dasharray: 4 3; }
 .uv-node-t { fill: var(--text); font-size: 12px; font-weight: 700; }
 .uv-tabs { margin-bottom: var(--s-4); }
+.uv-changes { list-style: none; padding: 0; margin: 0; }

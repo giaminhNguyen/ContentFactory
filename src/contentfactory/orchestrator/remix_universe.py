@@ -1,10 +1,13 @@
 """Cầu nối Story Remix ↔ Kho nhân vật (story_remix không được import universe): dựng yêu cầu casting từ ý tưởng đã chọn, lấy hồ sơ cho prompt."""
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 
 from ..universe import Universe
 from ..universe import casting as CA
+from ..universe import publish as PB
 
 
 class UniverseBridge:
@@ -41,3 +44,15 @@ class UniverseBridge:
                 c = self.u.db.one("SELECT profile FROM character_candidates WHERE candidate_id=?", (m["character_id"],))
                 out[m["character_id"]] = json.loads(c["profile"]) if c else {}
         return out
+
+    def publish(self, ctx, cast: dict, qa: dict, story_text: str, mode: dict) -> dict:
+        """Publish sau QA: nhân vật mới + lịch sử xuất hiện + quan hệ theo truyện, nguyên tử và idempotent (cùng truyện ⇒ noop)."""
+        return self.publish_dir(ctx.job_id, Path(ctx.stage_dir), cast, story_text)
+
+    def publish_dir(self, job_id: str, stage_dir: Path, cast: dict, story_text: str) -> dict:
+        try:
+            mem = json.loads((stage_dir / "remix" / "story_memory.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            mem = {"character_state": {}}
+        outcomes = {cid: "; ".join(f"{k}: {v}" for k, v in st.items()) for cid, st in (mem.get("character_state") or {}).items()}
+        return {"universe_publish": PB.publish_story(self.u, cast["story_id"], hashlib.sha256(story_text.encode("utf-8")).hexdigest(), job_id=job_id, outcomes=outcomes)}

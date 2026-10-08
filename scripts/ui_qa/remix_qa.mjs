@@ -192,6 +192,33 @@ if (wanted("cast")) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------- Phase 6: nhật ký cập nhật kho + hoàn tác (chạy sau "run": cần ít nhất một truyện đã publish)
+if (wanted("changes")) {
+  for (const [label, opts] of [["desktop", {}], ["mobile", { width: 390, height: 844 }], ["dark", { scheme: "dark" }]]) {
+    const page = await newPage(opts);
+    await go(page, "/universe");
+    await page.click("#tab-changes");
+    await page.waitForSelector(".uv-changes li");
+    const li = page.locator(".uv-changes li").first();
+    check(`changes/${label}: bản cập nhật hiện tóm tắt dễ hiểu`, /nhân vật mới/.test(await li.innerText()) && /lần xuất hiện/.test(await li.innerText()));
+    if (label === "desktop") {
+      const before = await (async () => (await page.evaluate(async () => { const t = document.querySelector("meta[name=cf-token]").content; return (await (await fetch("/api/universe/summary", { headers: { "X-CF-Token": t } })).json()).active; }))) ();
+      check("changes: kho có nhân vật do truyện đã publish tạo ra", before >= 3);
+      await shot(page, "changes-list");
+      await page.click(".uv-changes li >> nth=0 >> button:has-text('Hoàn tác')");
+      await page.click("dialog button:has-text('Hoàn tác')");
+      await page.waitForSelector("text=Đã hoàn tác");
+      await page.waitForSelector(".uv-changes li:has-text('Đã hoàn tác')");
+      const after = await page.evaluate(async () => { const t = document.querySelector("meta[name=cf-token]").content; return (await (await fetch("/api/universe/summary", { headers: { "X-CF-Token": t } })).json()).active; });
+      check("changes: hoàn tác gỡ nhân vật mới khỏi kho và đánh dấu bản cập nhật", after < before && (await page.locator(".uv-changes li >> nth=0 >> button:has-text('Hoàn tác')").count()) === 0);
+      await shot(page, "changes-reverted");
+    }
+    await noOverflowEl(page, "#panel-changes", `changes/${label}`);
+    await axe(page, `changes/${label}`);
+    clean(page, `changes/${label}`);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------- Phase 5: dừng chờ xem báo cáo → tiếp tục (cần fixture --remix-review-demo)
 if (wanted("review")) {
   const page = await newPage();

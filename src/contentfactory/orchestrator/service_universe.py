@@ -1,9 +1,15 @@
 """Facade Kho nhân vật cho giao diện: chỉ nối HTTP với `universe.*` (không chứa logic nghiệp vụ). Lỗi là StageError có mã + gợi ý tiếng Việt."""
 from __future__ import annotations
 
+import json
+
 from ..contracts import ErrorClass, StageError
+from ..fsutil import atomic_write_json
+from ..jobs.workspace import job_dir
+from .remix_universe import UniverseBridge
 from ..universe import casting as CA
 from ..universe import exchange as EX
+from ..universe import publish as PB
 from ..universe import store as S
 from .service_templates import Raw
 
@@ -79,3 +85,30 @@ class UniverseService:
     def replace(self, story_id: str, body: dict) -> dict:
         CA.replace_member(self.u, story_id, str(body.get("slot_id") or ""), str(body.get("character_id") or ""))
         return self.story(story_id)
+
+    # ---- nhật ký cập nhật kho (publish) + hoàn tác + publish thủ công
+    def changes(self) -> dict:
+        return {"changes": PB.list_changes(self.u)}
+
+    def revert(self, publish_id: str) -> dict:
+        out = PB.revert_publish(self.u, publish_id)
+        return {**out, **self.changes()}
+
+    def publish_job(self, job_id: str) -> dict:
+        """Cập nhật kho cho một job Story Remix ĐÃ đạt QA (khi tự cập nhật bị tắt hoặc lần tự động thất bại). Idempotent."""
+        j = self.orc.store.get_job(job_id)
+        if j is None:
+            raise StageError(ErrorClass.POLICY, "JOB_NOT_FOUND", f"Không có job {job_id}.", resource="input")
+        sd = job_dir(self.orc.cfg.path("workspace"), job_id) / "story"
+        try:
+            qa = json.loads((sd / "remix" / "final_qa.json").read_text(encoding="utf-8"))
+            cast = json.loads((sd / "remix" / "character_cast.json").read_text(encoding="utf-8"))
+            text = (sd / "story.txt").read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            raise StageError(ErrorClass.POLICY, "NOT_READY", "Truyện chưa hoàn tất nên chưa cập nhật kho được.", resource="input") from None
+        if not qa.get("accepted"):
+            raise StageError(ErrorClass.POLICY, "QA_NOT_ACCEPTED", "Truyện chưa đạt QA cuối: kho nhân vật không bị thay đổi.", {"hint": "Sửa các vấn đề QA rồi chạy lại."}, resource="input")
+        res = UniverseBridge(self.u).publish_dir(job_id, sd, cast, text)
+        qa["universe_publish"] = res["universe_publish"]
+        atomic_write_json(sd / "remix" / "final_qa.json", qa)
+        return res

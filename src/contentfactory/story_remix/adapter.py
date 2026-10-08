@@ -57,7 +57,13 @@ class StoryRemixAdapter:
         qa = W.final_qa(chapters, cast["members"], story_text, mem)
         out: dict = {"final_qa_accepted": qa["accepted"]}
         if self.publisher is not None and qa["accepted"] and mode["character_universe"]["auto_update_after_qa"]:
-            out.update(self.publisher(ctx, cast, qa, story_text, mode))
+            try:                                                        # lỗi publish KHÔNG làm hỏng truyện đã đạt QA: ghi rõ, có thể thử lại thủ công (idempotent)
+                res = self.publisher(ctx, cast, qa, story_text, mode)
+                qa["universe_publish"] = res["universe_publish"]
+            except Exception as e:                                      # noqa: BLE001
+                ctx.log("universe_publish_failed", "warning", error=repr(e))
+                qa["universe_publish"] = {"status": "failed", "error": getattr(e, "message", None) or repr(e)}
+            out["universe_publish"] = qa["universe_publish"]["status"]
         elif qa["accepted"]:
             qa["universe_publish"] = {"status": "skipped", "reason": "tắt ‘tự cập nhật kho sau QA’" if self.publisher is not None else "chưa cấu hình publisher"}
         else:

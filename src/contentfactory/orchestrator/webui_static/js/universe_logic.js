@@ -97,3 +97,18 @@ export function graphLayout(members, rels, size = 320) {
 }
 
 export const relText = (rel, nameOf) => `${nameOf(rel.a_id)} — ${rel.type.replaceAll("_", " ")} — ${nameOf(rel.b_id)}`;
+
+// ---- nhật ký cập nhật kho (publish) -------------------------------------------------------------
+export const CHANGE_STATUS = { applied: "Đã áp dụng", reverted: "Đã hoàn tác" };
+
+/** Tóm tắt một bản cập nhật bằng ngôn ngữ thường: ai được thêm/dùng lại/gộp. */
+export function changeSummary(c) {
+  const parts = [];
+  parts.push(c.created.length ? `thêm ${c.created.length} nhân vật mới (${c.created.map((x) => x.display_name).join(", ")})` : "không thêm nhân vật mới");
+  if (c.reused) parts.push(`dùng lại ${c.reused}`);
+  if (c.merged) parts.push(`gộp ${c.merged} nhân vật trùng vào nhân vật có sẵn`);
+  parts.push(`${c.appearances} lần xuất hiện`, `${c.relationships} quan hệ`);
+  return parts.join(" · ");
+}
+
+export const canRevert = (c) => c.status === "applied";

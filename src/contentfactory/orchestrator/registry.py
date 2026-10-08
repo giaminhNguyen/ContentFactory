@@ -56,7 +56,7 @@ def _remix(cfg: Config) -> StoryRemixAdapter:
         if "u" not in holder:
             holder["u"] = UniverseBridge(Universe(UniverseDB(cfg.path("runtime") / "universe.db")))
         return holder["u"]
-    return StoryRemixAdapter(llm, universe)
+    return StoryRemixAdapter(llm, universe, publisher=lambda ctx, cast, qa, text, mode: universe().publish(ctx, cast, qa, text, mode))
 
 
 def _contentflow(cfg: Config) -> ContentFlowRender:
