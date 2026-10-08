@@ -300,3 +300,9 @@ class WorkerStore:
     def attempt(self, attempt_id: str) -> Attempt | None:
         rows = self._q("SELECT * FROM attempts WHERE attempt_id=?", (attempt_id,))
         return self._row_attempt(rows[0]) if rows else None
+
+    def running_counts(self) -> dict[str, int]:
+        """Số attempt đang RUNNING theo worker — dùng cho strategy `least_busy`."""
+        return {r["worker_id"]: r["n"] for r in
+                self._q("SELECT worker_id, COUNT(*) AS n FROM attempts WHERE state='RUNNING'"
+                        " GROUP BY worker_id")}

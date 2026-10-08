@@ -43,6 +43,15 @@ class WorkerInUse(ValueError):
         super().__init__(f"worker {worker_id} đang thuộc pool: {', '.join(pools)}")
 
 
+class PoolInUse(ValueError):
+    """Xoá pool đang được một work_type chỉ tới: nêu work_type nào để UI/API báo dependency."""
+
+    def __init__(self, pool_name: str, work_types: list[str]) -> None:
+        self.pool_name = pool_name
+        self.work_types = work_types
+        super().__init__(f"pool {pool_name!r} đang được routing của: {', '.join(work_types)}")
+
+
 # Mẫu nhận dạng dùng CHUNG cho mọi driver (driver chỉ thêm mẫu riêng của mình khi thật sự cần).
 _PATTERNS: tuple[tuple[WorkerErrorClass, re.Pattern], ...] = (
     (WorkerErrorClass.QUOTA, re.compile(

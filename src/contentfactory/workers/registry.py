@@ -8,10 +8,20 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from . import policy as policy_mod
 from .drivers import CLASSES, build as build_driver
 from .drivers.base import BaseDriver
-from .errors import WorkerInUse
-from .models import Worker, WorkerModel, WorkerStatus, new_id
+from .errors import PoolInUse, WorkerInUse
+from .models import (
+    MODEL_PROFILES,
+    ExecutionTarget,
+    PoolStrategy,
+    Worker,
+    WorkerModel,
+    WorkerPool,
+    WorkerStatus,
+    new_id,
+)
 from .store import WorkerStore
 
 DISABLED = WorkerStatus.DISABLED
@@ -151,3 +161,194 @@ class WorkerRegistry:
                     self.store.save_pool(p.with_updates(members=[m for m in p.members if m != worker_id]))
         self.store.delete_worker(worker_id)
         return pools
+
+    # -- model config (W1.5) -----------------------------------------------------------------
+    def set_models(self, worker_id: str, specs: list) -> Worker:
+        """Đặt danh sách model của worker.
+
+        `specs`: ["model-a", {"id": "model-b", "enabled": False}, {"id": "model-c", "default": True}]
+        Exactly một default; profile trỏ model đã bị gỡ sẽ tự bỏ trống (không còn dangling).
+        """
+        w = self.get(worker_id)
+        models: list[WorkerModel] = []
+        seen: set[str] = set()
+        default_id = ""
+        for spec in specs:
+            if isinstance(spec, WorkerModel):
+                m = spec
+            elif isinstance(spec, dict):
+                m = WorkerModel(id=str(spec.get("id", "")).strip(), enabled=bool(spec.get("enabled", True)),
+                                default=bool(spec.get("default", False)),
+                                source=str(spec.get("source", "manual")))
+            else:
+                m = WorkerModel(id=str(spec).strip())
+            if not m.id:
+                raise ValueError("model id bắt buộc")
+            if m.id in seen:
+                raise ValueError(f"model trùng lặp: {m.id}")
+            seen.add(m.id)
+            if m.default:
+                default_id = m.id
+            models.append(m)
+        if default_id:
+            models = [WorkerModel(**{**m.__dict__, "default": m.id == default_id}) for m in models]
+        known = {m.id for m in models}
+        profiles = {k: v for k, v in w.profiles.items() if v and v in known}
+        return self.store.save_worker(w.with_updates(models=models, profiles=profiles))
+
+    def set_profiles(self, worker_id: str, mapping: dict) -> Worker:
+        """Đặt ánh xạ profile -> model id của worker. Giá trị rỗng = bỏ qua profile đó."""
+        w = self.get(worker_id)
+        known = {m.id for m in w.models}
+        out: dict = {}
+        for key, value in (mapping or {}).items():
+            if key not in MODEL_PROFILES:
+                raise ValueError(f"profile lạ: {key!r}; hợp lệ: {MODEL_PROFILES}")
+            value = str(value or "")
+            if value and value not in known:
+                raise ValueError(f"profile {key} trỏ model không có trong worker: {value}")
+            out[key] = value
+        return self.store.save_worker(w.with_updates(profiles=out))
+
+    # -- pools (W1.6) -------------------------------------------------------------------------
+    def pools(self) -> list[WorkerPool]:
+        return self.store.pools()
+
+    @staticmethod
+    def _validate_members(members: list[str], store: WorkerStore) -> list[str]:
+        have = {w.id for w in store.workers()}
+        missing = [m for m in members if m not in have]
+        if missing:
+            raise ValueError(f"member không tồn tại (dangling): {missing}")
+        if len(set(members)) != len(members):
+            raise ValueError("member trùng lặp")
+        return list(members)
+
+    def create_pool(self, name: str, display_name: str = "", members: list[str] | None = None,
+                    strategy: str = PoolStrategy.PRIORITY.value, enabled: bool = True) -> WorkerPool:
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("tên pool bắt buộc")
+        if self.store.pool(name) is not None:
+            raise ValueError(f"pool đã tồn tại: {name}")
+        strat = PoolStrategy(strategy)
+        p = WorkerPool(name=name, display_name=display_name or name, strategy=strat,
+                       members=self._validate_members(list(members or []), self.store), enabled=enabled)
+        return self.store.save_pool(p)
+
+    def update_pool(self, name: str, **fields) -> WorkerPool:
+        p = self.store.pool(name)
+        if p is None:
+            raise KeyError(f"không có pool {name!r}")
+        new_name = str(fields.pop("new_name", "") or "").strip()
+        allowed = {"display_name", "strategy", "members", "enabled"}
+        bad = set(fields) - allowed
+        if bad:
+            raise ValueError(f"trường không cho sửa: {sorted(bad)}")
+        if "strategy" in fields:
+            fields["strategy"] = PoolStrategy(fields["strategy"])
+        if "members" in fields:
+            fields["members"] = self._validate_members(list(fields["members"]), self.store)
+        if new_name and new_name != name:
+            if self.store.pool(new_name) is not None:
+                raise ValueError(f"pool đã tồn tại: {new_name}")
+            renamed = p.with_updates(**fields, name=new_name)
+            self.store.save_pool(renamed)
+            self.store.delete_pool(name)
+            return renamed
+        return self.store.save_pool(p.with_updates(**fields))
+
+    def delete_pool(self, name: str, force: bool = False) -> list[str]:
+        """Xoá pool. Đang được work_type trỏ tới => nêu dependency; force=True xoá luôn dòng routing đó."""
+        if self.store.pool(name) is None:
+            raise KeyError(f"không có pool {name!r}")
+        used = [wt for wt, cfg in self.store.routing().items() if cfg.get("pool") == name]
+        if used and not force:
+            raise PoolInUse(name, used)
+        for wt in used:
+            self.store.delete_routing(wt)
+        self.store.delete_pool(name)
+        return used
+
+    # -- routing (W1.7) -----------------------------------------------------------------------
+    def routing(self) -> dict[str, dict]:
+        return self.store.routing()
+
+    def set_routing(self, work_type: str, pool: str, model_profile: str = "",
+                    policy: dict | None = None) -> dict:
+        """work_type -> pool + model profile + retry/fallback policy. Đổi bằng config, không sửa code."""
+        work_type = (work_type or "").strip()
+        if not work_type:
+            raise ValueError("work_type bắt buộc")
+        if not self.store.pool(pool):
+            raise ValueError(f"pool không tồn tại: {pool}")
+        if model_profile and model_profile not in MODEL_PROFILES:
+            raise ValueError(f"model_profile lạ: {model_profile!r}; hợp lệ: {MODEL_PROFILES}")
+        return self.store.save_routing(work_type, {
+            "pool": pool, "model_profile": model_profile,
+            "policy": policy_mod.validate(policy or {}),
+        })
+
+    def delete_routing(self, work_type: str) -> bool:
+        return self.store.delete_routing(work_type)
+
+    # -- chọn worker cho một work_type (router) --------------------------------------------------
+    def pick(self, work_type: str, now: float | None = None,
+             exclude: tuple[str, ...] = ()) -> tuple[ExecutionTarget | None, str]:
+        """Chọn worker cho work_type theo config. Luôn trả lý do (dùng cho simulator + log).
+
+        `exclude`: worker đã fail trong lần thử này (fallback không quay lại worker vừa hỏng).
+        """
+        now = time.time() if now is None else now
+        routing = self.store.routing().get(work_type)
+        if routing is None:
+            return None, f"chưa cấu hình routing cho {work_type}"
+        pool_name = routing.get("pool") or ""
+        if not pool_name:
+            return None, f"{work_type} chưa gán pool"
+        pool = self.store.pool(pool_name)
+        if pool is None:
+            return None, f"pool {pool_name!r} không tồn tại (config trỏ vào pool đã xoá)"
+        if not pool.enabled:
+            return None, f"pool {pool_name!r} đang tắt"
+        if not pool.members:
+            return None, f"pool {pool_name!r} rỗng — không có worker nào để route"
+        profile = routing.get("model_profile") or None
+        workers = {w.id: w for w in self.store.workers()}
+        running = self.store.running_counts() if pool.strategy is PoolStrategy.LEAST_BUSY else {}
+
+        eligible: list[tuple[Worker, str, str]] = []       # (worker, model, lý do)
+        blocked: list[str] = []
+        excluded = set(exclude)
+        for wid in pool.members:
+            w = workers.get(wid)
+            if w is None:
+                blocked.append(f"{wid}: không còn tồn tại (dangling member)")
+                continue
+            if wid in excluded:
+                blocked.append(f"{w.name}: đã lỗi trong lần thử này")
+                continue
+            ok, reason = w.routable(now)
+            if not ok:
+                blocked.append(f"{w.name}: {reason}")
+                continue
+            model = w.model_for(profile)
+            if model is None:
+                blocked.append(f"{w.name}: chưa cấu hình model")
+                continue
+            eligible.append((w, model, reason))
+
+        if not eligible:
+            return None, "không worker nào đủ điều kiện: " + "; ".join(blocked)
+        if pool.strategy is PoolStrategy.LEAST_BUSY:
+            eligible.sort(key=lambda t: (running.get(t[0].id, 0), pool.members.index(t[0].id)))
+        w, model, _ = eligible[0]
+        if pool.strategy is PoolStrategy.LEAST_BUSY:
+            why = f"least_busy: {w.name} ({running.get(w.id, 0)} attempt đang chạy)"
+        else:
+            why = f"priority #{pool.members.index(w.id) + 1}: {w.name}"
+        if profile:
+            why += f", profile {profile}"
+        if blocked:
+            why += f" (bỏ qua: {'; '.join(blocked)})"
+        return ExecutionTarget(worker=w, model=model, pool=pool_name, reason=why), why
