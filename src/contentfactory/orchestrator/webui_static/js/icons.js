@@ -51,6 +51,7 @@ const P = {
   "eye-off": '<path d="M3 3l18 18M10.6 6.1A10 10 0 0112 6c6.5 0 10 6 10 6a17 17 0 01-3 3.7M6.6 6.6A17 17 0 002 12s3.5 7 10 7a10 10 0 004.4-1M9.9 9.9a3 3 0 004.2 4.2"/>',
   save: '<path d="M5 3h11l4 4v13a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/>',
   dot: '<circle cx="12" cy="12" r="3"/>',
+  "grip-vertical": '<circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/>',
 };
 
 export function icon(name, { size = 18, label = null, cls = "" } = {}) {

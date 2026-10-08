@@ -130,7 +130,8 @@ class Api:
     # ----- Worker Runtime (W1)
     @route("GET", "/api/workers")
     def workers_list(app, m, q, b):
-        return {"drivers": app.workers.drivers(), "workers": app.workers.workers(), "pools": app.workers.pools()}
+        return {"drivers": app.workers.drivers(), "workers": app.workers.workers(), "pools": app.workers.pools(),
+                "routing": app.workers.routing()}
 
     @route("POST", "/api/workers/scan")
     def workers_scan(app, m, q, b):

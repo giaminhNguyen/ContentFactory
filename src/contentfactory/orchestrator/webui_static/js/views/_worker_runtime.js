@@ -182,3 +182,175 @@ export function workersPanel(host) {
   poller.start();
   return { destroy() { poller.stop(); } };
 }
+
+// ------------------------------------------------------------------------------------------ Pools (W1.UI.4)
+export function poolsPanel(host) {
+  let data = null, sig = "", failedOnce = false;
+  const list = h("div", { class: "wk-list" });
+  const addBtn = btn({ label: "Tạo pool…", icon: "plus", size: "sm", kind: "primary" });
+  host.append(h("div", { class: "row spread" },
+      h("div", null, h("h3", null, "Worker Pool"),
+        h("p", { class: "muted small" }, "Nhóm worker theo thứ tự ưu tiên. Routing trỏ một công việc (work type) vào pool; worker đầu tiên được dùng trước, hỏng thì rơi xuống worker kế.")),
+      addBtn),
+    list);
+  list.append(skeleton(3));
+
+  const poller = createPoller(async (signal) => {
+    try { data = await api.get("/api/workers", { signal }); failedOnce = false; }
+    catch (e) {
+      if (e.name === "AbortError") throw e;
+      if (!failedOnce) { clear(list); list.append(errorState(e, () => poller.poke())); failedOnce = true; }
+      throw e;
+    }
+    paint();
+    return "idle";
+  }, { fast: 4000, idle: 10000 });
+
+  function paint() {
+    const s = JSON.stringify([data.pools, data.workers]);
+    if (s === sig) return;
+    sig = s;
+    clear(list);
+    if (!data.pools.length) {
+      list.append(emptyState({ icon: "layers", title: "Chưa có pool nào",
+        text: "Tạo pool, chọn worker (READY) làm thành viên theo thứ tự ưu tiên. Sau đó gán pool cho work type ở mục Routing.",
+        action: btn({ label: "Tạo pool…", icon: "plus", kind: "primary", onClick: () => dialog() }) }));
+      return;
+    }
+    for (const p of data.pools) list.append(card(p));
+  }
+
+  const wname = (id) => data.workers.find((w) => w.id === id)?.name || id;
+
+  function card(p) {
+    const members = p.members.map((id, i) => ({ id, i }));
+    const stratLabel = p.strategy === "least_busy" ? "Ít việc nhất" : "Ưu tiên theo thứ tự";
+    const usedBy = routesOf(p.name);
+    const editBtn = btn({ label: "Sửa…", icon: "settings", size: "sm", kind: "ghost" });
+    const dupBtn = btn({ label: "Nhân bản", icon: "copy", size: "sm", kind: "ghost", ariaLabel: `Nhân bản pool ${p.display_name || p.name}` });
+    const delBtn = btn({ label: "Xoá", icon: "trash", size: "sm", kind: "ghost danger" });
+    editBtn.addEventListener("click", () => dialog(p));
+    dupBtn.addEventListener("click", () => duplicate(p));
+    delBtn.addEventListener("click", () => remove(p, delBtn));
+    const rows = h("ol", { class: "wk-pool-list", "aria-label": `Thành viên pool ${p.display_name || p.name} theo thứ tự ưu tiên` });
+    const renderRows = () => {
+      clear(rows);
+      for (const m of members) {
+        const li = h("li", { class: "wk-pool-row", draggable: "true", dataset: { id: m.id } });
+        const name = wname(m.id);
+        li.append(h("span", { class: "wk-idx", "aria-hidden": "true" }, String(m.i + 1)),
+          icon("grip-vertical", { size: 16, label: `Kéo ${name} để đổi thứ tự` }),
+          h("span", { class: "grow" }, name),
+          btn({ label: "Lên", icon: "arrow-up", size: "sm", kind: "ghost", ariaLabel: `Đưa ${name} lên trên` }),
+          btn({ label: "Xuống", icon: "arrow-down", size: "sm", kind: "ghost", ariaLabel: `Đưa ${name} xuống dưới` }));
+        li.querySelector(`[aria-label="Đưa ${name} lên trên"]`).addEventListener("click", () => move(m.i, m.i - 1));
+        li.querySelector(`[aria-label="Đưa ${name} xuống dưới"]`).addEventListener("click", () => move(m.i, m.i + 1));
+        li.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", m.id); li.classList.add("drg"); });
+        li.addEventListener("dragend", () => li.classList.remove("drg"));
+        li.addEventListener("dragover", (e) => { e.preventDefault(); li.classList.add("drop"); });
+        li.addEventListener("dragleave", () => li.classList.remove("drop"));
+        li.addEventListener("drop", (e) => {
+          e.preventDefault();
+          const from = members.find((x) => x.id === e.dataTransfer.getData("text/plain"));
+          if (from && from.id !== m.id) move(from.i, m.i);
+        });
+        rows.append(li);
+      }
+    };
+    const move = async (from, to) => {
+      if (to < 0 || to >= members.length) return;
+      const [x] = members.splice(from, 1);
+      members.splice(to, 0, x);
+      members.forEach((m, i) => { m.i = i; });
+      renderRows();
+      await saveMembers(p, members.map((m) => m.id));
+    };
+    renderRows();
+    const sw = switchCtl({ label: "", checked: !!p.enabled, onChange: async (v) => {
+      try { await api.put(`/api/workers/pools/${encodeURIComponent(p.name)}`, { enabled: v }); toast({ title: v ? "Đã bật pool" : "Đã tắt pool", tone: "done" }); sig = ""; poller.poke(); }
+      catch (e) { toastError(e, "Chưa đổi được"); sw.input.checked = !!p.enabled; }
+    } });
+    sw.input.setAttribute("aria-label", `Bật/tắt pool ${p.display_name || p.name}`);
+    sw.querySelector(".state").textContent = p.enabled ? "Bật" : "Tắt";
+    return h("section", { class: "card wk-card", "aria-label": `Pool ${p.display_name || p.name}` },
+      h("div", { class: "row spread" },
+        h("div", { class: "row" }, h("h3", null, p.display_name || p.name), h("span", { class: "chip" }, stratLabel), h("span", { class: "chip" }, `${members.length} worker`), sw),
+        h("div", { class: "row" }, editBtn, dupBtn, delBtn)),
+      usedBy.length ? h("p", { class: "small muted" }, "Đang dùng cho routing: ", usedBy.map((wt) => h("code", { class: "mono" }, wt))) : h("p", { class: "small muted" }, "Chưa gán cho work type nào."),
+      members.length ? h("div", null, h("p", { class: "small muted", style: "margin-bottom: var(--s-2)" }, "Kéo thả hoặc dùng nút mũi tên để đổi thứ tự ưu tiên."), rows) : h("p", { class: "muted small" }, "Pool rỗng — mở “Sửa…” để thêm worker."));
+  }
+
+  function routesOf(poolName) {
+    const map = data.routing?.routing || data.routing || {};
+    return Object.entries(map).filter(([, cfg]) => cfg?.pool === poolName).map(([wt]) => wt);
+  }
+
+  async function saveMembers(p, members) {
+    try { await api.put(`/api/workers/pools/${encodeURIComponent(p.name)}`, { members }); sig = ""; poller.poke(); }
+    catch (e) { toastError(e, "Không lưu được thứ tự"); }
+  }
+
+  async function duplicate(p) {
+    try {
+      const name = p.name + "_copy";
+      await api.post("/api/workers/pools", { name, display_name: `${p.display_name || p.name} (bản sao)`, strategy: p.strategy, members: [...p.members] });
+      toast({ title: "Đã nhân bản pool", message: name, tone: "done" });
+      sig = ""; poller.poke();
+    } catch (e) { toastError(e, "Không nhân bản được"); }
+  }
+
+  async function remove(p, b) {
+    const used = routesOf(p.name);
+    const dep = used.length ? ` Đang được gán cho: ${used.join(", ")} — pool bị xoá thì routing đó cũng mất.` : "";
+    if (!(await confirmDialog({ title: `Xoá pool “${p.display_name || p.name}”?`, body: `Xoá cấu hình pool; worker không bị xoá.${dep}`, confirmLabel: "Xoá pool", danger: true }))) return;
+    await busy(b, async () => {
+      try { await api.del(`/api/workers/pools/${encodeURIComponent(p.name)}`); toast({ title: "Đã xoá pool", tone: "done" }); }
+      catch (e) { toastError(e, "Không xoá được pool"); }
+      sig = ""; poller.poke();
+    });
+  }
+
+  function dialog(p) {
+    const edit = !!p;
+    const nameIn = input({ placeholder: "story_workers", value: p?.name || "" });
+    const dispIn = input({ placeholder: "Nhóm viết story", value: p?.display_name || "" });
+    const stratSel = select({ options: [["priority", "Ưu tiên theo thứ tự"], ["least_busy", "Ít việc nhất"]], value: p?.strategy || "priority" });
+    const nameF = field({ label: "Tên (khoá)", control: nameIn, required: !edit, hint: edit ? "Không đổi được tên; nhân bản hoặc tạo mới nếu cần." : "Chữ thường, số, gạch dưới; work type trỏ vào tên này." });
+    const dispF = field({ label: "Tên hiển thị", control: dispIn });
+    const stratF = field({ label: "Chiến lược", control: stratSel, hint: "Ưu tiên: dùng worker đầu tiên trong list. Ít việc nhất: chọn worker đang rảnh." });
+    const checks = h("div", { class: "wk-checks" });
+    const members0 = p?.members || [];
+    const renderChecks = () => {
+      clear(checks);
+      for (const w of data.workers) {
+        if (w.status !== "READY" && !members0.includes(w.id)) continue;
+        const cb = h("input", { type: "checkbox", dataset: { wid: w.id }, checked: members0.includes(w.id), disabled: w.status !== "READY" });
+        const label = h("label", { class: "wk-check" }, cb, h("span", null, w.name, w.default_model ? h("span", { class: "muted small" }, ` · ${w.default_model}`) : null));
+        if (w.status !== "READY") label.append(h("span", { class: "badge", dataset: { tone: sm(w.status).tone } }, sm(w.status).label));
+        checks.append(label);
+      }
+      if (![...checks.querySelectorAll("input")].length && (data.workers || []).length) checks.append(h("p", { class: "muted small" }, "Chưa worker nào đang Sẵn sàng để chọn."));
+      if (!(data.workers || []).length) checks.append(h("p", { class: "muted small" }, "Tạo worker ở mục Workers trước."));
+    };
+    renderChecks();
+    const content = h("div", { class: "stack" }, nameF, dispF, stratF, h("div", { class: "field" }, h("p", { class: "s-label", style: "margin-bottom: var(--s-2)" }, "Thành viên (thứ tự ưu tiên — kéo thả sau khi tạo)"), checks));
+    openDialog({ title: edit ? `Sửa pool “${p.display_name || p.name}”` : "Tạo pool", content, wide: true, actions: [
+      { label: "Huỷ", value: null },
+      { label: edit ? "Lưu pool" : "Tạo pool", kind: "primary", value: "ok", onClick: async () => {
+        nameF.setError(null);
+        if (!nameIn.value.trim()) { nameF.setError("Đặt tên cho pool."); return false; }
+        const members = [...checks.querySelectorAll("input:checked")].map((cb) => cb.dataset.wid);
+        const body = { display_name: dispIn.value.trim(), strategy: stratSel.value, members };
+        try {
+          if (edit) await api.put(`/api/workers/pools/${encodeURIComponent(p.name)}`, body);
+          else await api.post("/api/workers/pools", { name: nameIn.value.trim().toLowerCase(), ...body });
+          toast({ title: edit ? "Đã cập nhật pool" : "Đã tạo pool", tone: "done" });
+          return true;
+        } catch (e) { nameF.setError([e.message, e.hint].filter(Boolean).join(" ")); return false; }
+      } }] });
+  }
+
+  addBtn.addEventListener("click", () => dialog());
+  poller.start();
+  return { destroy() { poller.stop(); } };
+}

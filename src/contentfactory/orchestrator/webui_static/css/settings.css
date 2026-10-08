@@ -30,6 +30,11 @@
 .wk-retry .select { max-width: 220px; }
 .wk-check { display: flex; gap: var(--s-2); align-items: center; font-size: var(--fs-sm); }
 .wk-sim { margin-top: var(--s-2); }
+.wk-pool-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-2); max-width: 460px; }
 .wk-pool-row { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid var(--border); border-radius: var(--r-1); background: var(--surface); font-size: var(--fs-sm); }
 .wk-pool-row.dragging { opacity: 0.4; }
-.wk-pool-row .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wk-pool-row .wk-idx { color: var(--muted); font-family: var(--mono); font-size: var(--fs-xs); min-width: 18px; text-align: right; }
+.wk-pool-row.drg { opacity: 0.45; }
+.wk-pool-row.drop { border-color: var(--accent); }
+.wk-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--s-2); }
+.wk-checks .wk-check { display: flex; gap: var(--s-2); align-items: center; font-size: var(--fs-sm); cursor: pointer; }
