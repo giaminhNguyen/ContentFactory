@@ -206,5 +206,41 @@ class AttemptHistoryTests(Base):
         self.assertIn("hủy", r.reason)
 
 
+class W1FinalAcceptanceTests(Base):
+    """W1 Final Acceptance Scenario (plan dòng 918–936): fault-injection chạy qua toàn bộ
+    pipeline — A quota -> A hết routable -> B invalid output -> validation reject ->
+    fallback -> C success -> canonical đúng một lần -> timeline đủ A/B/C + lý do."""
+
+    def test_fault_injection_flow_commits_canonical_once_with_full_timeline(self):
+        a = self.worker("a", ["quota"])               # A: quota failure, rồi bị block khỏi routing
+        b = self.worker("b", ["invalid_output"])      # B: invalid output -> validation reject
+        c = self.worker("c", ["ok"])                  # C: thành công
+        self.pool([a, b, c], policy={"retry_on": {"INVALID_OUTPUT": 0}})  # invalid không retry B, rơi thẳng C
+        out = Path(self.tmp.name) / "canonical.md"
+        r = self.go(output=out)
+
+        self.assertTrue(r.ok, r.reason)
+        self.assertEqual([x.worker_id for x in r.attempts], [a, b, c])          # timeline đủ A/B/C
+        self.assertEqual([x.error_kind for x in r.attempts], ["QUOTA", "INVALID_OUTPUT", ""])
+        self.assertEqual([x.state for x in r.attempts],
+                         [AttemptState.FAILED, AttemptState.INVALID, AttemptState.SUCCESS])
+        self.assertFalse(self.reg.get(a).routable()[0])                         # A hết routable sau quota
+        self.assertTrue(out.exists())
+        canonical = out.read_text(encoding="utf-8")                             # canonical commit ĐÚNG MỘT lần
+        self.assertNotIn("<<INVALID_OUTPUT>>", canonical)
+        self.assertIn("chương thử", canonical)
+
+    def test_validation_rejected_output_kept_but_never_promoted_to_canonical(self):
+        a = self.worker("a", ["invalid_output"])
+        b = self.worker("b", ["ok"])
+        self.pool([a, b], policy={"retry_on": {"INVALID_OUTPUT": 0}})
+        out = Path(self.tmp.name) / "canonical.md"
+        r = self.go(output=out)
+        self.assertTrue(r.ok, r.reason)
+        bad_ws = Path(r.attempts[0].workspace)
+        self.assertTrue((bad_ws / "output.md").exists())                        # evidence lỗi giữ để debug
+        self.assertNotIn("<<INVALID_OUTPUT>>", out.read_text(encoding="utf-8")) # nhưng không bao giờ ra canonical
+
+
 if __name__ == "__main__":
     unittest.main()

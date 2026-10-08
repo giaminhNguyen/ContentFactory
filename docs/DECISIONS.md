@@ -625,6 +625,7 @@
   - **Lưu trữ riêng** `runtime/workers.db` (schema + migration nội bộ, làm theo mẫu `jobs/db.py`, có backup trước khi migrate) thay vì thêm bảng vào `contentfactory.db`: `workers` là ISOLATED nên không import được `jobs.db`, và tách DB tránh đụng version migration của pipeline. Cả hai vẫn nằm trong `runtime/` của ContentFactory.
   - **Nối pipeline bằng tiêm phụ thuộc** ở `orchestrator/registry.py` (như adapter `runner=` hiện có) thay vì để `adapters` import `workers`.
 - **Giữ nguyên:** `--host claude-code` trong `_deploy()` của oh-story là host name của script deploy **của oh-story**, không phải nhánh vendor trong pipeline.
+- **W1.13 — session-scoping (đã làm):** manager không truyền `session` cho mọi attempt. Worker đầu nhận session resume (`session_owner`), retry **cùng worker** giữ session; worker khác sau fallback nhận `session=None` và tự topic từ checkpoint/artifact đã commit trên đĩa (cwd dùng chung). Raw terminal log không phải context mặc định; partial output chưa commit không canonical.
 - **Hướng dẫn:** xem `Promtps/WORKER_RUNTIME_EXECUTION_PLAN.md` (W1–W3).
 
 ## 2. Câu hỏi còn mở

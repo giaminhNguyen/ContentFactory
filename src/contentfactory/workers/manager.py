@@ -71,6 +71,8 @@ class WorkerManager:
         pending: ExecutionTarget | None = None      # retry cùng worker: bỏ qua pick
         last_error: WorkerError | None = None
         reason = ""
+        session = (meta or {}).get("session")
+        session_owner: str | None = None            # worker đang giữ session (W1.13): worker khác không kế thừa
 
         while len(attempts) < int(policy["max_total_attempts"]):
             if cancel is not None and cancel.is_set():
@@ -91,12 +93,18 @@ class WorkerManager:
                     chosen.add(target.worker.id)
 
             attempt = self._begin(work_type, target, job_id, stage, timeout_s)
+            use_session = session if (session_owner is None or session_owner == target.worker.id) else None
+            if use_session is not None and session_owner is None:
+                session_owner = target.worker.id          # worker đầu nhận session resume là chủ của nó (W1.13)
             try:
-                result = self._execute(target, attempt, prompt, timeout_s, cancel, meta, cwd)
+                result = self._execute(target, attempt, prompt, timeout_s, cancel, meta, cwd,
+                                       session=use_session)
             except StageError as e:                       # driver ném CANCELLED -> ghi nhận rồi lan ra
                 attempts.append(self._finish(attempt, AttemptState.FAILED,
                                              WorkerError.from_stage_error(e), ExecResult(ok=False)))
                 raise
+            if result.session_id is not None:
+                session_owner = target.worker.id          # session giờ thuộc worker này (nếu có session mới/continue)
             if not result.ok:
                 err = result.error or WorkerError.from_text(
                     WorkerErrorClass.UNKNOWN, "EXEC_FAILED", raw=result.text)
@@ -153,11 +161,11 @@ class WorkerManager:
 
     def _execute(self, target: ExecutionTarget, attempt: Attempt, prompt: str,
                  timeout_s: float | None, cancel: CancelToken | None, meta: dict | None,
-                 cwd: Path | None = None) -> ExecResult:
+                 cwd: Path | None = None, session: str | None = None) -> ExecResult:
         w = target.worker
         work_dir = Path(cwd) if cwd is not None else Path(attempt.workspace)
         req = ExecRequest(work_type=attempt.work_type, prompt=prompt, cwd=work_dir,
-                          model=target.model, session=(meta or {}).get("session"),
+                          model=target.model, session=session,
                           timeout_s=timeout_s or w.timeout_s,
                           cancel=cancel or CancelToken(), meta=dict(meta or {}))
         try:

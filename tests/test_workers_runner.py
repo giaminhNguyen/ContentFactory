@@ -104,5 +104,47 @@ class DriverRunnerTests(Base):
         self.assertEqual(cm.exception.error_class, ErrorClass.RESOURCE)
 
 
+class HandoffTests(Base):
+    """W1.13: Worker B tiếp quản sau khi A hỏng giữa chừng — KHÔNG kế thừa session A,
+    chạy lại từ checkpoint/artifact đã commit trên đĩa (cwd dùng chung)."""
+
+    def test_fallback_to_b_does_not_inherit_session_a(self):
+        drv_a = FakeDriver({"script": ["temporary"]})
+        drv_b = FakeDriver({"script": ["ok"]})
+        self.pool([self.worker("a", drv_a), self.worker("b", drv_b)], policy={"retry_on": {"TEMPORARY": 0}})
+        t = self.turn(session="SID_A")                                # A lỗi tạm thời -> rơi xuống B
+        self.assertIn("chương thử", t["text"])
+        self.assertEqual([c["session"] for c in drv_a.calls], ["SID_A"])    # A nhận session resume
+        self.assertEqual([c["session"] for c in drv_b.calls], [None])       # B tiếp quản KHÔNG có session A (W1.13)
+
+    def test_same_worker_retry_keeps_session(self):
+        drv = FakeDriver({"script": ["temporary", "ok"]})
+        self.pool([self.worker("a", drv)], policy={"retry_on": {"TEMPORARY": 1}})
+        t = self.turn(session="SID_A")
+        self.assertIn("chương thử", t["text"])
+        self.assertEqual([c["session"] for c in drv.calls], ["SID_A", "SID_A"])   # retry CÙNG worker giữ session
+
+    def test_b_takes_over_from_committed_checkpoint_on_disk(self):
+        # A commit checkpoint lên đĩa (file) rồi fail giữa section; B tiếp quản đọc checkpoint đó — không cần session A.
+        class CheckpointDrv(FakeDriver):
+            def execute(self, req):
+                cp = req.cwd / "checkpoint.md"
+                cp.parent.mkdir(parents=True, exist_ok=True)
+                if not cp.exists():
+                    cp.write_text("phần 1 đã commit\n", encoding="utf-8")
+                return super().execute(req)
+
+        drv_a = CheckpointDrv({"script": ["quota"]})                   # A: commit checkpoint rồi QUOTA
+        drv_b = FakeDriver({"script": ["ok"]})                         # B: đọc checkpoint ấy để hoàn thành
+        self.pool([self.worker("a", drv_a), self.worker("b", drv_b)])
+        t = self.turn(session="SID_A")
+        self.assertIn("chương thử", t["text"])
+        self.assertEqual([c["session"] for c in drv_b.calls], [None])            # B không dùng session A
+        attempts = self.reg.store.attempts(work_type="story.write")
+        self.assertEqual(sorted(a.state.value for a in attempts), ["FAILED", "SUCCESS"])
+        self.assertEqual((Path(self.tmp.name) / "oh-story" / "checkpoint.md").read_text(encoding="utf-8"),
+                         "phần 1 đã commit\n")                                   # checkpoint trên đĩa còn nguyên
+
+
 if __name__ == "__main__":
     unittest.main()
