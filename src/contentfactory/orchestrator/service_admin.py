@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 
 from ..contracts import ErrorClass, StageError
+from ..story import mode as SM
 from ..fsutil import atomic_write_json
 from ..tts import prosody as PRO
 from ..tts import schema as TS
@@ -48,6 +49,15 @@ SETTINGS: list[tuple[str, str, str, str, str, dict]] = [
      "Đề xuất mặc định cho agent viết truyện, dùng khi một job không có đề xuất riêng. Viết tự do: hướng phát triển cốt truyện, không khí/cảm xúc, kiểu mở đầu/kết thúc, ngôi kể, nhịp truyện, "
      "tính cách nhân vật, twist, chi tiết cần giữ hoặc tránh… Để trống = không thêm đề xuất.",
      {"max_len": 8000, "advanced": True, "placeholder": "Ví dụ: Viết theo hướng bí ẩn và căng thẳng hơn. Không tiết lộ ngay nguyên nhân cái chết. Kết thúc mở."}),
+    ("story.default_mode", "story", "Chế độ truyện mặc định", "select",
+     "Chế độ dùng khi tạo job mà không chọn riêng. Story hiện có = quy trình cũ; Story Remix = viết truyện ORIGINAL theo mô-típ nguồn + Kho nhân vật (chỉ chọn được khi đã khả dụng).",
+     {"options": [["story_branch", "Story hiện có"], ["story_remix", "Story Remix — Xào truyện theo mô-típ"]]}),
+    ("story.remix_enabled", "story", "Cho phép Story Remix", "bool", "Tắt = ẩn/khóa Story Remix cho mọi job mới (job đã tạo giữ nguyên).", {"advanced": True}),
+    ("story.character_universe.auto_cast", "story", "Kho nhân vật: tự chọn nhân vật", "bool", "Mặc định cho job Story Remix mới.", {"advanced": True}),
+    ("story.character_universe.reuse_strategy", "story", "Kho nhân vật: chiến lược dùng lại", "select",
+     "‘Ưu tiên dùng lại’ chỉ là ưu tiên, không ép dùng nhân vật không hợp.", {"advanced": True, "options": [["reuse", "Ưu tiên dùng lại nhân vật có sẵn"], ["create_new", "Ưu tiên tạo nhân vật mới"]]}),
+    ("story.character_universe.auto_update_after_qa", "story", "Kho nhân vật: tự cập nhật sau QA", "bool", "Chỉ ghi nhân vật mới/lịch sử xuất hiện vào kho khi truyện đã đạt QA.", {"advanced": True}),
+    ("story.character_universe.allow_new_characters", "story", "Kho nhân vật: cho phép tạo nhân vật mới", "bool", "Tắt = chỉ dùng nhân vật có sẵn.", {"advanced": True}),
     ("render.pool_sync_background", "render", "Đồng bộ video nền ở chế độ nền", "bool", "Chuẩn hoá video nguồn một lần, dùng chung cho mọi job.", {}),
     ("render.pool_sync_interval_s", "render", "Chu kỳ kiểm tra video nền", "number", "Bao lâu kiểm tra thư mục video nguồn có thay đổi không.", {"min": 30, "max": 86400, "step": 30, "unit": "giây"}),
     ("limits.gpu", "resources", "Số video render song song", "int", "Số job được render cùng lúc. Tăng chỉ khi máy mạnh (nhiều GPU/CPU).", {"min": 1, "max": 4}),
@@ -182,6 +192,8 @@ class AdminService:
                 raise _err("UNKNOWN_SETTING", f"Cài đặt không tồn tại: {key}")
             typ, opt = known[key]
             val = self._coerce(key, typ, opt, raw)
+            if key == "story.default_mode" and val != "story_branch" and not SM.enabled({**(self.cfg.data.get("story") or {}), "remix_enabled": True}):
+                raise _err("REMIX_UNAVAILABLE", SM.unavailable_reason(self.cfg.data.get("story")), "Chọn “Story hiện có”.")
             _set(local, key, val)
             _set(self.cfg.data, key, val)
             applied[key] = val

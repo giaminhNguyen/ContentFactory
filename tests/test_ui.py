@@ -625,6 +625,21 @@ class HttpTest(UiCase):
             raw_body = e.read()
             return e.code, (json.loads(raw_body) if raw_body else {}), e.headers
 
+    def test_story_mode_endpoints_and_create_run(self):
+        self.app.stop()
+        code, info, _ = self.call("GET", "/api/story-mode")
+        self.assertEqual((code, info["available"], info["default_mode"]), (200, False, "story_branch"))
+        code, eff, _ = self.call("POST", "/api/story-mode/effective", {"story_mode": {"mode": "story_remix", "story": {"tone": "x"}}})
+        self.assertEqual((code, eff["story"]["tone"]["source"]), (200, "job"))
+        code, err, _ = self.call("POST", "/api/story-mode/effective", {"story_mode": {"mode": "story_remix", "story": {"ending": "?"}}})
+        self.assertEqual((code, err["error"]["code"]), (400, "INVALID_STORY_MODE"))
+        code, err, _ = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "story", "story_mode": {"mode": "story_remix"}})
+        self.assertEqual((code, err["error"]["code"]), (400, "REMIX_UNAVAILABLE"))                       # không bao giờ chạy nhầm sang Story cũ
+        self.assertEqual(self.o.store.list_jobs(), [])
+        code, ok, _ = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "story", "story_mode": {"mode": "story_branch"}})
+        self.assertEqual(code, 200)
+        self.assertNotIn("story_mode", self.o.store.get_job(ok["job_id"])["params"])
+
     def test_channel_run_endpoints(self):
         self.app.stop()                                                                    # không để vòng lặp nền chạy mất job con trong test
         self.o.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(i) for i in range(12, 0, -1)]))

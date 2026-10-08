@@ -64,7 +64,9 @@ DEFAULTS: dict = {
     "youtube": {"yt_dlp_cmd": ["yt-dlp"], "yt_dlp_args": []},   # chỉ cho YtDlpProvider (fallback)
     # Story Guidance (D-112): đề xuất sáng tạo MẶC ĐỊNH cho agent viết truyện (văn bản tự do). Job có đề xuất riêng thì ghi đè hoàn toàn. Cố ý KHÔNG nằm trong
     # snapshot: mặc định được đọc lúc stage `story` chạy (kể cả manual rerun) và chốt vào lần chạy đó.
-    "story": {"guidance": ""},
+    "story": {"guidance": "", "default_mode": "story_branch", "remix_enabled": True,
+              # mặc định Kho nhân vật cho job Story Remix MỚI (user đã chọn); mỗi job có thể ghi đè. Job Story thường không dùng.
+              "character_universe": {"auto_cast": True, "reuse_strategy": "reuse", "canon_mode": "parallel", "auto_update_after_qa": True, "allow_new_characters": True}},
     "story_branch": {"permission_mode": "acceptEdits", "max_turns": 80, "max_follow_ups": 4,
                      "chapters_per_batch": 3, "max_budget_usd_per_turn": None},
     "job_defaults": {"language": "vi", "channel": "default",

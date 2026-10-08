@@ -398,3 +398,10 @@ dialog.dlg.wide { width: min(760px, calc(100vw - 2 * var(--s-4))); }
 .rr-hist-stage details { flex-basis: 100%; }
 .rr-hist-err { color: var(--st-fail-fg); flex-basis: 100%; }
 @media (max-width: 640px) { .rr-msg { margin-left: 0; } }
+.sm-opt { display: flex; gap: var(--s-3); padding: var(--s-3) var(--s-4); border: 1px solid var(--border); border-radius: var(--r-1); cursor: pointer; align-items: flex-start; background: var(--surface); }
+.sm-opt:has(input:checked) { border-color: var(--accent); background: var(--st-running-bg); }
+.sm-opt:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sm-opt input { margin-top: 3px; }
+.sm-opt.disabled { opacity: .75; cursor: not-allowed; }
+.sm-editor { border: 0; padding: 0; margin: 0; min-width: 0; }
+.sm-form h3 { margin: var(--s-3) 0 0; }

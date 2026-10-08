@@ -27,7 +27,7 @@ from ..jobs import pipeline as P
 from ..jobs.db import CONTROL_CANCELLED, CONTROL_DELETED, CONTROL_PAUSED
 from ..jobs.policy import outcome_for
 from ..jobs.workspace import ensure_job_dirs, job_dir
-from ..story import guidance as GD
+from ..story import mode as SM
 from .diagnose import STAGE_LABEL
 from .handlers import HANDLERS
 from .revisions import depends_on
@@ -107,7 +107,7 @@ class RerunService:
                 contract = StageContract(s)
                 inputs, _ = contract.scope_inputs(self.store.inputs(jid, s.requires + s.optional), job.get("pipeline"))
                 ready, _ = contract.can_run({k for k, v in inputs.items() if v})
-                extra = GD.run_extra(row)
+                extra = SM.run_extra(row)
                 parts = contract.key_parts(job["params"], job.get("config_snapshot"), inputs, extra)
                 old = json.loads(row["meta"] or "{}").get("lineage")
                 if old is not None:
@@ -410,7 +410,7 @@ class RerunService:
                 inputs, package_kinds = contract.scope_inputs(store.inputs(job_id, stage.requires + stage.optional), job.get("pipeline"))
                 contract.validate_inputs(inputs, jd, also=package_kinds)
                 extra = {**orc.stage_extra(name, job["params"]), "rerun_dir": f"r{sess['seq']:04d}"}    # Story: đề xuất hiệu lực TẠI THỜI ĐIỂM chạy lại (inherit => Cài đặt mới nhất)
-                key = contract.stage_key(job["params"], job.get("config_snapshot"), inputs, GD.key_extra(extra.get("story_guidance")))
+                key = contract.stage_key(job["params"], job.get("config_snapshot"), inputs, SM.stage_key_extra(extra))
                 while True:                                                             # chờ chỗ trên tài nguyên dùng chung (vd 1 GPU)
                     token.check()
                     got = store.reruns.begin_run(sid, job_id, stage, orc.owner, orc.cfg.limit(P.resource_of(stage)))

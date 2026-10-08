@@ -169,6 +169,14 @@ class Api:
     def batch_target(app, m, q, b):
         return app.orc.batch_service().update_pipeline(m["id"], str(b.get("target_stage") or ""), b.get("scope") or "unfinished", b.get("job_ids"))
 
+    @route("GET", "/api/story-mode")
+    def story_mode(app, m, q, b):
+        return app.service.story_mode_info()
+
+    @route("POST", "/api/story-mode/effective")
+    def story_mode_effective(app, m, q, b):
+        return app.service.story_mode_effective(b)
+
     @route("POST", "/api/preview")
     def preview(app, m, q, b):
         return app.service.preview_run(b)

@@ -24,7 +24,7 @@ import json
 from ..jobs import pipeline as P
 from ..jobs.db import CONTROL_CANCELLED
 from ..jobs.plan import plan_spec, spec_from_range
-from ..story import guidance as GD
+from ..story import mode as SM
 from .config import _merge
 from .diagnose import STAGE_LABEL
 from .snapshot import apply_patch
@@ -138,7 +138,7 @@ def compute_impact(orc, job: dict, *, pipeline: dict | None = None, config_patch
             inputs = store.inputs(jid, s.requires + s.optional)
             contract = StageContract(s)
             scoped, _ = contract.scope_inputs(inputs, {"run": plan.run})
-            if contract.stage_key(new_params, new_snap, scoped, GD.run_extra(run_row)) != run_row["stage_key"]:
+            if contract.stage_key(new_params, new_snap, scoped, SM.run_extra(run_row)) != run_row["stage_key"]:
                 kchg = _dep_changes(s, old_params, new_params, job.get("config_snapshot"), new_snap) or ["đầu vào hoặc phần đóng gói"]
         if running and i == pos:
             then = bool(kchg or ups)

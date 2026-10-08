@@ -25,6 +25,7 @@ from ..jobs.workspace import job_dir
 from ..media import image_pool as IPOOL
 from ..source import discovery as DISC
 from ..story import guidance as GD
+from ..story import mode as SM
 from ..output import metadata as MD
 from ..tts import prosody as PRO
 from . import auto as AU
@@ -363,6 +364,8 @@ class Service:
                     return {"job_id": full["id"], "deduped": True, "reason": "same_input_running"}
             if payload.get("story_guidance") is not None:                                     # đề xuất truyện riêng của job (mặc định: dùng đề xuất trong Cài đặt)
                 params["story_guidance"] = payload["story_guidance"]
+            if payload.get("story_mode") is not None:                                          # chế độ truyện (Story hiện có | Story Remix); thiếu = mặc định trong Cài đặt
+                params["story_mode"] = payload["story_mode"]
             params["ui"] = {"sig": sig, "request_id": rid or None}
             extend = kw.pop("_extend", None)
             job_id = self.orc.submit(params, **kw)
@@ -658,6 +661,7 @@ class Service:
                           "prosody": any(a["kind"] == "speech_plan" for a in self.orc.store.artifacts(job_id))})
         s["thumbnail"] = self.thumbnail_info(j)
         s["story_guidance"] = self.story_guidance_view(j, runs)
+        s["story_mode"] = SM.of_job(j["params"])
         s["rerun"] = self.rerun_summary(j)
         s["actions"]["rerun"] = j["control_state"] != "CANCELLED"
         pipeline = self._pipeline(j, runs, pend, d.get("human"), cur, imported)
@@ -1098,6 +1102,18 @@ class Service:
                     "stale_by": {n: a["stale_by"] for n, a in an["stages"].items() if a["stale"]}}
         except Exception:                                                              # noqa: BLE001
             return None
+
+    # ---- Chế độ truyện (Story hiện có | Story Remix)
+    def story_mode_info(self) -> dict:
+        """Mô tả cho UI: các mode (kèm khả dụng + lý do), schema trường, mặc định hệ thống. Cùng schema server dùng để kiểm."""
+        return SM.describe(self.cfg.data.get("story"))
+
+    def story_mode_effective(self, payload: dict) -> dict:
+        """Cấu hình hiệu lực (kèm nguồn từng giá trị) cho lựa chọn hiện tại của form; sai ⇒ lỗi rõ ràng, không ép kiểu."""
+        try:
+            return SM.effective((payload or {}).get("story_mode"), self.cfg.data.get("story"))
+        except StageError as e:
+            raise _err(e.code, e.message, (e.detail or {}).get("hint", "")) from None
 
     # ---- Story Guidance (D-112)
     def story_guidance_view(self, j: dict, runs: list[dict] | None = None) -> dict:

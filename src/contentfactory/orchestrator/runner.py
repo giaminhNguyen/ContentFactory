@@ -38,6 +38,7 @@ from .monitor import DiskProbe, NetworkProbe, ResourceMonitor
 from ..jobs.sequences import SequenceManager
 from ..media import image_pool as IP
 from ..story import guidance as GD
+from ..story import mode as SM
 from . import auto as AU
 from . import cleanup as CL
 from . import channels as CH
@@ -173,6 +174,9 @@ class Orchestrator:
             g = GD.parse(merged.pop("story_guidance"))
             if g["mode"] != GD.DEFAULT_MODE:
                 merged["story_guidance"] = g
+        sm = SM.resolve_for_job(merged.pop("story_mode", None), self.cfg.data.get("story"))   # chế độ truyện: chỉ lưu khi Story Remix (job cũ/Story thường không đổi); chưa khả dụng ⇒ từ chối
+        if sm:
+            merged["story_mode"] = sm
         if merged.get("prosody"):
             PRO.resolve_prosody(merged["prosody"])                                    # sai thì từ chối ngay lúc tạo job (không để lỗi nửa chừng ở stage TTS)
         items = self._prepare_imports(inputs or {}, from_job, merged)
@@ -855,7 +859,7 @@ class Orchestrator:
             inputs, package_kinds = contract.scope_inputs(self.store.inputs(job_id, stage.requires + stage.optional), claim.pipeline)
             ready, _missing = contract.can_run({k for k, v in inputs.items() if v})
             extra = self.stage_extra(stage.name, claim.params)                    # ngữ cảnh quyết định lúc chạy (vd đề xuất truyện hiệu lực), chốt vào lần chạy này
-            key = contract.stage_key(claim.params, claim.snapshot, inputs, GD.key_extra(extra.get("story_guidance"))) if ready else None
+            key = contract.stage_key(claim.params, claim.snapshot, inputs, SM.stage_key_extra(extra)) if ready else None
             self.store.set_run_key(claim.run_id, key, self.run_meta(contract, claim.params, claim.snapshot, inputs, extra, ready))
             reason = contract.skip_reason(self.store, job_id, jd, key, claim.target_idx, claim.pipeline)
             if reason:                              # output đã hợp lệ (hoặc được cung cấp sẵn): KHÔNG chạy lại
@@ -892,8 +896,10 @@ class Orchestrator:
         meta = dict(more)
         if extra.get("story_guidance"):
             meta["guidance"] = extra["story_guidance"]
+        if extra.get("story_mode"):
+            meta["story_mode"] = extra["story_mode"]
         if ready:
-            meta["lineage"] = contract.key_parts(params, snapshot, inputs, GD.key_extra(extra.get("story_guidance")))
+            meta["lineage"] = contract.key_parts(params, snapshot, inputs, SM.stage_key_extra(extra))
         return meta or None
 
     def stage_config(self, snapshot: dict | None) -> dict:
@@ -911,7 +917,10 @@ class Orchestrator:
         (đề xuất riêng của job > mặc định hiện tại trong Cài đặt > không có), đọc MỘT chỗ duy nhất ở đây."""
         if stage != "story":
             return {}
-        return {"story_guidance": GD.resolve(params, (self.cfg.data.get("story") or {}).get("guidance"), now=time.time())}
+        out = {"story_guidance": GD.resolve(params, (self.cfg.data.get("story") or {}).get("guidance"), now=time.time())}
+        if SM.of_job(params)["mode"] != SM.DEFAULT_MODE:
+            out["story_mode"] = SM.of_job(params)                              # đã chốt lúc tạo job: chạy lại/retry dùng đúng cấu hình đó
+        return out
 
     def _on_error(self, claim: Claim, e: StageError, log) -> None:
         if e.error_class == ErrorClass.CANCELLED:
