@@ -617,6 +617,16 @@
 - **An toàn:** builtin ⇒ `TEMPLATE_READONLY`; kênh còn chọn template (kể cả `fallback`) ⇒ `TEMPLATE_IN_USE` nêu kênh + cách xử lý (không để cấu hình kênh trỏ vào template ma); bấm đúp ⇒ `already_deleted`. Job cũ không ảnh hưởng: `params.templates` giữ snapshot đầy đủ (tài liệu + sha256 asset) của version đã dùng. Asset không bị xóa theo (có thể dùng chung).
 - **Giới hạn:** không xóa riêng một version đã publish (chỉ cả template hoặc lưu trữ); không thùng rác/hoàn tác. Cần commit module ContentFlow chứa `delete_template` (xem `modules.lock`).
 
+### D-111 Đang làm (W1) — Worker Runtime: package `workers`, hợp đồng Driver, sqlite riêng `workers.db`
+- **Bối cảnh:** pipeline gắn với một CLI cụ thể (`StoryBranchAdapter` + `ClaudeCliRunner`); lỗi quota/auth/timeout của một agent làm job đứng; không có lịch sử attempt để debug fallback.
+- **Quyết định:** package `workers` (thêm vào `ISOLATED` của `tests/test_architecture.py`, chỉ phụ thuộc `contracts`/`fsutil`):
+  - **Hợp đồng Driver** ở `workers/drivers/base.py` (`discover/probe/list_models/validate_model/build_command/execute/classify`). `workers/drivers/__init__.py` là nơi DUY NHẤT biết danh sách vendor; core chỉ đưa `driver_id`. Thêm CLI mới = một dòng ở registry.
+  - **Lỗi chuẩn hoá** về 6 loại `WorkerErrorClass` (`TEMPORARY/QUOTA/AUTH/TIMEOUT/INVALID_OUTPUT/UNKNOWN`) + cầu nối `to_stage_error()`/`from_stage_error()` với `ErrorClass` hiện có.
+  - **Lưu trữ riêng** `runtime/workers.db` (schema + migration nội bộ, làm theo mẫu `jobs/db.py`, có backup trước khi migrate) thay vì thêm bảng vào `contentfactory.db`: `workers` là ISOLATED nên không import được `jobs.db`, và tách DB tránh đụng version migration của pipeline. Cả hai vẫn nằm trong `runtime/` của ContentFactory.
+  - **Nối pipeline bằng tiêm phụ thuộc** ở `orchestrator/registry.py` (như adapter `runner=` hiện có) thay vì để `adapters` import `workers`.
+- **Giữ nguyên:** `--host claude-code` trong `_deploy()` của oh-story là host name của script deploy **của oh-story**, không phải nhánh vendor trong pipeline.
+- **Hướng dẫn:** xem `Promtps/WORKER_RUNTIME_EXECUTION_PLAN.md` (W1–W3).
+
 ## 2. Câu hỏi còn mở
 
 Không còn câu hỏi nào chặn phase đang làm. D-04, D-07 được chốt bằng mặc định suy ra từ code/môi trường; Story theo D-23 (chỉ dẫn Phase 2). Còn lại là **điều kiện đầu vào runtime**, không suy ra được từ code; `doctor` sẽ báo thiếu thay vì chặn:
