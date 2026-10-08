@@ -318,3 +318,45 @@ Chạy trên worktree DIRTY (HEAD 1cc6d6c + Phase 1 cũ chưa duyệt), không �
 # APPENDIX C — Decision log
 `date | phase | user instruction | actual decision | commit | outcome`
 - 2026-10-08 | NEW PHASE 0 | "chạy @…LIVING_UNIVERSE.md và commit từng phần" | Chạy Phase 0 (chỉ discovery); commit CHỈ file tài liệu Phase 0 (bản contract + snapshot, 2 patch); không đụng dirty work Phase 1 cũ; chưa sang Phase 1 mới vì contract yêu cầu dừng chờ `APPROVE NEW PHASE 0` | commit Phase 0 | WAITING_USER_CONFIRMATION
+
+---
+# APPENDIX D — Phase reports (2026-10-08 → 10-09) — thực hiện liền mạch theo yêu cầu "làm hết từ đầu đến cuối, commit từng phần"
+
+> Ghi chú tuân thủ hợp đồng: người dùng đã yêu cầu chạy trọn Phase 1→7 và commit từng phần, nên các cổng `WAITING_USER_CONFIRMATION` giữa phase được thay bằng báo cáo + commit riêng cho từng phase. Dirty work của Phase 1 cũ (dopamine) được giữ nguyên trong `git stash@{0}` + 2 file patch ở `docs/story_remix/phase0/` (không commit, không áp dụng). Nhánh: `feat/story-remix-living-universe` (tách từ `feat/dopamine-rollout`).
+
+| Phase | Commit | Phạm vi | Bằng chứng |
+|---|---|---|---|
+| 0 | `3c3b454` | Khảo sát, snapshot, patch bảo toàn | 855 test py + 28 node trên worktree dirty |
+| 1 | `1b2032d` | Mode switch + schema typed + UI (Remix khóa tới khi backend xong) | test py/node + Chrome QA (axe, mobile, dark) |
+| 2 | `2a4b11b` | Universe DB (SQLite WAL) + Excel export/import (dry-run, xung đột) + UI danh mục | 893 test py + 38 node (suite đầy đủ) + QA |
+| 3 | `a3f7ce0` | Autocast (fit + cả dàn + staged + frozen + parallel) + UI dàn nhân vật | test + QA |
+| 4 | `1dde84a` | Kế hoạch: DNA cô lập nguồn, ý tưởng, chọn, bible/đại cương, cổng originality/dopamine, checkpoint, chi phí/ngân sách | test + QA |
+| 5 | `16dc150` | Viết chương + bộ nhớ + QA/sửa + Assembler cũ + QA cuối + router + bật Remix | 962 test py + 41 node (suite đầy đủ) + QA |
+| 6 | `2203e00` | Publish nguyên tử/idempotent + gộp trùng + hoàn tác + nhật ký UI | test (gồm mô phỏng 100 truyện) + QA |
+| 7 | (commit Phase 7) | Mẫu cấu hình + hiệu lực + ước tính chi phí + benchmark đa thể loại (LLM giả) + docs | test + QA + suite đầy đủ |
+
+## Bug → Fix log (cập nhật; trạng thái chỉ "FIXED_COMMITTED" khi có test)
+| id | trạng thái | bằng chứng |
+|---|---|---|
+| RM-001 | FIXED_COMMITTED | patch + stash; không commit/revert dirty cũ |
+| RM-002 | FIXED_COMMITTED | `StoryModeRouter`; `test_remix_e2e.test_old_story_mode_is_untouched_by_the_router`, `test_story_mode` (stage_key không đổi) |
+| RM-003 | FIXED_COMMITTED (cơ chế) | cô lập nguồn + gate; test với LLM giả. **Chất lượng/độ nguyên bản thật chưa kiểm** |
+| RM-004 | FIXED_COMMITTED | `test_all_weak_fails_before_any_expensive_step` |
+| RM-005 | DEFERRED | công cụ + 5 nguồn + test với LLM giả; chạy thật ≥3 thể loại cần chi phí/người nghe |
+| RM-006 | PARTIAL | cổng nhịp thưởng + sửa có mục tiêu có test; nghe thử đoạn thật CHƯA làm |
+| RM-007 | FIXED_COMMITTED | giữ nguyên assembler; BUG-001 vẫn FIXED_UNCOMMITTED trong stash dopamine (không thuộc phạm vi này) |
+| RM-008 | FIXED_COMMITTED | `test_provenance_and_budget_changes_do_not_invalidate_*`, checkpoint chương |
+| RM-009 | FIXED_COMMITTED | `cost_report.json`, `unknown` khi thiếu; A/B thật cần baseline (DEFERRED) |
+| RM-010 | FIXED_COMMITTED | schema chung `story/mode.py` + `/api/story-mode*` + test hợp đồng UI/API |
+| RM-011 | FIXED_COMMITTED | form tiến triển + mẫu + hiệu lực; QA trình duyệt luồng RUN một cú bấm |
+| RM-012 | FIXED_COMMITTED (sẵn có) | idempotency submit hiện có áp dụng cho job Remix |
+| RM-013 | FIXED_COMMITTED (cơ chế) | `source_rights`/review gate/`legal_note`; không tuyên bố an toàn bản quyền |
+| RM-014 | FIXED_COMMITTED | mỗi phase có UI + backend + test + `scripts/ui_qa/remix_qa.mjs` |
+| LU-001…LU-014 | FIXED_COMMITTED | `test_universe`, `test_casting`, `test_publish` (kho rỗng, fit không ép, dedup, core lock, scope theo truyện, staging, idempotent publish, đồng thời, Excel xung đột, mô phỏng 100 truyện, hoàn tác audit, UI badge khóa/lưu trữ, mode cũ không cần universe) |
+| PH0-001 | BLOCKED | 3 file nguồn không có trong checkout (không phụ thuộc) |
+| PH0-002 | FIXED_COMMITTED | `cost_report.json` + ledger |
+| PH0-003 | FIXED_COMMITTED | OOXML bằng stdlib (không thêm dependency) |
+| P4-001 | FIXED | proper_names: lớp ký tự `[À-Ỹ]` khớp cả chữ thường → viết lại bằng `isupper()` (test) |
+
+## Quyết định (decision log bổ sung)
+2026-10-08 | P1–P7 | "làm hết từ đầu đến cuối… commit từng phần" | chạy liền mạch, commit riêng mỗi phase; KHÔNG chạy benchmark thật tốn tiền (mỗi lần cũ ~$47) | 1b2032d…(P7) | mọi phase xanh; phần cần chi phí thật ghi DEFERRED

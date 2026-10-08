@@ -170,7 +170,7 @@ class Universe:
         total = self.db.one(f"SELECT COUNT(*) AS n FROM characters c WHERE {w}", tuple(args))["n"]
         rows = self.db.q(f"""SELECT c.*, (SELECT COUNT(*) FROM appearances a WHERE a.character_id=c.character_id) AS appearance_count,
                              (SELECT GROUP_CONCAT(DISTINCT a.role_code) FROM appearances a WHERE a.character_id=c.character_id) AS roles
-                             FROM characters c WHERE {w} ORDER BY c.updated_at DESC, c.character_id LIMIT ? OFFSET ?""", tuple(args) + (limit, offset))
+                             FROM characters c WHERE {w} ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ? OFFSET ?""", tuple(args) + (limit, offset))
         items = []
         for r in rows:
             roles = (r.pop("roles") or "").split(",") if r.get("roles") else []

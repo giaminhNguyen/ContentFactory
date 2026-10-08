@@ -54,10 +54,10 @@ if (wanted("run")) {
     check(`run/${label}: Story Remix chọn được (không còn bị khóa)`, (await remix.isEnabled()) && !/chưa khả dụng/i.test(await page.locator(".sm-editor").innerText()));
     await page.locator(".sm-editor button[aria-expanded]").first().click();
     await settle(page, 300);
-    check(`run/${label}: form xem trước chỉ-đọc khi đang ở Story hiện có`, await page.locator(".sm-editor select, .sm-editor textarea").first().isDisabled());
+    check(`run/${label}: form xem trước chỉ-đọc khi đang ở Story hiện có`, await page.locator(".sm-form select, .sm-form textarea").first().isDisabled());
     await remix.check();
     await settle(page, 200);
-    check(`run/${label}: chọn Story Remix → form sửa được, Kho nhân vật bật sẵn đúng cấu hình đã chọn`, await page.locator(".sm-editor select").first().isEnabled()
+    check(`run/${label}: chọn Story Remix → form sửa được, Kho nhân vật bật sẵn đúng cấu hình đã chọn`, await page.locator(".sm-form select").first().isEnabled()
       && /Tự chọn nhân vật/.test(await page.locator(".sm-editor").innerText()) && /Tự cập nhật kho sau QA/.test(await page.locator(".sm-editor").innerText()));
     await shot(page, `run-${label}`);
     check(`run/${label}: khối Chế độ truyện nằm trong khung nhìn`, await page.evaluate(() => document.querySelector(".sm-editor").getBoundingClientRect().right <= window.innerWidth + 1));
@@ -79,6 +79,40 @@ if (wanted("run")) {
   await page.waitForURL(/#\/jobs\//, { timeout: 15000 });
   check("run: job Story hiện có được tạo và không gửi story_mode", sent.length === 1 && !("story_mode" in sent[0]));
   clean(page, "run/submit");
+  // Mẫu cấu hình + ước tính + cấu hình hiệu lực
+  const pg = await newPage();
+  await go(pg, "/");
+  await pg.fill("#run-input", fx.srt);
+  await pg.waitForSelector(".sm-editor:not([hidden])", { timeout: 15000 });
+  await pg.locator(".mode:has-text('Chỉ viết truyện')").click();
+  await pg.locator('.sm-editor input[type=radio][value=story_remix]').check();
+  await pg.waitForSelector(".sm-estimate strong", { timeout: 10000 });
+  check("presets: hiện ước tính trước khi chạy, nói rõ chi phí USD không rõ khi chưa cấu hình giá", /lượt gọi AI/.test(await pg.locator(".sm-estimate").innerText()) && /không rõ/.test(await pg.locator(".sm-estimate").innerText()));
+  await pg.locator(".sm-form label:has-text('Giọng văn') + input").fill("u ám");
+  await pg.locator("button:has-text('Xem cấu hình hiệu lực')").click();
+  await pg.waitForSelector(".sm-editor table tbody tr");
+  const effTxt = await pg.locator(".sm-editor table").innerText();
+  check("presets: cấu hình hiệu lực hiện nguồn từng giá trị (job / hệ thống)", /riêng của job/.test(effTxt) && /mặc định hệ thống/.test(effTxt));
+  await pg.click("button:has-text('Lưu thành mẫu')");
+  await pg.fill("dialog input >> nth=0", "Mẫu u ám QA");
+  await pg.locator("dialog label:has-text('Đặt làm mặc định') input").check();
+  await pg.click("dialog button:has-text('Lưu')");
+  await pg.waitForSelector("text=Đã lưu mẫu");
+  check("presets: lưu thành mẫu và đặt mặc định cho job mới", /Mẫu u ám QA \(mặc định cho job mới\)/.test(await pg.locator(".sm-presets select").innerText()));
+  await shot(pg, "presets");
+  await axe(pg, "run/presets");
+  clean(pg, "run/presets");
+  // job mới (trang mới): mẫu mặc định + Story Remix được chọn sẵn, giá trị mẫu được nạp
+  const pg2 = await newPage();
+  await go(pg2, "/");
+  await pg2.fill("#run-input", fx.srt);
+  await pg2.waitForSelector(".sm-editor:not([hidden])", { timeout: 15000 });
+  check("presets: mẫu mặc định được chọn sẵn cùng Story Remix và giá trị của mẫu", await pg2.locator('.sm-editor input[type=radio][value=story_remix]').isChecked()
+    && (await pg2.locator(".sm-form label:has-text('Giọng văn') + input").inputValue()) === "u ám");
+  await pg2.locator(".sm-presets button:has-text('Xoá mẫu')").click();
+  await pg2.click("dialog button:has-text('Xoá')");
+  await pg2.waitForSelector("text=Đã xoá mẫu");
+  check("presets: xoá mẫu đưa về mặc định hệ thống", !(await pg2.locator(".sm-presets select").innerText()).includes("Mẫu u ám QA"));
   // Story Remix: một cú bấm RUN, mọi thứ còn lại tự động (LLM giả của chế độ thử nghiệm)
   const page2 = await newPage();
   const sent2 = [];

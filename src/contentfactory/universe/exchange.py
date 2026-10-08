@@ -38,7 +38,7 @@ def export_workbook(uni: Universe) -> bytes:
     db = uni.db
     with db.snapshot():
         rev = uni.revision()
-        chars = db.q("SELECT c.*, (SELECT COUNT(*) FROM appearances a WHERE a.character_id=c.character_id) AS appc FROM characters c WHERE c.status != 'staged' ORDER BY c.created_at, c.character_id")
+        chars = db.q("SELECT c.*, (SELECT COUNT(*) FROM appearances a WHERE a.character_id=c.character_id) AS appc FROM characters c WHERE c.status != 'staged' ORDER BY c.rowid")
         rows = []
         for r in chars:
             ch = S._row({k: v for k, v in r.items() if k != "appc"})

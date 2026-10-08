@@ -60,3 +60,41 @@ export function changedCount(info, state) {
   for (const [sec] of SECTIONS) for (const f of info.schema[sec]) if (JSON.stringify(state[sec][f.key]) !== JSON.stringify(f.default)) n++;
   return n;
 }
+
+// ---- mẫu cấu hình / ước tính / cấu hình hiệu lực -----------------------------------------------
+export const SOURCE_LABEL = { system: "mặc định hệ thống", preset: "từ mẫu", job: "riêng của job" };
+export const SYSTEM_PRESET = "";
+
+/** Trạng thái form từ một mẫu (mode Remix + giá trị mẫu); phần thiếu lấy mặc định hệ thống. */
+export function stateFromPreset(info, preset) {
+  const st = initialState(info);
+  if (!preset) return st;
+  return { mode: REMIX, story: { ...st.story, ...clone(preset.story) }, character_universe: { ...st.character_universe, ...clone(preset.character_universe) } };
+}
+
+export const presetByName = (info, name) => (info.presets || []).find((p) => p.name === name) || null;
+
+/** Khôi phục mặc định hệ thống nhưng GIỮ nguyên chế độ đang chọn. */
+export function resetToDefaults(info, state) {
+  const st = initialState(info);
+  return { ...st, mode: state.mode };
+}
+
+export function formatValue(field, v) {
+  if (field.type === "bool") return v ? "Bật" : "Tắt";
+  if (field.type === "list") return v.length ? v.join(", ") : "—";
+  if (v === null || v === "") return "—";
+  if (field.type === "select") return OPTION_LABELS[field.key]?.[v] || String(v);
+  return String(v);
+}
+
+/** Các dòng ước tính (đã nói rõ giả định) + cảnh báo khi trần USD ước tính vượt ngân sách. */
+export function estimateLines(est, budget) {
+  const lines = [`Khoảng ${est.calls.min}–${est.calls.max} lượt gọi AI, ~${Math.round(est.input_tokens.min / 1000)}k–${Math.round(est.input_tokens.max / 1000)}k token vào, ~${Math.round(est.output_tokens.min / 1000)}k–${Math.round(est.output_tokens.max / 1000)}k token ra (${est.chapters} chương).`];
+  lines.push(est.usd ? `Chi phí ước tính: $${est.usd.min.toFixed(2)}–$${est.usd.max.toFixed(2)}.` : "Chi phí USD: không rõ (chưa cấu hình giá/triệu token).");
+  if (budget != null && est.usd && est.usd.max > budget) lines.push(`⚠ Trần ước tính ($${est.usd.max.toFixed(2)}) cao hơn ngân sách ($${Number(budget).toFixed(2)}): job có thể dừng giữa chừng và tiếp tục được sau khi nâng ngân sách.`);
+  if (budget != null && !est.usd) lines.push("Ngân sách chỉ chặn được theo chi phí mà nhà cung cấp báo trong lúc chạy.");
+  return lines;
+}
+
+export function validPresetName(n) { return /^[\p{L}\p{N}_][\p{L}\p{N}_ \-]{0,39}$/u.test(String(n ?? "").trim()); }

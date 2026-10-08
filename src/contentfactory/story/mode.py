@@ -219,14 +219,16 @@ def describe(story_cfg: dict | None) -> dict:
             "schema": schema, "defaults": system_defaults(story_cfg)}
 
 
-def effective(raw, story_cfg: dict | None) -> dict:
-    """Cấu hình hiệu lực + nguồn từng giá trị (system|job) để UI hiện ‘kế thừa’ và xem trước trước khi chạy."""
+def effective(raw, story_cfg: dict | None, preset: dict | None = None) -> dict:
+    """Cấu hình hiệu lực + nguồn từng giá trị (system < preset < job) để UI hiện ‘kế thừa’ và xem trước trước khi chạy."""
     parsed = parse(raw, story_cfg)
     base = system_defaults(story_cfg)
+    pre = preset if isinstance(preset, dict) else {}
     given = raw if isinstance(raw, dict) else {}
-    out = {"mode": parsed["mode"], "label": LABELS[parsed["mode"]], "available": parsed["mode"] == DEFAULT_MODE or enabled(story_cfg),
-           "reason": "" if (parsed["mode"] == DEFAULT_MODE or enabled(story_cfg)) else unavailable_reason(story_cfg)}
-    full = _section("story", given.get("story"), base["story"]), _section("character_universe", given.get("character_universe"), base["character_universe"])
-    for sec, vals in zip(("story", "character_universe"), full):
-        out[sec] = {k: {"value": v, "source": "job" if k in (given.get(sec) or {}) else "system"} for k, v in vals.items()}
+    ok = parsed["mode"] == DEFAULT_MODE or enabled(story_cfg)
+    out = {"mode": parsed["mode"], "label": LABELS[parsed["mode"]], "available": ok, "reason": "" if ok else unavailable_reason(story_cfg)}
+    for sec in SECTIONS:
+        lower = _section(sec, pre.get(sec), base[sec])
+        top = _section(sec, given.get(sec), lower)
+        out[sec] = {k: {"value": v, "source": "job" if k in (given.get(sec) or {}) and v != lower[k] else "preset" if k in (pre.get(sec) or {}) and pre[sec][k] != base[sec][k] else "system"} for k, v in top.items()}
     return out

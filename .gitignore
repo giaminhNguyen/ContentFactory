@@ -22,3 +22,6 @@ __pycache__/
 /scripts/ui_qa/out/
 /samples/
 /contentflow_user/
+
+# Kết quả benchmark Story Remix (sinh lại được bằng scripts/remix_bench.py)
+/benchmarks/REMIX-RESULTS/

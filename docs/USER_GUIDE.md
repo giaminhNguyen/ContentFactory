@@ -89,6 +89,11 @@ Rồi `cf run`. Phần đã làm xong và còn hợp lệ không bao giờ bị 
 - Dòng lệnh (nâng cao): `cf rerun <job>` liệt kê bước chạy lại được; `cf rerun <job> story tts --plan` kiểm tra; `cf rerun <job> story tts` chạy.
 - Mỗi bước hiện số lần đã chạy lại (tự thử lại khi lỗi mạng không tính); *Lịch sử chạy lại* liệt kê từng lượt, đề xuất truyện đã dùng và mã/URL video đã đăng.
 
+## 4B. Story Remix và Kho nhân vật
+
+Chọn **Story Remix — Xào truyện theo mô-típ** ở màn Chạy để viết truyện original theo mô-típ của nguồn (nhân vật/xung đột/diễn biến khác hẳn), tự chọn hoặc tạo nhân vật từ **Kho nhân vật** và tự cập nhật Kho sau khi truyện đạt QA.
+Mặc định chỉ cần chọn nguồn rồi bấm RUN; có thể lưu cấu hình thành **mẫu** và đặt làm mặc định. Xem **docs/STORY_REMIX.md** (cách dùng, kiến trúc, giới hạn, phần đã/chưa chứng minh).
+
 ## 5. Khi có sự cố
 
 | Thấy | Nghĩa là | Làm gì |

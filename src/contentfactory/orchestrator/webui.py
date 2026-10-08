@@ -183,6 +183,22 @@ class Api:
     def story_mode(app, m, q, b):
         return app.service.story_mode_info()
 
+    @route("PUT", r"/api/story-presets/(?P<name>[^/]+)")
+    def story_preset_save(app, m, q, b):
+        return app.service.story_preset_save(unquote(m["name"]), b)
+
+    @route("DELETE", r"/api/story-presets/(?P<name>[^/]+)")
+    def story_preset_delete(app, m, q, b):
+        return app.service.story_preset_delete(unquote(m["name"]))
+
+    @route("PUT", "/api/story-presets-default")
+    def story_preset_default(app, m, q, b):
+        return app.service.story_preset_default(b)
+
+    @route("POST", "/api/story-mode/estimate")
+    def story_mode_estimate(app, m, q, b):
+        return app.service.story_mode_estimate(b)
+
     @route("POST", "/api/story-mode/effective")
     def story_mode_effective(app, m, q, b):
         return app.service.story_mode_effective(b)

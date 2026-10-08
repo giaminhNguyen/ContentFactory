@@ -39,6 +39,7 @@ from ..jobs.sequences import SequenceManager
 from ..media import image_pool as IP
 from ..story import guidance as GD
 from ..story import mode as SM
+from ..story import presets as SP
 from . import auto as AU
 from . import cleanup as CL
 from . import channels as CH
@@ -182,7 +183,10 @@ class Orchestrator:
             g = GD.parse(merged.pop("story_guidance"))
             if g["mode"] != GD.DEFAULT_MODE:
                 merged["story_guidance"] = g
-        sm = SM.resolve_for_job(merged.pop("story_mode", None), self.cfg.data.get("story"))   # chế độ truyện: chỉ lưu khi Story Remix (job cũ/Story thường không đổi); chưa khả dụng ⇒ từ chối
+        raw_mode = merged.pop("story_mode", None)
+        if raw_mode is None and SM.enabled(self.cfg.data.get("story")):
+            raw_mode = SP.default_raw(self.cfg.path("runtime") / "story_presets.json")            # mẫu mặc định (chọn Story Remix một lần): áp cho job không chọn gì
+        sm = SM.resolve_for_job(raw_mode, self.cfg.data.get("story"))   # chế độ truyện: chỉ lưu khi Story Remix (job cũ/Story thường không đổi); chưa khả dụng ⇒ từ chối
         if sm:
             merged["story_mode"] = sm
         if merged.get("prosody"):

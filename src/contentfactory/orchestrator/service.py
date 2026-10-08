@@ -26,6 +26,8 @@ from ..media import image_pool as IPOOL
 from ..source import discovery as DISC
 from ..story import guidance as GD
 from ..story import mode as SM
+from ..story import presets as SP
+from ..story_remix import estimate as EST
 from ..output import metadata as MD
 from ..tts import prosody as PRO
 from . import auto as AU
@@ -1133,7 +1135,13 @@ class Service:
         if sel and cands:
             premises = [{"id": p["id"], "logline": p["logline"], "total": sel["scores"].get(p["id"], {}).get("total"), "selected": p["id"] == sel["selected"],
                          "reason": next((r["reason"] for r in sel["rejected"] if r["id"] == p["id"]), "")} for p in cands["candidates"]]
-        return {"active": True, "mode": mode, "ready": bool(outline), "dna": rd("source_dna.json"), "premises": premises, "selection_min": sel and sel.get("min_select"), "cast": rd("character_cast.json"),
+        src = next((a for a in self.orc.store.artifacts(job_id) if a["kind"] == "transcript"), None)
+        try:
+            src_chars = (job_dir(self.cfg.path("workspace"), job_id) / src["path"]).stat().st_size // 2 if src else None        # byte → ký tự: ước lượng thô cho tiếng Việt UTF-8
+        except OSError:
+            src_chars = None
+        est = EST.estimate(mode["story"], j["params"].get("story_profile") or {}, src_chars or 60_000, (self.cfg.data.get("story_remix") or {}).get("price_usd_per_mtok"))
+        return {"active": True, "mode": mode, "estimate": est, "ready": bool(outline), "dna": rd("source_dna.json"), "premises": premises, "selection_min": sel and sel.get("min_select"), "cast": rd("character_cast.json"),
                 "originality": rd("originality_report.json"), "quality": rd("quality_report.json"), "bible": (lambda b: b and {"title": b["title"], "themes": b["themes"]})(rd("story_bible.json")),
                 "outline": outline and [{"n": c["n"], "title": c["title"], "payoff": c["payoff"] and c["payoff"]["type"], "cast": len(c["cast"])} for c in outline["chapters"]],
                 "cost": cost and {k: v for k, v in cost.items() if k != "call_log"}, "chapters_done": done,
@@ -1162,12 +1170,55 @@ class Service:
     # ---- Chế độ truyện (Story Remix | Story hiện có)
     def story_mode_info(self) -> dict:
         """Mô tả cho UI: các mode (kèm khả dụng + lý do), schema trường, mặc định hệ thống. Cùng schema server dùng để kiểm."""
-        return SM.describe(self.cfg.data.get("story"))
+        d = SM.describe(self.cfg.data.get("story"))
+        pr = SP.load(self._presets_file())
+        d["presets"] = [{"name": n, "story": p["story"], "character_universe": p["character_universe"], "saved_at": p["saved_at"]} for n, p in sorted(pr["presets"].items())]
+        d["default_preset"] = pr["default"] if d["available"] else None
+        d["estimate_note"] = "Ước tính thô; xem /api/story-mode/estimate"
+        return d
+
+    def _presets_file(self):
+        return self.cfg.path("runtime") / "story_presets.json"
+
+    def story_preset_save(self, name: str, body: dict) -> dict:
+        try:
+            SP.save_preset(self._presets_file(), name, body["story_mode"] if "story_mode" in body else {k: v for k, v in body.items() if k != "make_default"}, self.cfg.data.get("story"))
+            if body.get("make_default"):
+                SP.set_default(self._presets_file(), name)
+        except StageError as e:
+            raise _err(e.code, e.message, (e.detail or {}).get("hint", "")) from None
+        return self.story_mode_info()
+
+    def story_preset_delete(self, name: str) -> dict:
+        try:
+            SP.delete_preset(self._presets_file(), name)
+        except StageError as e:
+            raise _err(e.code, e.message) from None
+        return self.story_mode_info()
+
+    def story_preset_default(self, body: dict) -> dict:
+        try:
+            SP.set_default(self._presets_file(), body.get("name") or None)
+        except StageError as e:
+            raise _err(e.code, e.message) from None
+        return self.story_mode_info()
+
+    def story_mode_estimate(self, payload: dict) -> dict:
+        """Ước tính trước (thô, công khai giả định) số lượt gọi/token/USD của một job Story Remix với cấu hình hiện tại của form."""
+        try:
+            m = SM.parse({"mode": "story_remix", **{k: v for k, v in ((payload or {}).get("story_mode") or {}).items() if k != "mode"}}, self.cfg.data.get("story"))
+        except StageError as e:
+            raise _err(e.code, e.message, (e.detail or {}).get("hint", "")) from None
+        chars = (payload or {}).get("source_chars")
+        if chars is not None and (isinstance(chars, bool) or not isinstance(chars, int) or not 1000 <= chars <= 5_000_000):
+            raise _err("INVALID_ESTIMATE", "source_chars phải là số nguyên 1000–5000000.")
+        return EST.estimate(m["story"], (payload or {}).get("story_profile") or {}, chars or 60_000, (self.cfg.data.get("story_remix") or {}).get("price_usd_per_mtok"))
 
     def story_mode_effective(self, payload: dict) -> dict:
         """Cấu hình hiệu lực (kèm nguồn từng giá trị) cho lựa chọn hiện tại của form; sai ⇒ lỗi rõ ràng, không ép kiểu."""
         try:
-            return SM.effective((payload or {}).get("story_mode"), self.cfg.data.get("story"))
+            pre = (SP.load(self._presets_file())["presets"].get((payload or {}).get("preset") or "") or None)
+            return SM.effective((payload or {}).get("story_mode"), self.cfg.data.get("story"), pre)
         except StageError as e:
             raise _err(e.code, e.message, (e.detail or {}).get("hint", "")) from None
 

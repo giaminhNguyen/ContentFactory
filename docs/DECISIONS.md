@@ -704,3 +704,12 @@ Các quyết định D-43…D-49 là **tài liệu**; code chưa đổi. Điều
 - Không có `project.title`/`title_source`: thumbnail, output và publish dùng `meta["title"]` (tiêu đề video nguồn).
 - Không có Channel Config, `channel.name`, Metadata Builder, Sequence Manager; mô tả đăng là 300 ký tự đầu của `story.txt`.
 - `stage_key` băm toàn bộ `params` (xem D-48).
+
+## 9. Story Remix + Living Character Universe (D-114…D-119)
+
+- **D-114 — Story Remix là mode song song, chọn theo job.** `params.story_mode` chỉ lưu khi Remix; job cũ không đổi (stage_key không đổi). `StoryModeRouter` bọc adapter Story, không thêm stage toàn cục. Remix chưa sẵn sàng thì từ chối rõ ràng (không bao giờ chạy nhầm sang Story cũ).
+- **D-115 — Kho nhân vật bằng SQLite riêng (`runtime/universe.db`), Excel chỉ xuất/nhập.** Revision toàn kho + khóa lạc quan theo nhân vật; lõi chỉ stdlib (XLSX tự ghi/đọc bằng zipfile).
+- **D-116 — Cô lập nguồn.** Chỉ phân tích DNA và cổng đọc transcript; bộ sinh nhận DNA trừu tượng + dàn nhân vật đã chốt. Báo cáo originality là số đo + nhận xét + độ không chắc chắn, không phải xác nhận bản quyền.
+- **D-117 — Autocast tất định và giải thích được.** Reuse là ưu tiên, không vượt sàn fit; chọn cả dàn; nhân vật mới chỉ staged tới khi QA cuối đạt; dàn đóng băng trước khi viết.
+- **D-118 — Publish nguyên tử + idempotent; hoàn tác chỉ khi an toàn.** Lỗi publish không làm hỏng truyện đã đạt QA; có nút cập nhật thủ công idempotent.
+- **D-119 — Chi phí trung thực.** Ledger chỉ ghi số nhà cung cấp báo (thiếu = unknown); ngân sách dừng theo chi phí ĐÃ BIẾT; ước tính công khai giả định và không bịa giá. Benchmark đa thể loại chạy với LLM giả chỉ chứng minh đường ống, không chứng minh chất lượng/chi phí thật.

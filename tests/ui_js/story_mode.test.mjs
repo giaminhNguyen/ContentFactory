@@ -73,3 +73,37 @@ test("list <-> text và đếm mục đã tuỳ chỉnh", async () => {
   st.character_universe.auto_cast = false;
   assert.equal(m.changedCount(info, st), 2);
 });
+
+test("mẫu cấu hình: nạp vào form, khôi phục mặc định giữ chế độ, tên mẫu hợp lệ", async () => {
+  const m = await load("story_mode_logic.js");
+  const preset = { name: "P", story: { tone: "u ám", ending: "happy" }, character_universe: { auto_cast: false } };
+  const st = m.stateFromPreset(info, preset);
+  assert.equal(st.mode, m.REMIX);
+  assert.equal(st.story.tone, "u ám");
+  assert.equal(st.story.quality_repair_max_passes, 1);                 // phần thiếu lấy mặc định hệ thống
+  assert.equal(st.character_universe.auto_cast, false);
+  assert.equal(m.stateFromPreset(info, null).mode, "story_branch");
+  assert.equal(m.presetByName({ presets: [preset] }, "P"), preset);
+  const reset = m.resetToDefaults(info, st);
+  assert.equal(reset.story.tone, "");
+  assert.equal(reset.mode, m.REMIX);                                    // giữ chế độ đang chọn
+  assert.equal(m.validPresetName("Trinh thám u ám"), true);
+  for (const bad of ["", "a/b", "x".repeat(41), "-x"]) assert.equal(m.validPresetName(bad), false);
+});
+
+test("ước tính + định dạng giá trị hiệu lực, không bịa USD", async () => {
+  const m = await load("story_mode_logic.js");
+  const est = { calls: { min: 19, max: 35 }, input_tokens: { min: 122000, max: 200000 }, output_tokens: { min: 30000, max: 60000 }, chapters: 14, usd: null };
+  const l = m.estimateLines(est, null);
+  assert.match(l[0], /19–35 lượt.*14 chương/);
+  assert.match(l[1], /không rõ/);
+  assert.equal(m.estimateLines(est, 10).length, 3);                      // có ngân sách mà không có giá: nói rõ giới hạn của việc chặn
+  const priced = { ...est, usd: { min: 0.8, max: 1.4 } };
+  assert.equal(m.estimateLines(priced, 5).length, 2);
+  assert.match(m.estimateLines(priced, 1)[2], /cao hơn ngân sách/);
+  assert.equal(m.formatValue({ type: "bool" }, true), "Bật");
+  assert.equal(m.formatValue({ type: "list" }, []), "—");
+  assert.equal(m.formatValue({ type: "select", key: "ending" }, "happy"), "Có hậu");
+  assert.equal(m.formatValue({ type: "number_or_null" }, null), "—");
+  assert.equal(m.SOURCE_LABEL.preset, "từ mẫu");
+});
