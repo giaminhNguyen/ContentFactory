@@ -939,25 +939,25 @@ UI phai hien duoc timeline/summary toi thieu tu data nay hoac trang run hien co 
 
 Agent **CHI DUOC DUNG** khi tat ca muc sau pass:
 
-- [ ] Worker/Driver abstraction hoan tat.
-- [ ] Pipeline Story khong hardcode vendor.
-- [ ] Discovery + manual add hoat dong.
-- [ ] Worker lifecycle hoat dong.
-- [ ] Model config hoat dong.
-- [ ] Pool lifecycle + reorder hoat dong.
-- [ ] Routing config hoat dong.
-- [ ] Retry/fallback quota/auth/timeout/invalid-output hoat dong.
-- [ ] Simple cooldown hoat dong.
-- [ ] Attempt persistence hoat dong.
-- [ ] Attempt workspace + validation + atomic promote hoat dong.
-- [ ] Cross-worker safe handoff test pass.
-- [ ] Routing simulator pass.
-- [ ] Doctor pass.
-- [ ] UI Workers/Pool/Routing day du state va lifecycle.
-- [ ] UI visual review dat yeu cau cua `ui-ux-pro-max-skill`.
-- [ ] Motion review dat yeu cau cua `gsap-skills`.
-- [ ] Existing test suite khong regression.
-- [ ] W1 integration fault-injection scenario pass.
+- [x] Worker/Driver abstraction hoan tat.
+- [x] Pipeline Story khong hardcode vendor.
+- [x] Discovery + manual add hoat dong.
+- [x] Worker lifecycle hoat dong.
+- [x] Model config hoat dong.
+- [x] Pool lifecycle + reorder hoat dong.
+- [x] Routing config hoat dong.
+- [x] Retry/fallback quota/auth/timeout/invalid-output hoat dong.
+- [x] Simple cooldown hoat dong.
+- [x] Attempt persistence hoat dong.
+- [x] Attempt workspace + validation + atomic promote hoat dong.
+- [x] Cross-worker safe handoff test pass.
+- [x] Routing simulator pass.
+- [x] Doctor pass.
+- [x] UI Workers/Pool/Routing day du state va lifecycle.
+- [x] UI visual review dat yeu cau cua `ui-ux-pro-max-skill`.
+- [x] Motion review dat yeu cau cua `gsap-skills`.
+- [x] Existing test suite khong regression.
+- [x] W1 integration fault-injection scenario pass.
 
 Neu mot checkbox chua pass -> W1 CHUA XONG.
 

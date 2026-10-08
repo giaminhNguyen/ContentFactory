@@ -626,6 +626,7 @@
   - **Nối pipeline bằng tiêm phụ thuộc** ở `orchestrator/registry.py` (như adapter `runner=` hiện có) thay vì để `adapters` import `workers`.
 - **Giữ nguyên:** `--host claude-code` trong `_deploy()` của oh-story là host name của script deploy **của oh-story**, không phải nhánh vendor trong pipeline.
 - **W1.13 — session-scoping (đã làm):** manager không truyền `session` cho mọi attempt. Worker đầu nhận session resume (`session_owner`), retry **cùng worker** giữ session; worker khác sau fallback nhận `session=None` và tự topic từ checkpoint/artifact đã commit trên đĩa (cwd dùng chung). Raw terminal log không phải context mặc định; partial output chưa commit không canonical.
+- **W1 STOP GATE — đã pass (2026-10-08):** đủ 19/19 mục; xem `Promtps/WORKER_RUNTIME_EXECUTION_PLAN.md` dòng 938–962. UI visual review (W1.25, ui-ux-pro-max & gsap-skills): panels Workers/Pools/Routing đạt — state luôn có chữ + biểu tượng, aria-labels, focus-visible, drag có phím thay thế (nút lên/xuống, WCAG 2.2), `aria-live` cho simulator, `prefers-reduced-motion` toàn cục, chỉ transition transform/color (120–200ms), không animate width/height. Hai test pre-existing flaky/network không liên quan W1: `test_source_adapter.py` (YouTube mạng) và `test_phase8.py::...checkpoint_and_the_way_back` (timing) — đã xác nhận fail y hệt trên commit trước W1.
 - **Hướng dẫn:** xem `Promtps/WORKER_RUNTIME_EXECUTION_PLAN.md` (W1–W3).
 
 ## 2. Câu hỏi còn mở
