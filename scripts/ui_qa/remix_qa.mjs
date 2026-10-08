@@ -51,11 +51,14 @@ if (wanted("run")) {
     const remix = page.locator('.sm-editor input[type=radio][value=story_remix]');
     const legacy = page.locator('.sm-editor input[type=radio][value=story_branch]');
     check(`run/${label}: Story hiện có được chọn sẵn`, await legacy.isChecked());
-    check(`run/${label}: Story Remix bị khóa kèm lý do`, (await remix.isDisabled()) && /chưa khả dụng|đang được phát triển/i.test(await page.locator(".sm-editor").innerText()));
+    check(`run/${label}: Story Remix chọn được (không còn bị khóa)`, (await remix.isEnabled()) && !/chưa khả dụng/i.test(await page.locator(".sm-editor").innerText()));
     await page.locator(".sm-editor button[aria-expanded]").first().click();
     await settle(page, 300);
-    check(`run/${label}: xem được cấu hình mặc định (Kho nhân vật bật)`, /Tự chọn nhân vật/.test(await page.locator(".sm-editor").innerText()));
-    check(`run/${label}: form chỉ-đọc khi Remix chưa khả dụng`, await page.locator(".sm-editor select, .sm-editor textarea").first().isDisabled());
+    check(`run/${label}: form xem trước chỉ-đọc khi đang ở Story hiện có`, await page.locator(".sm-editor select, .sm-editor textarea").first().isDisabled());
+    await remix.check();
+    await settle(page, 200);
+    check(`run/${label}: chọn Story Remix → form sửa được, Kho nhân vật bật sẵn đúng cấu hình đã chọn`, await page.locator(".sm-editor select").first().isEnabled()
+      && /Tự chọn nhân vật/.test(await page.locator(".sm-editor").innerText()) && /Tự cập nhật kho sau QA/.test(await page.locator(".sm-editor").innerText()));
     await shot(page, `run-${label}`);
     check(`run/${label}: khối Chế độ truyện nằm trong khung nhìn`, await page.evaluate(() => document.querySelector(".sm-editor").getBoundingClientRect().right <= window.innerWidth + 1));
     if (label !== "mobile") await axe(page, `run/${label}`);
@@ -76,6 +79,26 @@ if (wanted("run")) {
   await page.waitForURL(/#\/jobs\//, { timeout: 15000 });
   check("run: job Story hiện có được tạo và không gửi story_mode", sent.length === 1 && !("story_mode" in sent[0]));
   clean(page, "run/submit");
+  // Story Remix: một cú bấm RUN, mọi thứ còn lại tự động (LLM giả của chế độ thử nghiệm)
+  const page2 = await newPage();
+  const sent2 = [];
+  page2.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith("/api/runs")) sent2.push(JSON.parse(r.postData() || "{}")); });
+  await go(page2, "/");
+  await page2.fill("#run-input", fx.srt);
+  await page2.waitForSelector(".sm-editor:not([hidden])", { timeout: 15000 });
+  await page2.locator(".mode:has-text('Chỉ viết truyện')").click();
+  await page2.locator('.sm-editor input[type=radio][value=story_remix]').check();
+  const req2 = page2.locator("input[placeholder^='Bắt buộc']");
+  if (await req2.count()) await req2.fill("Truyện Remix thử");
+  await page2.waitForFunction(() => !document.querySelector("button.btn.primary.lg")?.disabled, null, { timeout: 10000 });
+  await page2.click("button:has-text('RUN')");
+  await page2.waitForURL(/#\/jobs\//, { timeout: 15000 });
+  check("run: Story Remix gửi story_mode với cấu hình Kho nhân vật đã chọn", sent2.length === 1 && sent2[0].story_mode?.mode === "story_remix" && sent2[0].story_mode.character_universe.auto_cast === true
+    && sent2[0].story_mode.character_universe.reuse_strategy === "reuse" && sent2[0].story_mode.character_universe.canon_mode === "parallel" && sent2[0].story_mode.character_universe.auto_update_after_qa === true);
+  await page2.waitForSelector("text=QA cuối truyện: đạt", { timeout: 90000 });
+  check("run: job Story Remix chạy hết, hiện kế hoạch + chương + QA cuối", /chương/.test(await page2.locator("section:has(#rp-h)").innerText()) && /Dàn nhân vật/.test(await page2.locator("section:has(#rp-h)").innerText()));
+  await shot(page2, "remix-job-done");
+  clean(page2, "run/remix-submit");
 }
 
 // ---------------------------------------------------------------------------------------------------- Phase 2: Kho nhân vật
@@ -150,6 +173,7 @@ if (wanted("cast")) {
     const page = await newPage(opts);
     await go(page, "/universe");
     await page.click("#tab-stories");
+    await page.click("#panel-stories button.uv-card:has-text('demo-1')");
     await page.waitForSelector(".uv-member");
     check(`cast/${label}: hiện dàn 3 nhân vật với vai + lý do`, (await page.locator(".uv-member").count()) === 3 && /Dùng lại từ kho/.test(await page.locator("#panel-stories .uv-detail").innerText()) && /Mới \(chờ QA\)/.test(await page.locator("#panel-stories .uv-detail").innerText()));
     check(`cast/${label}: có sơ đồ quan hệ và danh sách chữ tương đương`, (await page.locator("svg.uv-graph").count()) === 1 && (await page.locator(".uv-rel li").count()) === 2);
@@ -168,6 +192,24 @@ if (wanted("cast")) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------- Phase 5: dừng chờ xem báo cáo → tiếp tục (cần fixture --remix-review-demo)
+if (wanted("review")) {
+  const page = await newPage();
+  await go(page, `/jobs/${fx.remix_review_job}`);
+  await page.waitForSelector("text=Kế hoạch sẽ cần bạn xem lại, text=cần bạn xem báo cáo", { timeout: 60000 }).catch(() => {});
+  await page.waitForSelector("button:has-text('Tôi đã xem báo cáo')", { timeout: 60000 });
+  const card = page.locator("section:has(#rp-h)");
+  check("review: job dừng với lý do rõ + báo cáo originality hiển thị bằng chứng và độ không chắc chắn", /cần bạn xem báo cáo/.test(await card.innerText()) && /Độ không chắc chắn/.test(await card.innerText()));
+  check("review: không tuyên bố an toàn bản quyền", !/an toàn bản quyền|đã xác minh/i.test((await card.innerText()).replace("KHÔNG phải xác nhận quyền sử dụng hay an toàn bản quyền", "")));
+  await shot(page, "review-stop");
+  await axe(page, "review/stop");
+  await page.click("button:has-text('Tôi đã xem báo cáo')");
+  await page.waitForSelector("text=QA cuối truyện: đạt", { timeout: 90000 });
+  check("review: bấm tiếp tục → job chạy hết và QA cuối đạt", true);
+  await shot(page, "review-done");
+  clean(page, "review");
+}
+
 // ---------------------------------------------------------------------------------------------------- Phase 4: thẻ Kế hoạch Story Remix (cần fixture --remix-demo)
 if (wanted("plan")) {
   for (const [label, opts] of [["desktop", {}], ["mobile", { width: 390, height: 844 }], ["dark", { scheme: "dark" }]]) {
@@ -183,7 +225,7 @@ if (wanted("plan")) {
     check(`plan/${label}: không lọt 'null'/'undefined'`, !/(null|undefined)/.test(await page.locator("#view").innerText()));
     if (label === "desktop") {
       await page.click("button:has-text('Kiểm tra nhịp thưởng cảm xúc')");
-      check("plan: đại cương đã được sửa 1 lượt hiển thị", /Đã sửa đại cương 1 lượt/.test(await card.innerText()));
+      check("plan: mở mục nhịp thưởng thấy kết quả Đạt", /Đạt/.test(await card.innerText()));
     }
     await shot(page, `plan-${label}`);
     await noOverflowEl(page, "section:has(#rp-h)", `plan/${label}`);

@@ -13,6 +13,8 @@ import importlib
 from pathlib import Path
 
 from ..adapters import fake
+from ..adapters.claude_llm import ClaudeCliLLM
+from ..adapters.fake_remix import FakeRemixLLM
 from ..audio.processor import FfmpegAudio
 from ..adapters.story_branch import StoryBranchAdapter
 from ..output.publisher import BuiltinOutputPublisher
@@ -20,8 +22,12 @@ from ..publish.yt_uploader import YtUploaderPublish
 from ..render.contentflow import ContentFlowRender
 from ..source.chain import ProviderChain
 from ..tts.planner import RuleSegmentPlanner
+from ..story_remix.adapter import StoryRemixAdapter
+from ..universe import Universe, UniverseDB
 from ..source.providers import LocalSubtitleProvider, PlainTextProvider, SubtitleSupperVipProvider, YtDlpProvider
 from .config import Config
+from .remix_universe import UniverseBridge
+from .story_router import StoryModeRouter
 
 
 def _source_chain(cfg: Config) -> ProviderChain:
@@ -35,6 +41,22 @@ def _source_chain(cfg: Config) -> ProviderChain:
     return ProviderChain([available[n]() for n in src.get("providers", [])], cfg.path("runtime") / "cache" / "source",
                          {"languages": src.get("languages", ["vi", "en"]),
                           "allow_translation": src.get("allow_translation", False)})
+
+
+def _remix(cfg: Config) -> StoryRemixAdapter:
+    """Story Remix: LLM (fake khi adapter story là fake; ngược lại Claude CLI) + Kho nhân vật (runtime/universe.db, mở lười, dùng chung trong adapter)."""
+    rc = cfg.data.get("story_remix") or {}
+    kind = rc.get("llm", "auto")
+    if kind == "auto":
+        kind = "fake" if cfg["adapters"]["story"] == "fake" else "claude_cli"
+    llm = FakeRemixLLM() if kind == "fake" else ClaudeCliLLM({**(cfg.data.get("story_branch") or {}), **rc})
+    holder: dict = {}
+
+    def universe() -> UniverseBridge:
+        if "u" not in holder:
+            holder["u"] = UniverseBridge(Universe(UniverseDB(cfg.path("runtime") / "universe.db")))
+        return holder["u"]
+    return StoryRemixAdapter(llm, universe)
 
 
 def _contentflow(cfg: Config) -> ContentFlowRender:
@@ -58,8 +80,8 @@ def _factories(cfg: Config) -> dict:
     return {
         ("source", "fake"): fake.FakeSource,
         ("source", "provider_chain"): lambda: _source_chain(cfg),
-        ("story", "fake"): fake.FakeStory,
-        ("story", "story_branch"): lambda: StoryBranchAdapter(sb, oh_root),
+        ("story", "fake"): lambda: StoryModeRouter(fake.FakeStory(), lambda: _remix(cfg)),
+        ("story", "story_branch"): lambda: StoryModeRouter(StoryBranchAdapter(sb, oh_root), lambda: _remix(cfg)),
         ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("render", "contentflow"): lambda: _contentflow(cfg),

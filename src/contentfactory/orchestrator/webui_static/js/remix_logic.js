@@ -22,3 +22,24 @@ export function premiseRows(list) {
 }
 
 export const qualityIssues = (q) => (q.issues || []).map((i) => i.message);
+
+/** Hành động tiếp tục (an toàn, KHÔNG đổi nội dung) tương ứng lý do job dừng; backend vẫn kiểm lại. `story` = các khóa gửi cho PUT /story-mode. */
+export function stopActions(stop, story = {}) {
+  if (!stop) return [];
+  if (stop.code === "ORIGINALITY_REVIEW_REQUIRED") return [{ id: "accept", label: "Tôi đã xem báo cáo — tiếp tục", patch: { review_accepted: true } }];
+  if (stop.code === "BUDGET_EXCEEDED") return [{ id: "budget", label: "Nâng ngân sách và tiếp tục", needs: "budget_usd" }];
+  if (["CHAPTER_QA_FAILED", "OUTLINE_GATE_FAILED"].includes(stop.code)) {
+    const cur = Number.isInteger(story.quality_repair_max_passes) ? story.quality_repair_max_passes : 1;
+    return cur >= 3 ? [] : [{ id: "repair", label: `Cho thêm 1 lượt sửa (hiện ${cur}) và tiếp tục`, patch: { quality_repair_max_passes: cur + 1 } }];
+  }
+  return [];
+}
+
+/** Tóm tắt viết chương: {done, total, repaired, warned}. */
+export function writeProgress(plan) {
+  const total = plan.outline ? plan.outline.length : 0;
+  const w = plan.writer || [];
+  return { done: plan.chapters_done || 0, total, repaired: w.filter((c) => c.repairs).length, warned: w.filter((c) => c.issues.length).length };
+}
+
+export const budgetValid = (v) => v !== "" && Number.isFinite(Number(v)) && Number(v) >= 1 && Number(v) <= 5000;

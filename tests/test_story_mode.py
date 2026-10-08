@@ -81,6 +81,7 @@ class SubmitTest(RootCase):
         j = orc.submit(params(story_mode={"mode": "story_branch", "story": {"tone": "x"}}), mode="STORY_ONLY")
         self.assertNotIn("story_mode", orc.store.get_job(j)["params"])
 
+    @mock.patch.object(SM, "BACKEND_READY", False)
     def test_remix_is_rejected_while_unavailable_and_creates_no_job(self):
         orc = self.orc()
         with self.assertRaises(StageError) as e:
@@ -105,6 +106,7 @@ class SubmitTest(RootCase):
             self.assertIn("story_mode", orc.stage_extra("story", p))
             self.assertEqual(orc.stage_extra("source", p), {})
 
+    @mock.patch.object(SM, "BACKEND_READY", False)
     def test_unavailable_default_mode_does_not_break_old_jobs(self):
         orc = self.orc()
         orc.cfg.data["story"]["default_mode"] = "story_remix"                                                  # lệch cấu hình: vẫn chạy Story hiện có
@@ -112,7 +114,30 @@ class SubmitTest(RootCase):
         self.assertNotIn("story_mode", orc.store.get_job(j)["params"])
 
 
+class AvailabilityTest(RootCase):
+    def test_remix_available_by_default_and_can_be_switched_off(self):
+        orc = self.orc()
+        j = orc.submit(params(story_mode=FULL), mode="STORY_ONLY")
+        self.assertEqual(orc.store.get_job(j)["params"]["story_mode"]["mode"], "story_remix")
+        orc.cfg.data["story"]["remix_enabled"] = False
+        with self.assertRaises(StageError) as e:
+            orc.submit(params(story_mode=FULL), mode="STORY_ONLY")
+        self.assertEqual(e.exception.code, "REMIX_UNAVAILABLE")
+        self.assertIn("Cài đặt", e.exception.message)
+        self.assertEqual(SM.default_mode({"default_mode": "story_remix", "remix_enabled": False}), "story_branch")
+
+    def test_settings_default_mode_applies_to_jobs_without_explicit_mode(self):
+        orc = self.orc()
+        AdminService(orc).update_settings({"story.default_mode": "story_remix"})
+        j = orc.submit(params(), mode="STORY_ONLY")                                                 # không chọn gì: dùng mặc định trong Cài đặt
+        self.assertEqual(orc.store.get_job(j)["params"]["story_mode"]["mode"], "story_remix")
+        k = orc.submit(params(story_mode={"mode": "story_branch"}), mode="STORY_ONLY")              # chọn rõ Story hiện có thì thắng mặc định
+        self.assertNotIn("story_mode", orc.store.get_job(k)["params"])
+        self.assertTrue(Service(orc).story_mode_info()["available"])
+
+
 class ApiTest(RootCase):
+    @mock.patch.object(SM, "BACKEND_READY", False)
     def test_service_exposes_schema_and_effective_config(self):
         svc = Service(self.orc())
         info = svc.story_mode_info()
@@ -125,6 +150,7 @@ class ApiTest(RootCase):
             svc.story_mode_effective({"story_mode": {"mode": "story_remix", "story": {"ending": "zzz"}}})
         self.assertEqual(e.exception.code, "INVALID_STORY_MODE")
 
+    @mock.patch.object(SM, "BACKEND_READY", False)
     def test_settings_cannot_default_to_unavailable_remix(self):
         adm = AdminService(self.orc())
         with self.assertRaises(StageError) as e:

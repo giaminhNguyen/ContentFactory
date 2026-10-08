@@ -21,8 +21,8 @@ DESCRIPTIONS = {
     "story_remix": "Học mô-típ, thể loại và cơ chế cảm xúc của nguồn rồi viết một truyện ORIGINAL: nhân vật, xung đột và diễn biến khác hẳn. "
                    "Tự chọn/tạo nhân vật từ Kho nhân vật và tự cập nhật kho sau khi truyện đạt QA.",
 }
-# Story Remix chỉ chạy được khi backend đã hoàn tất; lật True ở Phase 5. Cờ người dùng: Settings `story.remix_enabled`.
-BACKEND_READY = False
+# Story Remix chạy được khi backend hoàn tất (adapter + router + QA). Cờ người dùng để tắt: Settings `story.remix_enabled`.
+BACKEND_READY = True
 
 ENDINGS = ("auto", "happy", "bittersweet", "open", "tragic")
 READABILITY = ("standard", "high")

@@ -626,6 +626,17 @@ class HttpTest(UiCase):
             return e.code, (json.loads(raw_body) if raw_body else {}), e.headers
 
     def test_story_mode_endpoints_and_create_run(self):
+        from unittest import mock
+        from contentfactory.story import mode as SM
+        with mock.patch.object(SM, "BACKEND_READY", False):
+            self._story_mode_unavailable()
+        code, info, _ = self.call("GET", "/api/story-mode")
+        self.assertEqual((code, info["available"]), (200, True))
+        code, ok, _ = self.call("POST", "/api/runs", {"input": {"value": URL}, "channel": "kenh", "run": "story", "title": "Truyện remix", "story_mode": {"mode": "story_remix", "story": {"tone": "u ám"}}})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.o.store.get_job(ok["job_id"])["params"]["story_mode"]["story"]["tone"], "u ám")
+
+    def _story_mode_unavailable(self):
         self.app.stop()
         code, info, _ = self.call("GET", "/api/story-mode")
         self.assertEqual((code, info["available"], info["default_mode"]), (200, False, "story_branch"))

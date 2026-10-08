@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
-_NAME = re.compile(r"(?<![.!?…]\s)(?<!^)\b([A-ZÀ-ỸĐ][^\W\d_]+(?:\s+[A-ZÀ-ỸĐ][^\W\d_]+){0,2})\b", re.UNICODE)
+_TOKEN = re.compile(r"[^\W\d_]+", re.UNICODE)
 _STOP_CAPS = {"Tôi", "Anh", "Chị", "Em", "Ông", "Bà", "Cô", "Chú", "Bác", "Mình", "Hôm", "Nhưng", "Và", "Rồi", "Khi", "Nếu", "Vì", "Sau", "Trước", "Một", "Những", "Các", "Đó", "Đây", "Chương"}
 
 
@@ -24,13 +24,26 @@ def containment(text: str, source: str, n: int = 4) -> float:
 
 
 def proper_names(source: str, min_count: int = 2) -> list[str]:
-    """Tên riêng (cụm Viết Hoa giữa câu) xuất hiện ≥ min_count lần trong nguồn. Heuristic: transcript ASR thường không viết hoa ⇒ có thể bỏ sót (báo là giới hạn)."""
+    """Tên riêng (cụm Viết Hoa liên tiếp ≤ 3 từ; từ đơn đầu câu không tính) xuất hiện ≥ min_count lần. Heuristic: transcript ASR thường không viết hoa ⇒ có thể bỏ sót (báo là giới hạn)."""
+    text = source or ""
+    toks = [(m.group(0), m.start()) for m in _TOKEN.finditer(text)]
     counts: dict[str, int] = {}
-    for m in _NAME.finditer(source or ""):
-        nm = m.group(1).strip()
-        if nm.split()[0] in _STOP_CAPS and len(nm.split()) == 1:
+    i = 0
+    while i < len(toks):
+        w, pos = toks[i]
+        if not w[0].isupper():
+            i += 1
             continue
-        counts[nm] = counts.get(nm, 0) + 1
+        j = i
+        while j + 1 < len(toks) and j - i < 2 and toks[j + 1][0][0].isupper() and not re.search(r"[.!?…]\s*$", text[toks[j][1] + len(toks[j][0]):toks[j + 1][1]]):
+            j += 1
+        before = text[:pos].rstrip()
+        at_start = not before or before[-1] in ".!?…" or "\n" in text[len(before):pos]
+        seq = [t[0] for t in toks[i:j + 1]]
+        if not (at_start and len(seq) == 1) and not (len(seq) == 1 and seq[0] in _STOP_CAPS):
+            nm = " ".join(seq)
+            counts[nm] = counts.get(nm, 0) + 1
+        i = j + 1
     return sorted(n for n, c in counts.items() if c >= min_count)
 
 

@@ -12,6 +12,8 @@ DEFAULTS: dict = {
                  "render": "fake", "publish": "fake", "output": "builtin"},
     # Cấu hình truyền vào adapter nạp bằng "package.module:Class": {"tts": {...}} => Class(config). Adapter mới không cần sửa core.
     "adapter_config": {},
+    # Story Remix: llm = "auto" (fake nếu adapters.story là fake, ngược lại claude_cli) | "fake" | "claude_cli"; thêm khóa của ClaudeCliRunner (model, max_budget_usd_per_turn…) nếu cần
+    "story_remix": {"llm": "auto"},
     # công cụ ngoài (cấu hình của MÁY, không vào snapshot): None = tìm trên PATH
     "tools": {"ffmpeg": None, "ffprobe": None,
               # yt_uploader (Phase 6): daemon `yt-uploader serve --headless`; token đọc từ <data_dir>/api_token (mặc định %APPDATA%\\yt-uploader)

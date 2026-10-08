@@ -61,11 +61,15 @@ def run(ctx: StageContext, story: StoryAdapter) -> StageResult:
         report["story_sha256"] = sha256_file(story_path)
         atomic_write_json(report_path, report)
 
+    final = {}
+    fin = getattr(story, "finalize", None)                        # tuỳ chọn: adapter có bước chốt sau khi story.txt hợp lệ (Story Remix: QA cuối + publish Kho nhân vật)
+    if fin is not None:
+        final = fin(story_path.read_text(encoding="utf-8"), ctx) or {}
     chars = len(story_path.read_text(encoding="utf-8"))
     summary = {k: len(v) if isinstance(v, list) else v for k, v in report.items()
                if k in ("sections", "headings_removed", "meta_removed", "recaps_removed", "overlaps_trimmed",
                         "joins", "duplicates_removed", "removed_ratio", "paragraphs")}
     return StageResult([ctx.draft(story_path, "story_text", chars=chars),
                         ctx.draft(report_path, "story_report")],
-                       {"chars": chars, "assembly_reused": reused, **summary, **res.get("stats", {}),
+                       {"chars": chars, "assembly_reused": reused, **summary, **res.get("stats", {}), **final,
                         **({"guidance_source": guide.get("source"), "guidance_hash": guide.get("hash")} if guide.get("text") else {})})

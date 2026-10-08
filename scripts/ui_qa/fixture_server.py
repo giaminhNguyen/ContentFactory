@@ -37,6 +37,7 @@ def main() -> int:
     ap.add_argument("--many", type=int, default=0, help="thêm N job nhỏ (subtitle-only) để kiểm tra danh sách lớn")
     ap.add_argument("--universe-demo", action="store_true", help="gieo vài nhân vật + một dàn nhân vật staged (kiểm tra màn Kho nhân vật/dàn nhân vật)")
     ap.add_argument("--remix-demo", action="store_true", help="tạo một job Story Remix mẫu kèm kế hoạch (LLM giả) để kiểm tra thẻ Kế hoạch Story Remix")
+    ap.add_argument("--remix-review-demo", action="store_true", help="job Story Remix dừng ở ‘cần xem báo cáo originality’ (LLM giả); bấm tiếp tục trên giao diện sẽ chạy hết")
     ap.add_argument("--empty", action="store_true", help="không tạo dữ liệu mẫu (kiểm tra trạng thái trống)")
     a = ap.parse_args()
     root = make_root()
@@ -69,6 +70,16 @@ def main() -> int:
     from tests.test_batches import FakeYouTube, discovery as make_discovery, entry as yt_entry         # noqa: E402 - kênh YouTube giả (chỉ metadata) cho Channel Run
     orc.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(30, live_status="is_upcoming"), yt_entry(29, live_status="was_live")] + [yt_entry(i) for i in range(28, 0, -1)]))
     fx["channel_url"] = "@abc"
+    if a.remix_review_demo:
+        from contentfactory.adapters import fake as _fake                                                    # noqa: E402
+        from contentfactory.adapters.fake_remix import FakeRemixLLM                                          # noqa: E402
+        from contentfactory.orchestrator.remix_universe import UniverseBridge as _UB                         # noqa: E402
+        from contentfactory.orchestrator.story_router import StoryModeRouter                                 # noqa: E402
+        from contentfactory.story_remix.adapter import StoryRemixAdapter                                     # noqa: E402
+        _llm = FakeRemixLLM(review="similar", review_overlaps=[{"aspect": "bối cảnh", "severity": "medium", "evidence": "cùng bối cảnh phản bội trong công ty"}])
+        _br = _UB(orc.universe)
+        orc.adapters["story"] = StoryModeRouter(_fake.FakeStory(), lambda: StoryRemixAdapter(_llm, lambda: _br))
+        fx["remix_review_job"] = orc.submit(params(channel="kenh_a", project={"title": "Truyện Remix cần xem lại"}, story_mode={"mode": "story_remix"}), mode="STORY_ONLY", auto_resume=False)
     if a.remix_demo:
         from unittest import mock                                                                           # noqa: E402
         from contentfactory.jobs.workspace import job_dir                                                    # noqa: E402

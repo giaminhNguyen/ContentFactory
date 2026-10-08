@@ -1117,6 +1117,18 @@ class Service:
             except (OSError, ValueError):
                 return None
         sel, cands, outline, cost = rd("selection_report.json"), rd("premise_candidates.json"), rd("outline.json"), rd("cost_report.json")
+        done = len(list((d / "chapters").glob("ch_*.md"))) if (d / "chapters").is_dir() else 0
+        writer = rd("writer_report.json")
+        stop = None
+        for r in reversed(self.orc.store.stage_runs(job_id)):
+            if r["stage"] == "story":
+                if r["status"] == "failed" and r.get("error"):
+                    try:
+                        e = json.loads(r["error"])
+                        stop = {"code": e.get("code"), "message": e.get("message"), "hint": (e.get("detail") or {}).get("hint", "")}
+                    except ValueError:
+                        stop = None
+                break
         premises = None
         if sel and cands:
             premises = [{"id": p["id"], "logline": p["logline"], "total": sel["scores"].get(p["id"], {}).get("total"), "selected": p["id"] == sel["selected"],
@@ -1124,7 +1136,28 @@ class Service:
         return {"active": True, "mode": mode, "ready": bool(outline), "dna": rd("source_dna.json"), "premises": premises, "selection_min": sel and sel.get("min_select"), "cast": rd("character_cast.json"),
                 "originality": rd("originality_report.json"), "quality": rd("quality_report.json"), "bible": (lambda b: b and {"title": b["title"], "themes": b["themes"]})(rd("story_bible.json")),
                 "outline": outline and [{"n": c["n"], "title": c["title"], "payoff": c["payoff"] and c["payoff"]["type"], "cast": len(c["cast"])} for c in outline["chapters"]],
-                "cost": cost and {k: v for k, v in cost.items() if k != "call_log"}}
+                "cost": cost and {k: v for k, v in cost.items() if k != "call_log"}, "chapters_done": done,
+                "writer": writer and [{"n": c["n"], "chars": c["chars"], "repairs": c["repairs"], "issues": [i["message"] for i in c["issues"]]} for c in writer["chapters"]],
+                "final_qa": rd("final_qa.json"), "stop": stop}
+
+    _STORY_MODE_EDITABLE = {"review_accepted", "budget_usd", "quality_repair_max_passes"}
+
+    def update_story_mode(self, job_id: str, body: dict) -> dict:
+        """Cho phép sửa vài tuỳ chọn KHÔNG đổi nội dung của job Story Remix đang dừng (xem báo cáo/nâng ngân sách/thêm lượt sửa) rồi chạy tiếp từ bước dở: các bước đã xong giữ nguyên."""
+        j = self._job_or_error(job_id)
+        cur = SM.of_job(j["params"])
+        if cur["mode"] != "story_remix":
+            raise _err("NOT_REMIX_JOB", "Job không ở chế độ Story Remix.")
+        patch = body.get("story") or {}
+        bad = sorted(set(patch) - self._STORY_MODE_EDITABLE)
+        if not isinstance(patch, dict) or bad:
+            raise _err("INVALID_STORY_MODE", f"Chỉ sửa được: {', '.join(sorted(self._STORY_MODE_EDITABLE))}.", "Các tuỳ chọn khác thay đổi nội dung truyện: tạo job mới.")
+        new = SM.parse({"mode": "story_remix", "story": {**cur["story"], **patch}, "character_universe": cur["character_universe"]}, self.cfg.data.get("story"))
+        self.orc.store.update_params(job_id, lambda p: {**p, "story_mode": new}, "story mode: " + ", ".join(sorted(patch)))
+        out = {"story_mode": new}
+        if body.get("retry", True) and self.orc.store.get_job(job_id)["state"] == P.FAILED:
+            out.update(self.retry(job_id))
+        return out
 
     # ---- Chế độ truyện (Story Remix | Story hiện có)
     def story_mode_info(self) -> dict:

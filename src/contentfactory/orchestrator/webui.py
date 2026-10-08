@@ -175,6 +175,10 @@ class Api:
     def job_remix(app, m, q, b):
         return app.service.remix_plan(m["id"])
 
+    @route("PUT", r"/api/jobs/(?P<id>[\w\-]+)/story-mode")
+    def job_story_mode(app, m, q, b):
+        return app.service.update_story_mode(m["id"], b)
+
     @route("GET", "/api/story-mode")
     def story_mode(app, m, q, b):
         return app.service.story_mode_info()

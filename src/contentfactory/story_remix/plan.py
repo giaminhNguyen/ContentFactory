@@ -35,10 +35,10 @@ def chapters_for(profile: dict) -> int:
     return int(profile.get("chapters") or math.ceil(target / int(profile.get("chapter_chars", 3000))))
 
 
-def plan_story(llm, universe: UniverseLike, source_text: str, title: str, lang: str, mode_cfg: dict, profile: dict, out_dir: Path, job_id: str | None, ctx=None) -> dict:
+def plan_story(llm, universe: UniverseLike, source_text: str, title: str, lang: str, mode_cfg: dict, profile: dict, out_dir: Path, job_id: str | None, ctx=None, ledger: Ledger | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     st, cu = mode_cfg["story"], mode_cfg["character_universe"]
-    ledger = Ledger(out_dir / "cost_report.json", st.get("budget_usd"))
+    ledger = ledger or Ledger(out_dir / "cost_report.json", st.get("budget_usd"))
     steps = Steps(out_dir)
     src_fp = _sha(source_text)
     story_id = f"job-{job_id}" if job_id else "job-local"

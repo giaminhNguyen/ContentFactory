@@ -69,7 +69,7 @@ export async function mount(root, ctx) {
     sig("control", [JSON.stringify(d.actions), JSON.stringify(d.pending_revision), d.pipeline_revision, d.requested_stages.join()], () => paintControl(d));
     sig("thumb", [JSON.stringify(d.thumbnail), d.pending_revision?.revision], () => paintThumb(d));
     sig("guidance", [JSON.stringify(d.story_guidance)], () => { clear(guidanceHost); const c = storyGuidanceCard(d, { after }); if (c) guidanceHost.append(c); });
-    sig("remix", [d.story_mode?.mode, d.status, JSON.stringify(d.pipeline.map((s) => s.state))], () => { clear(remixHost); const c = remixPlanCard(id, d); if (c) remixHost.append(c); });
+    sig("remix", [d.story_mode?.mode, d.status, JSON.stringify(d.pipeline.map((s) => s.state))], () => { clear(remixHost); const c = remixPlanCard(id, d, { after }); if (c) remixHost.append(c); });
     sig("rerun", [JSON.stringify(d.rerun?.active)], () => { clear(rerunHost); const b = rerunBanner(d); if (b) rerunHost.append(b); });
     const done = finishedSession(lastActive, d.rerun?.active);                       // phiên vừa kết thúc: báo kết quả + làm mới lịch sử
     lastActive = d.rerun?.active || null;
