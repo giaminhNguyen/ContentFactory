@@ -6,6 +6,7 @@ import { badge, btn, busy, alertBox, errorState, skeleton, pageHead, toast, toas
 import { createPoller } from "../poller.js";
 import { bytes, relTime } from "../format.js";
 import { uid } from "../dom.js";
+import { workersPanel } from "./_worker_runtime.js";
 
 const FALLBACK_GROUPS = [["general", "Chung"], ["audio", "Audio"], ["render", "Render"], ["publishing", "Đăng"], ["resources", "Tài nguyên"], ["storage", "Lưu trữ"], ["advanced", "Nâng cao"]];
 const GROUP_META = {
@@ -32,7 +33,7 @@ export async function mount(root, ctx) {
   if (destroyed) return { destroy() {} };
 
   const groups = settings ? settings.groups.map((g) => [g.id, g.label]) : FALLBACK_GROUPS;
-  const items = [["doctor", "Sức khoẻ hệ thống"], ...groups];
+  const items = [["doctor", "Sức khoẻ hệ thống"], ["workers", "Worker Runtime"], ...groups];
   if (!items.some(([id]) => id === tab)) tab = "doctor";
   tabHost.append(tabs({ items, active: tab, label: "Nhóm cài đặt", onSelect: (id) => { tab = id; history.replaceState(null, "", `#/settings/${id}`); show(); } }));
 
@@ -43,6 +44,7 @@ export async function mount(root, ctx) {
     panel.setAttribute("aria-labelledby", `tab-${tab}`);
     panel.replaceChildren();
     if (tab === "doctor") return doctorPanel();
+    if (tab === "workers") return workersPanel(panel);
     if (settingsErr) { panel.append(errorState(settingsErr, () => location.reload())); return; }
     panel.append(settingsPanel(tab, groups.find(([id]) => id === tab)?.[1] || tab));
   }

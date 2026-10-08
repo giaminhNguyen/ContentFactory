@@ -19,3 +19,17 @@
 .check .hint-fix { color: var(--text); font-size: var(--fs-sm); }
 @media (max-width: 520px) { .storage-row { grid-template-columns: minmax(0, 1fr); } }
 .cfg-pre { font-family: var(--mono); font-size: var(--fs-xs); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-1); padding: var(--s-3); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; margin: 0; }
+
+/* Worker Runtime (W1) */
+.wk-list { display: flex; flex-direction: column; gap: var(--s-3); margin-top: var(--s-4); }
+.wk-card { display: flex; flex-direction: column; gap: var(--s-2); }
+.wk-card .wk-name { font-size: var(--fs-md); }
+.wk-meta { max-width: 460px; }
+.wk-card .kv { font-size: var(--fs-sm); }
+.wk-retry { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.wk-retry .select { max-width: 220px; }
+.wk-check { display: flex; gap: var(--s-2); align-items: center; font-size: var(--fs-sm); }
+.wk-sim { margin-top: var(--s-2); }
+.wk-pool-row { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid var(--border); border-radius: var(--r-1); background: var(--surface); font-size: var(--fs-sm); }
+.wk-pool-row.dragging { opacity: 0.4; }
+.wk-pool-row .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
