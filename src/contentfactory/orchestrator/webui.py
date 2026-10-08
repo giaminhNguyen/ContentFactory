@@ -26,6 +26,7 @@ from .service import Service
 from .service_admin import AdminService
 from .service_image_pools import ImagePoolService
 from .service_templates import Raw, TemplateService
+from .worker_admin import WorkerService
 
 STATIC = Path(__file__).resolve().parent / "webui_static"
 MAX_JSON = 1 << 20
@@ -45,6 +46,7 @@ class App:
         self.templates = TemplateService(orc)
         self.watermarks = self.service.watermarks
         self.image_pools = ImagePoolService(orc, self.admin)
+        self.workers = WorkerService(orc.cfg)
         self.token = token or secrets.token_urlsafe(24)
         self.opener = opener
         self.run_loop = run_loop
@@ -124,6 +126,78 @@ class Api:
     @route("GET", "/api/bootstrap")
     def bootstrap(app, m, q, b):
         return app.bootstrap()
+
+    # ----- Worker Runtime (W1)
+    @route("GET", "/api/workers")
+    def workers_list(app, m, q, b):
+        return {"drivers": app.workers.drivers(), "workers": app.workers.workers(), "pools": app.workers.pools()}
+
+    @route("POST", "/api/workers/scan")
+    def workers_scan(app, m, q, b):
+        return app.workers.scan()
+
+    @route("POST", "/api/workers")
+    def worker_add(app, m, q, b):
+        return app.workers.add(str(b.get("name") or ""), str(b.get("driver_id") or ""),
+                               str(b.get("executable") or ""), models=b.get("models"),
+                               probe=bool(b.get("probe", True)))
+
+    @route("POST", r"/api/workers/(?P<id>wkr_\w+)/probe")
+    def worker_probe(app, m, q, b):
+        return app.workers.probe(m["id"])
+
+    @route("PUT", r"/api/workers/(?P<id>wkr_\w+)")
+    def worker_update(app, m, q, b):
+        allowed = {k: b[k] for k in ("name", "executable", "enabled", "models", "concurrency",
+                                     "timeout_s", "driver_id", "profiles") if k in b}
+        return app.workers.update(m["id"], **allowed)
+
+    @route("DELETE", r"/api/workers/(?P<id>wkr_\w+)")
+    def worker_delete(app, m, q, b):
+        return app.workers.remove(m["id"], force=bool(b.get("force")))
+
+    @route("POST", r"/api/workers/(?P<id>wkr_\w+)/enable")
+    def worker_enable(app, m, q, b):
+        return app.workers.set_enabled(m["id"], True)
+
+    @route("POST", r"/api/workers/(?P<id>wkr_\w+)/disable")
+    def worker_disable(app, m, q, b):
+        return app.workers.set_enabled(m["id"], False)
+
+    @route("POST", "/api/workers/pools")
+    def pool_create(app, m, q, b):
+        return app.workers.create_pool(str(b.get("name") or ""), str(b.get("display_name") or ""),
+                                       b.get("members"), str(b.get("strategy") or "priority"),
+                                       enabled=bool(b.get("enabled", True)))
+
+    @route("PUT", r"/api/workers/pools/(?P<name>[^/]+)")
+    def pool_update(app, m, q, b):
+        allowed = {k: b[k] for k in ("display_name", "strategy", "members", "enabled", "new_name") if k in b}
+        return app.workers.update_pool(m["name"], **allowed)
+
+    @route("DELETE", r"/api/workers/pools/(?P<name>[^/]+)")
+    def pool_delete(app, m, q, b):
+        return app.workers.delete_pool(m["name"], force=bool(b.get("force")))
+
+    @route("GET", "/api/workers/routing")
+    def routing_get(app, m, q, b):
+        return app.workers.routing()
+
+    @route("PUT", "/api/workers/routing")
+    def routing_put(app, m, q, b):
+        return app.workers.set_routing(str(b.get("work_type") or ""), str(b.get("pool") or ""),
+                                       str(b.get("model_profile") or ""), b.get("policy"))
+
+    @route("DELETE", r"/api/workers/routing/(?P<work_type>[^/]+)")
+    def routing_delete(app, m, q, b):
+        return {"deleted": app.workers.delete_routing(m["work_type"])}
+
+    @route("GET", "/api/workers/attempts")
+    def worker_attempts(app, m, q, b):
+        return {"attempts": app.workers.attempts(job_id=q.get("job_id", [""])[0] or "",
+                                                 work_type=q.get("work_type", [""])[0] or "",
+                                                 stage=q.get("stage", [""])[0] or "",
+                                                 limit=_int(q, "limit", 100, 1, 500))}
 
     @route("GET", "/api/runtime")
     def runtime(app, m, q, b):

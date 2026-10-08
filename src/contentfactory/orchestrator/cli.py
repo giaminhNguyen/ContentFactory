@@ -237,14 +237,14 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     bt.add_argument("--confirm-large", action="store_true", help="xác nhận tạo hơn 100 job")
     bt.add_argument("--kids", choices=["yes", "no"], help="made_for_kids (cần khi chạy tới publish và kênh chưa khai)")
     bt.add_argument("--request-id", help="chống tạo trùng khi chạy lại cùng lệnh")
-    spn = add("speech-plan", "xem nhịp đọc (speech plan) của job: nhóm tổng hợp, khoảng nghỉ, cảnh báo QC; sửa bằng `update --params`")
+    spn = add("speech-plan", "xem nhịp đọc (speech plan) của job: nhóm tổng hợp, khoảng nghỉ, cảnh báo QC; sửa bằng `job-update --params`")
     spn.add_argument("job_id")
     spn.add_argument("--all", action="store_true", help="gồm cả ranh giới nằm trong nhóm (do engine tự xử lý)")
     pa = add("pause", "tạm dừng AN TOÀN job (hoàn tất đơn vị đang chạy rồi dừng); `resume <job>` để chạy tiếp")
     pa.add_argument("job_id")
     ca = add("cancel", "hủy job (không tự chạy lại; kết quả đã có được giữ)")
     ca.add_argument("job_id")
-    up = add("update", "đổi pipeline/config của job đang sống: xem impact rồi áp dụng ở điểm an toàn")
+    up = add("job-update", "đổi pipeline/config của job đang sống: xem impact rồi áp dụng ở điểm an toàn")
     up.add_argument("job_id")
     up.add_argument("--stages", help="các stage muốn có kết quả, cách nhau dấu phẩy (thay pipeline hiện tại)")
     up.add_argument("--patch", help="JSON gộp sâu vào config ngữ nghĩa của job")
@@ -328,6 +328,10 @@ def build_parser(advanced: bool) -> argparse.ArgumentParser:
     rtp.add_argument("--version", help="ghim version (mặc định latest_published)")
     cl = add("cleanup", "Auto Cleanup ngay (không đụng output/); --dry-run để chỉ xem")
     cl.add_argument("--dry-run", action="store_true")
+    wk = add("workers", "Worker Runtime (W1): scan | list | probe <id> | pick <work_type>")
+    wk.add_argument("action", nargs="?", default="list", choices=["scan", "list", "probe", "pick"])
+    wk.add_argument("arg", nargs="?")
+    wk.add_argument("--json", action="store_true")
     return ap
 
 
@@ -387,6 +391,58 @@ def _fmt_bytes(n: float) -> str:
     return f"{n / 2 ** 30:.2f} GB" if n >= 2 ** 30 else f"{n / 2 ** 20:.1f} MB"
 
 
+# ------------------------------------------------------------------------------------------ Worker Runtime (W1.15)
+def _print_workers(ws: list[dict]) -> None:
+    if not ws:
+        print("chưa có worker nào; chạy `contentfactory workers scan` để phát hiện CLI.")
+        return
+    print(f"{'WORKER':<28}{'DRIVER':<12}{'EXE':<44}{'VERSION':<16}{'AUTH':<12}{'MODEL':<14}STATUS")
+    for w in ws:
+        print(f"{w['name'][:27]:<28}{w['driver_id']:<12}{(w['executable'] or '-')[:43]:<44}"
+              f"{(w['version'] or '-')[:15]:<16}{w['auth'][:11]:<12}"
+              f"{(w['default_model'] or '/'.join(w['models']) or '-')[:13]:<14}{w['status']}"
+              + (f"  {w['routable']['reason']}" if w["status"] not in ("READY", "DISABLED") else ""))
+
+
+def _workers_cmd(svc, a: argparse.Namespace) -> int:
+    try:
+        if a.action == "scan":
+            r = svc.scan()
+            if a.json:
+                print(json.dumps({k: r[k] for k in ("added", "existing", "missing", "found", "scanned_at")},
+                                 ensure_ascii=False, indent=2))
+            print(f"Đã quét: thêm {len(r['added'])}, đã có {len(r['existing'])}, "
+                  f"driver không tìm thấy CLI: {r['missing'] or 'không'}.")
+            _print_workers(r["workers"])
+            return 0
+        if a.action == "probe":
+            if not a.arg:
+                print("cần <id>: contentfactory workers probe <id>")
+                return 2
+            w = svc.probe(a.arg)
+            print(json.dumps(w, ensure_ascii=False, indent=2) if a.json else "")
+            _print_workers([w])
+            return 0
+        if a.action == "pick":
+            if not a.arg:
+                print("cần <work_type>: contentfactory workers pick story.write")
+                return 2
+            p = svc.pick(a.arg)
+            if a.json:
+                print(json.dumps(p, ensure_ascii=False, indent=2))
+            elif p["ok"]:
+                print(f"{a.arg} -> {p['target']['worker']['name']} ({p['target']['worker']['id']}) · model {p['target']['model'] or 'mặc định'} · {p['reason']}")
+            else:
+                print(f"{a.arg}: {p['reason']}")
+                return 1
+            return 0
+        _print_workers(svc.workers())          # list mặc định: trạng thái đã lưu (chạy `workers scan` để cập nhật)
+        return 0
+    except (KeyError, ValueError) as e:        # worker/pool không tồn tại, driver sai: in gọn
+        print(f"LỖI: {e}")
+        return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     ap = build_parser("--advanced" in argv)
@@ -410,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ! {x}")
         print(r["next"])
         return 0
+    if a.cmd == "workers":
+        from .worker_admin import WorkerService
+        return _workers_cmd(WorkerService(load_config(root)), a)
     if a.cmd == "templates":
         return _templates_cmd(a, root)
     if a.cmd in ("doctor", "channels", "channel-init", "setup", "update", "demo"):
@@ -496,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"job {a.job_id}: {orc.pause_job(a.job_id)}")
     elif a.cmd == "cancel":
         print(f"job {a.job_id}: {orc.cancel_job(a.job_id)}")
-    elif a.cmd == "update":
+    elif a.cmd == "job-update":
         kw = {"pipeline": {"requested_stages": [x.strip() for x in a.stages.split(",") if x.strip()]} if a.stages else None,
               "config_patch": json.loads(a.patch) if a.patch else None, "params_patch": json.loads(a.params) if a.params else None}
         imp = orc.preview_update(a.job_id, **kw)

@@ -278,6 +278,40 @@ class Doctor:
                      "cập nhật module ContentFlow (setup/update) hoặc chọn template khác cho kênh" if item["level"] == "fail" else
                      "chạy `cf templates migrate`" if "migrate" in item["message"] else "")
 
+    def workers(self) -> None:
+        g = "Worker Runtime"
+        try:
+            from .worker_admin import WorkerService
+            svc = WorkerService(self.cfg)
+        except Exception as e:                                       # noqa: BLE001 - DB hỏng không làm crash doctor
+            self.add("workers", g, "warn", f"không mở được workers.db: {e!r}", "kiểm tra quyền ghi thư mục runtime/")
+            return
+        try:
+            ws = svc.probe_all()
+        except Exception as e:                                       # noqa: BLE001 - probe #1 không làm crash
+            self.add("workers", g, "warn", f"không kiểm tra được worker: {e!r}")
+            return
+        if not ws:
+            self.add("workers", g, "warn", "chưa cấu hình Worker Runtime nào",
+                     "chạy `contentfactory workers scan` để phát hiện CLI trên PATH, rồi gán pool/routing")
+            return
+        for w in ws:
+            st = w["status"] or "BROKEN"
+            rows = f"{w['driver_id']} · {w['executable']}" + (f" · v{w['version']}" if w["version"] else "")
+            if st == "READY":
+                self.add(f"workers.{w['id']}", g, "ok", f"{w['name']}: {rows} · auth={w['auth']} · model={w['default_model'] or '-'}")
+            elif st == "DISABLED":
+                self.add(f"workers.{w['id']}", g, "skip", f"{w['name']}: {rows} (người dùng tắt)")
+            elif st == "DETECTED":
+                self.add(f"workers.{w['id']}", g, "warn", f"{w['name']}: {rows} · chưa probe", "chạy `workers probe` cho worker này")
+            elif st == "NOT_FOUND":
+                self.add(f"workers.{w['id']}", g, "warn", f"{w['name']}: {rows} · không tìm thấy executable",
+                         "mất CLI (thường do chưa cài/probe cũ); chạy `workers probe` khi đã cài")
+            else:
+                detail = w.get("probe_error") or w.get("detail") or st
+                self.add(f"workers.{w['id']}", g, "fail", f"{w['name']}: {rows} · {detail}",
+                         "đăng nhập lại CLI (auth), hoặc xoá/cài lại rồi `workers scan`")
+
     # -------------------------------------------------------------------------------------------------- chạy tất cả
     @staticmethod
     def _free_gb(p: Path) -> float:
@@ -292,7 +326,7 @@ class Doctor:
         except Exception as e:                                          # noqa: BLE001 - cấu hình sai: ghi nhận, vẫn chạy các kiểm tra còn lại
             self.adapter_error = f"cấu hình adapter lỗi: {e}"
             self.add("adapters", "Hệ thống", "fail", self.adapter_error, "sửa config/config.json hoặc config.local.json")
-        for step in (self.system, self.media, self.components, self.sources, self.channels, self.templates):
+        for step in (self.system, self.media, self.components, self.sources, self.channels, self.templates, self.workers):
             try:
                 step()
             except Exception as e:                                      # noqa: BLE001 - một kiểm tra hỏng không được làm mất cả báo cáo
