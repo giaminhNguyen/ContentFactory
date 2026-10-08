@@ -38,3 +38,15 @@
 .wk-pool-row.drop { border-color: var(--accent); }
 .wk-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--s-2); }
 .wk-checks .wk-check { display: flex; gap: var(--s-2); align-items: center; font-size: var(--fs-sm); cursor: pointer; }
+.wk-title { margin-top: var(--s-4); }
+.wk-policy { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--s-2) var(--s-4); margin: 0; font-size: var(--fs-sm); }
+.wk-policy > div { display: flex; flex-direction: column; gap: 2px; }
+.wk-policy dt { color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.04em; }
+.wk-policy dd { margin: 0; }
+.wk-fset { border: 1px solid var(--border); border-radius: var(--r-2); padding: var(--s-3); margin: 0; }
+.wk-fset legend { padding: 0 var(--s-2); font-size: var(--fs-sm); font-weight: 650; }
+.wk-retry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s-2) var(--s-4); }
+.wk-retry-grid .s-ctl .select { max-width: 100%; }
+.wk-sim { gap: var(--s-3); }
+.wk-sim-out { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.wk-sim-row { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid var(--border); border-radius: var(--r-1); background: var(--surface); font-size: var(--fs-sm); flex-wrap: wrap; }

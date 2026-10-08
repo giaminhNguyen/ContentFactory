@@ -297,6 +297,53 @@ class WorkerRegistry:
         return self.store.delete_routing(work_type)
 
     # -- chọn worker cho một work_type (router) --------------------------------------------------
+    def _routing_plan(self, work_type: str, now: float, exclude: tuple[str, ...] = ()
+                      ) -> tuple[WorkerPool | None, list[tuple[Worker, str, str]], list[tuple[str, str, str]], str]:
+        """Đi bộ routing giống hệt `pick`; trả (pool, eligible, blocked, lý do).
+
+        blocked: (worker_id, tên, lý do). Dùng chung cho router thật và simulator để sim không lệch router.
+        """
+        routing = self.store.routing().get(work_type)
+        if routing is None:
+            return None, [], [], f"chưa cấu hình routing cho {work_type}"
+        pool_name = routing.get("pool") or ""
+        if not pool_name:
+            return None, [], [], f"{work_type} chưa gán pool"
+        pool = self.store.pool(pool_name)
+        if pool is None:
+            return None, [], [], f"pool {pool_name!r} không tồn tại (config trỏ vào pool đã xoá)"
+        if not pool.enabled:
+            return None, [], [], f"pool {pool_name!r} đang tắt"
+        if not pool.members:
+            return None, [], [], f"pool {pool_name!r} rỗng — không có worker nào để route"
+        profile = routing.get("model_profile") or None
+        workers = {w.id: w for w in self.store.workers()}
+        running = self.store.running_counts() if pool.strategy is PoolStrategy.LEAST_BUSY else {}
+
+        eligible: list[tuple[Worker, str, str]] = []       # (worker, model, lý do)
+        blocked: list[tuple[str, str, str]] = []           # (worker_id, tên, lý do)
+        excluded = set(exclude)
+        for wid in pool.members:
+            w = workers.get(wid)
+            if w is None:
+                blocked.append((wid, wid, "không còn tồn tại (dangling member)"))
+                continue
+            if wid in excluded:
+                blocked.append((wid, w.name, "đã lỗi trong lần thử này"))
+                continue
+            ok, reason = w.routable(now)
+            if not ok:
+                blocked.append((wid, w.name, reason))
+                continue
+            model = w.model_for(profile)
+            if model is None:
+                blocked.append((wid, w.name, "chưa cấu hình model"))
+                continue
+            eligible.append((w, model, reason))
+        if pool.strategy is PoolStrategy.LEAST_BUSY:
+            eligible.sort(key=lambda t: (running.get(t[0].id, 0), pool.members.index(t[0].id)))
+        return pool, eligible, blocked, ""
+
     def pick(self, work_type: str, now: float | None = None,
              exclude: tuple[str, ...] = ()) -> tuple[ExecutionTarget | None, str]:
         """Chọn worker cho work_type theo config. Luôn trả lý do (dùng cho simulator + log).
@@ -304,55 +351,43 @@ class WorkerRegistry:
         `exclude`: worker đã fail trong lần thử này (fallback không quay lại worker vừa hỏng).
         """
         now = time.time() if now is None else now
-        routing = self.store.routing().get(work_type)
-        if routing is None:
-            return None, f"chưa cấu hình routing cho {work_type}"
-        pool_name = routing.get("pool") or ""
-        if not pool_name:
-            return None, f"{work_type} chưa gán pool"
-        pool = self.store.pool(pool_name)
-        if pool is None:
-            return None, f"pool {pool_name!r} không tồn tại (config trỏ vào pool đã xoá)"
-        if not pool.enabled:
-            return None, f"pool {pool_name!r} đang tắt"
-        if not pool.members:
-            return None, f"pool {pool_name!r} rỗng — không có worker nào để route"
-        profile = routing.get("model_profile") or None
-        workers = {w.id: w for w in self.store.workers()}
-        running = self.store.running_counts() if pool.strategy is PoolStrategy.LEAST_BUSY else {}
-
-        eligible: list[tuple[Worker, str, str]] = []       # (worker, model, lý do)
-        blocked: list[str] = []
-        excluded = set(exclude)
-        for wid in pool.members:
-            w = workers.get(wid)
-            if w is None:
-                blocked.append(f"{wid}: không còn tồn tại (dangling member)")
-                continue
-            if wid in excluded:
-                blocked.append(f"{w.name}: đã lỗi trong lần thử này")
-                continue
-            ok, reason = w.routable(now)
-            if not ok:
-                blocked.append(f"{w.name}: {reason}")
-                continue
-            model = w.model_for(profile)
-            if model is None:
-                blocked.append(f"{w.name}: chưa cấu hình model")
-                continue
-            eligible.append((w, model, reason))
-
+        pool, eligible, blocked, why = self._routing_plan(work_type, now, tuple(exclude))
+        if why:
+            return None, why
         if not eligible:
-            return None, "không worker nào đủ điều kiện: " + "; ".join(blocked)
+            return None, "không worker nào đủ điều kiện: " + "; ".join(b[2] for b in blocked)
+        profile = (self.store.routing().get(work_type) or {}).get("model_profile") or None
         if pool.strategy is PoolStrategy.LEAST_BUSY:
-            eligible.sort(key=lambda t: (running.get(t[0].id, 0), pool.members.index(t[0].id)))
-        w, model, _ = eligible[0]
-        if pool.strategy is PoolStrategy.LEAST_BUSY:
-            why = f"least_busy: {w.name} ({running.get(w.id, 0)} attempt đang chạy)"
+            running = self.store.running_counts()
+            why = f"least_busy: {eligible[0][0].name} ({running.get(eligible[0][0].id, 0)} attempt đang chạy)"
         else:
-            why = f"priority #{pool.members.index(w.id) + 1}: {w.name}"
+            why = f"priority #{pool.members.index(eligible[0][0].id) + 1}: {eligible[0][0].name}"
         if profile:
             why += f", profile {profile}"
         if blocked:
-            why += f" (bỏ qua: {'; '.join(blocked)})"
-        return ExecutionTarget(worker=w, model=model, pool=pool_name, reason=why), why
+            why += f" (bỏ qua: {'; '.join(f'{b[1]} — {b[2]}' for b in blocked)})"
+        return ExecutionTarget(worker=eligible[0][0], model=eligible[0][1], pool=pool.name, reason=why), why
+
+    def simulate(self, work_type: str, now: float | None = None) -> dict:
+        """Simulator W1.UI.6: chạy đúng routing logic (không gọi model), trả thứ tự dùng + lý do loại."""
+        now = time.time() if now is None else now
+        pool, eligible, blocked, why = self._routing_plan(work_type, now)
+        rows: list[dict] = []
+        for i, (w, model, _reason) in enumerate(eligible):
+            rows.append({
+                "worker_id": w.id, "name": w.name, "driver_id": w.driver_id,
+                "status": w.status.value, "model": model, "pool": pool.name,
+                "rank": i + 1, "role": "selected" if i == 0 else f"backup#{i}",
+                "blocked_reason": None,
+            })
+        for wid, name, reason in blocked:
+            w = self.store.worker(wid)
+            rows.append({
+                "worker_id": wid, "name": name, "driver_id": w.driver_id if w else "",
+                "status": w.status.value if w else "", "model": None,
+                "pool": pool.name if pool else None, "rank": None, "role": "excluded",
+                "blocked_reason": reason,
+            })
+        return {"work_type": work_type, "pool": pool.name if pool else None,
+                "ok": bool(eligible) and not why, "reason": why or ("; ".join(r[2] for r in blocked) if not eligible else ""),
+                "rows": rows}

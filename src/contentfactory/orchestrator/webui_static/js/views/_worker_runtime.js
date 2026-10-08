@@ -354,3 +354,170 @@ export function poolsPanel(host) {
   poller.start();
   return { destroy() { poller.stop(); } };
 }
+
+// ---------------------------------------------------------------------------------- Routing & Simulator (W1.UI.5, W1.UI.6)
+const RETRY_KINDS = [
+  ["TEMPORARY", "Lỗi tạm thời"],
+  ["TIMEOUT", "Quá thời gian"],
+  ["INVALID_OUTPUT", "Output không hợp lệ"],
+  ["UNKNOWN", "Lỗi không nhận dạng"],
+  ["QUOTA", "Hết quota"],
+  ["AUTH", "Chưa đăng nhập"],
+];
+const RETRY_OPTS = [[0, "Chuyển worker kế ngay"], [1, "Thử lại 1 lần"], [2, "Thử lại 2 lần"], [3, "Thử lại 3 lần"]];
+
+function policyLine(n) {
+  return n > 0 ? `Thử lại ${n} lần cùng worker, rồi sang worker kế` : "Sang worker kế ngay";
+}
+
+export function routingPanel(host) {
+  loadCss("/css/settings.css");
+  let data = null, sig = "", failedOnce = false;
+  const list = h("div", { class: "wk-list" });
+  const addBtn = btn({ label: "Gán routing…", icon: "plus", size: "sm", kind: "primary" });
+  const sim = simBlock(() => data);
+  host.append(h("div", { class: "row spread" },
+      h("div", null, h("h3", null, "Routing & Độ tin cậy"),
+        h("p", { class: "muted small" }, "Trỏ một công việc (work type) vào pool + profile model + chính sách retry/fallback. Công việc chưa có routing chạy thẳng một worker.")),
+      addBtn),
+    h("section", { class: "card wk-sim" }, sim.head, sim.out),
+    h("h3", { class: "wk-title" }, "Routing đã gán"),
+    list);
+  list.append(skeleton(3));
+
+  const poller = createPoller(async (signal) => {
+    data = await api.get("/api/workers/routing", { signal });
+    sim.sync();
+    failedOnce = false;
+    paint();
+    return "idle";
+  }, { fast: 4000, idle: 10000 });
+
+  function paint() {
+    const s = JSON.stringify([data.routing, data.pools, data.profiles]);
+    if (s === sig) return;
+    sig = s;
+    clear(list);
+    const routes = Object.entries(data.routing || {});
+    if (!routes.length) {
+      list.append(emptyState({ icon: "activity", title: "Chưa có routing nào",
+        text: "Gán work type cho pool (chọn worker theo config, không sửa code). Công việc chưa gán chạy thẳng worker mặc định.",
+        action: btn({ label: "Gán routing…", icon: "plus", kind: "primary", onClick: () => dialog() }) }));
+      return;
+    }
+    for (const [wt, cfg] of routes) list.append(card(wt, cfg));
+  }
+
+  function card(wt, cfg) {
+    const pol = cfg.policy || {};
+    const editBtn = btn({ label: "Sửa…", icon: "settings", size: "sm", kind: "ghost" });
+    const delBtn = btn({ label: "Xoá", icon: "trash", size: "sm", kind: "ghost danger" });
+    editBtn.addEventListener("click", () => dialog(wt, cfg));
+    delBtn.addEventListener("click", async () => {
+      if (!(await confirmDialog({ title: `Xoá routing “${wt}”?`, body: "Công việc này sẽ chạy thẳng worker mặc định.", confirmLabel: "Xoá routing", danger: true }))) return;
+      try { await api.del(`/api/workers/routing/${encodeURIComponent(wt)}`); toast({ title: "Đã xoá routing", tone: "done" }); sig = ""; poller.poke(); }
+      catch (e) { toastError(e, "Không xoá được"); }
+    });
+    return h("section", { class: "card wk-card", "aria-label": `Routing ${wt}` },
+      h("div", { class: "row spread" },
+        h("div", { class: "row" }, h("h3", null, wt), h("span", { class: "chip" }, cfg.pool),
+          cfg.model_profile ? h("span", { class: "chip" }, `Profile: ${cfg.model_profile}`) : null),
+        h("div", { class: "row" }, editBtn, delBtn)),
+      h("dl", { class: "wk-policy" },
+        ...RETRY_KINDS.map(([k, label]) => h("div", null, h("dt", null, label), h("dd", null, policyLine(pol.retry_on?.[k] ?? 0)))),
+        h("div", null, h("dt", null, "Tổng số lần thử / số worker"),
+          h("dd", null, `${pol.max_total_attempts ?? 5} lần × tối đa ${pol.max_distinct_workers ?? 3} worker khác nhau`))));
+  }
+
+  function dialog(wt, cfg) {
+    const edit = !!wt;
+    const wtIn = input({ placeholder: "story.write", value: wt || "" });
+    const poolSel = select({ options: (data.pools || []).map((p) => [p.name, p.display_name || p.name]), value: cfg?.pool || "" });
+    const profSel = select({ options: [["", "Mặc định"], ...(data.profiles || []).map((p) => [p, p])], value: cfg?.model_profile || "" });
+    const pol = cfg?.policy || {};
+    const maxA = input({ type: "number", min: "1", value: pol.max_total_attempts ?? 5 });
+    const maxD = input({ type: "number", min: "1", value: pol.max_distinct_workers ?? 3 });
+    const retrySels = RETRY_KINDS.map(([k, label]) => ({ k, sel: select({ options: RETRY_OPTS, value: pol.retry_on?.[k] ?? 0 }), label }));
+    const wtF = field({ label: "Work type", control: wtIn, required: true, hint: edit ? "Không sửa được tên; xoá rồi gán lại nếu cần." : "Ví dụ: story.write (dấu chấm để nhóm)." });
+    const poolF = field({ label: "Pool", control: poolSel, required: true });
+    const profF = field({ label: "Model profile", control: profSel, hint: "Rỗng = model mặc định của worker được chọn." });
+    const content = h("div", { class: "stack" }, wtF, poolF, profF,
+      h("fieldset", { class: "wk-fset" }, h("legend", null, "Retry / fallback"), h("div", { class: "wk-retry-grid" },
+        ...retrySels.map(({ label, sel }) => field({ label, control: sel })),
+        h("div", { class: "row" }, field({ label: "Tổng số lần thử", control: maxA, hint: "Kể cả worker đầu." }), field({ label: "Số worker khác nhau tối đa", control: maxD })))));
+    openDialog({ title: edit ? `Sửa routing “${wt}”` : "Gán routing", content, wide: true, actions: [
+      { label: "Huỷ", value: null },
+      { label: edit ? "Lưu routing" : "Gán routing", kind: "primary", value: "ok", onClick: async () => {
+        wtF.setError(null); poolF.setError(null);
+        if (edit ? !wt : !wtIn.value.trim()) { wtF.setError("Đặt tên work type."); return false; }
+        if (!poolSel.value) { poolF.setError("Chọn pool để route."); return false; }
+        const body = {
+          work_type: edit ? wt : wtIn.value.trim(),
+          pool: poolSel.value,
+          model_profile: profSel.value,
+          policy: {
+            max_total_attempts: Math.max(1, Number(maxA.value) || 5),
+            max_distinct_workers: Math.max(1, Number(maxD.value) || 3),
+            retry_on: Object.fromEntries(retrySels.map(({ k, sel }) => [k, Number(sel.value)])),
+          },
+        };
+        try {
+          await api.put("/api/workers/routing", body);
+          toast({ title: edit ? "Đã cập nhật routing" : "Đã gán routing", tone: "done" });
+          return true;
+        } catch (e) { poolF.setError([e.message, e.hint].filter(Boolean).join(" ")); return false; }
+      } }] });
+  }
+
+  addBtn.addEventListener("click", () => dialog());
+  poller.start();
+  return { destroy() { poller.stop(); } };
+}
+
+// ---------------------------------------------------------------------------------- Simulator (W1.UI.6)
+function simBlock(getData) {
+  const wtSel = select({ options: [], disabled: true, id: "wk-sim-wt" });
+  const goBtn = btn({ label: "Simulate", icon: "zap", size: "sm", kind: "primary", disabled: true });
+  const out = h("div", { class: "wk-sim-out", "aria-live": "polite" });
+
+  const sync = () => {
+    const routes = Object.keys(getData()?.routing || {});
+    const cur = wtSel.value;
+    wtSel.replaceChildren();
+    for (const r of routes) wtSel.append(h("option", { value: r }, r));
+    wtSel.disabled = !routes.length;
+    goBtn.disabled = !routes.length;
+    if (routes.includes(cur)) wtSel.value = cur;
+  };
+
+  wtSel.addEventListener("change", () => clear(out));
+  goBtn.addEventListener("click", async () => {
+    const wt = wtSel.value;
+    if (!wt) return;
+    clear(out);
+    out.append(skeleton(2));
+    await busy(goBtn, async () => {
+      try {
+        const r = await api.post("/api/workers/routing/simulate", { work_type: wt });
+        clear(out);
+        if (!r.rows.length) { out.append(emptyState({ icon: "alert-circle", title: "Không worker nào đủ điều kiện", text: r.reason })); return; }
+        for (const row of r.rows) {
+          const tone = row.role === "selected" ? "done" : row.role === "excluded" ? "fail" : "wait";
+          const meta = row.role === "selected" ? "được chọn" : row.role === "excluded" ? `loại — ${row.blocked_reason}` : "dự phòng";
+          out.append(h("div", { class: "wk-sim-row" },
+            h("span", { class: "mono" }, row.name),
+            badge({ tone, label: row.status }),
+            h("span", { class: "chip" }, row.model || "—"),
+            h("span", { class: "muted small" }, meta)));
+        }
+        if (r.reason && r.ok) out.append(h("p", { class: "muted small" }, r.reason));
+      } catch (e) { clear(out); out.append(errorState(e, () => goBtn.click())); }
+    });
+  });
+
+  const head = h("div", { class: "row spread" },
+    h("div", null, h("h3", null, "Routing Simulator"),
+      h("p", { class: "muted small" }, "Chọn work type đã gán routing, bấm Simulate. Chỉ chạy logic routing — không gọi model thật, không tốn token.")),
+    h("div", { class: "row" }, wtSel, goBtn));
+  return { sync, head, out };
+}

@@ -73,6 +73,30 @@ class WorkerServiceTest(RootCase):
         self.assertEqual(svc.delete_routing("story.write"), True)
         self.assertEqual(svc.delete_pool("p")["deleted"], "p")
 
+    def test_simulate_matches_pick_and_lists_blocked_reasons(self):
+        svc = fake_svc(self.root)
+        a = svc.add("A", "fake", "cf-fake-a", probe=True)
+        b = svc.add("B", "fake", "cf-fake-b", probe=True)
+        svc.create_pool("p", "Nhóm A", [a["id"], b["id"]])
+        svc.set_routing("story.write", "p")
+        s = svc.simulate("story.write")
+        self.assertEqual(s["ok"], True)
+        self.assertEqual([r["name"] for r in s["rows"]], ["A", "B"])
+        self.assertEqual([r["role"] for r in s["rows"]], ["selected", "backup#1"])
+        # B hỏng -> sim vẫn liệt kê lý do nhưng pick rơi xuống worker còn sống
+        svc.set_enabled(b["id"], False)
+        s2 = svc.simulate("story.write")
+        self.assertEqual(s2["ok"], True)
+        self.assertTrue(any(r["role"] == "excluded" and r["blocked_reason"] and r["status"] == "DISABLED" for r in s2["rows"]))
+        # mọi worker hỏng -> empty/no-eligible state
+        svc.set_enabled(a["id"], False)
+        s3 = svc.simulate("story.write")
+        self.assertEqual((s3["ok"], svc.pick("story.write")["ok"]), (False, False))
+        # không cấu hình routing -> lý do rõ, không gọi model
+        s4 = svc.simulate("chua.co.routing")
+        self.assertIn("chưa cấu hình routing", s4["reason"])
+        self.assertEqual(s4["rows"], [])
+
     def test_pool_delete_blocked_when_routed_then_force(self):
         svc = fake_svc(self.root)
         w = svc.add("A", "fake", "cf-fake-a", probe=True)

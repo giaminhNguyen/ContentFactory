@@ -184,6 +184,10 @@ class Api:
     def routing_get(app, m, q, b):
         return app.workers.routing()
 
+    @route("POST", "/api/workers/routing/simulate")
+    def routing_simulate(app, m, q, b):
+        return app.workers.simulate(str(b.get("work_type") or ""))
+
     @route("PUT", "/api/workers/routing")
     def routing_put(app, m, q, b):
         return app.workers.set_routing(str(b.get("work_type") or ""), str(b.get("pool") or ""),

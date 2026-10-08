@@ -134,6 +134,10 @@ class WorkerService:
                 "target": None if target is None else {
                     "worker": worker_dump(target.worker), "model": target.model, "pool": target.pool}}
 
+    def simulate(self, work_type: str) -> dict:
+        """Simulator W1.UI.6: routing logic thuần (không gọi model thật), kèm lý do loại từng worker."""
+        return self.registry.simulate(work_type)
+
     # -- attempts (timeline) ----------------------------------------------------------------------
     def attempts(self, job_id: str = "", work_type: str = "", stage: str = "", limit: int = 100) -> list[dict]:
         atts = self.store.attempts(job_id=job_id, work_type=work_type, limit=limit)
