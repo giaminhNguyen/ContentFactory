@@ -53,3 +53,18 @@ test("thống kê dùng lại / mới", async () => {
   assert.match(L.reuseSummary({ reused_appearances: 0, new_character_appearances: 0 }), /Chưa có/);
   assert.match(L.reuseSummary({ reused_appearances: 3, new_character_appearances: 2 }), /3 dùng lại \/ 2 nhân vật mới/);
 });
+
+test("sơ đồ quan hệ: node theo vòng tròn, không có cạnh mồ côi", async () => {
+  const L = await load("universe_logic.js");
+  const members = [{ character_id: "a" }, { character_id: "b" }, { character_id: "c" }];
+  const g = L.graphLayout(members, [{ a_id: "a", b_id: "b", type: "enemy_of" }, { a_id: "a", b_id: "zzz", type: "x" }], 320);
+  assert.equal(g.nodes.length, 3);
+  assert.equal(g.edges.length, 1);                                    // cạnh tới node không có trong dàn bị bỏ
+  assert.ok(g.nodes.every((n) => n.x >= 0 && n.x <= 320 && n.y >= 0 && n.y <= 320));
+  assert.equal(L.graphLayout([{ character_id: "a" }], [], 320).nodes[0].x, 160);
+  assert.equal(L.roleLabel("protagonist"), "Nhân vật chính");
+  assert.equal(L.roleLabel("zzz"), "zzz");
+  assert.equal(L.fitText({ fit: null }), "Nhân vật mới");
+  assert.equal(L.fitText({ fit: 0.456 }), "Hợp 46%");
+  assert.match(L.relText({ a_id: "a", b_id: "b", type: "enemy_of" }, (i) => i.toUpperCase()), /A — enemy of — B/);
+});

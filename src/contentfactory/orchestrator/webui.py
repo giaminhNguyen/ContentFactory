@@ -204,6 +204,22 @@ class Api:
         a = m["act"]
         return app.universe.status(m["id"], "archived" if a == "archive" else "active", b) if a in ("archive", "restore") else app.universe.lock(m["id"], a == "lock", b)
 
+    @route("GET", "/api/universe/stories")
+    def universe_stories(app, m, q, b):
+        return app.universe.stories()
+
+    @route("GET", r"/api/universe/stories/(?P<sid>[\w\-.]+)")
+    def universe_story(app, m, q, b):
+        return app.universe.story(m["sid"])
+
+    @route("GET", r"/api/universe/stories/(?P<sid>[\w\-.]+)/alternatives")
+    def universe_alternatives(app, m, q, b):
+        return app.universe.alternatives(m["sid"], q)
+
+    @route("POST", r"/api/universe/stories/(?P<sid>[\w\-.]+)/replace")
+    def universe_replace(app, m, q, b):
+        return app.universe.replace(m["sid"], b)
+
     @route("GET", "/api/universe/audit")
     def universe_audit(app, m, q, b):
         return app.universe.audit(q)

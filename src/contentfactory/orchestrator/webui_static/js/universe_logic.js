@@ -75,3 +75,25 @@ export function fmtTime(ts) {
   const d = new Date(ts * 1000);
   return d.toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" });
 }
+
+// ---- dàn nhân vật theo truyện -------------------------------------------------------------------
+export const ROLE_LABEL = { protagonist: "Nhân vật chính", deuteragonist: "Chính thứ hai", antagonist: "Phản diện", rival: "Đối thủ", foil: "Tương phản", mentor: "Người dẫn đường",
+  ally: "Đồng minh", love_interest: "Người được yêu", confidant: "Người tâm giao", comic_relief: "Gây cười", catalyst: "Chất xúc tác", gatekeeper: "Người gác cổng", wildcard: "Ẩn số" };
+export const STORY_STATE = { staged: "Chờ truyện đạt QA", published: "Đã vào kho" };
+export const ISSUE_LABEL = { NO_CONTRAST: "Chính và phản diện quá giống nhau", SAME_VOICE: "Hai nhân vật nói chuyện giống nhau", SAME_NAME: "Trùng tên", CONTRADICTORY_RELATION: "Quan hệ mâu thuẫn" };
+
+export const roleLabel = (r) => ROLE_LABEL[r] || r;
+export const fitText = (m) => (m.fit == null ? "Nhân vật mới" : `Hợp ${Math.round(m.fit * 100)}%`);
+
+/** Bố cục tròn cho đồ thị quan hệ: node theo vòng tròn; cạnh tới node không có trong dàn bị bỏ (không để mồ côi). */
+export function graphLayout(members, rels, size = 320) {
+  const n = members.length, r = size / 2 - 52, c = size / 2;
+  const pos = new Map(members.map((m, i) => {
+    const a = n === 1 ? 0 : (2 * Math.PI * i) / n - Math.PI / 2;
+    return [m.character_id, { id: m.character_id, x: Math.round(n === 1 ? c : c + r * Math.cos(a)), y: Math.round(n === 1 ? c : c + r * Math.sin(a)) }];
+  }));
+  const edges = rels.filter((e) => pos.has(e.a_id) && pos.has(e.b_id)).map((e) => ({ ...e, from: pos.get(e.a_id), to: pos.get(e.b_id) }));
+  return { nodes: [...pos.values()], edges, size };
+}
+
+export const relText = (rel, nameOf) => `${nameOf(rel.a_id)} — ${rel.type.replaceAll("_", " ")} — ${nameOf(rel.b_id)}`;

@@ -22,8 +22,18 @@ export async function mount(root, ctx) {
   const addBtn = btn({ label: "Thêm nhân vật", icon: "plus", kind: "primary", onClick: () => openCreate() });
   const expBtn = btn({ label: "Xuất Excel", icon: "arrow-down", onClick: (e) => busy(e.currentTarget, exportXlsx) });
   const impBtn = btn({ label: "Nhập Excel", icon: "upload", onClick: () => openImport() });
+  const charsPane = h("div", { id: "panel-chars", role: "tabpanel", "aria-labelledby": "tab-chars" }, h("div", { class: "uv-layout" }, h("div", { class: "stack uv-left" }, filters(), listHost), detailHost));
+  const storiesPane = h("div", { id: "panel-stories", role: "tabpanel", "aria-labelledby": "tab-stories", hidden: true });
+  let storiesInst = null;
+  function showTop(t) {
+    charsPane.hidden = t !== "chars";
+    storiesPane.hidden = t !== "stories";
+    if (t === "stories" && !storiesInst) storiesInst = mountStories(storiesPane, { onOpenCharacter: (id) => { setUrl(id); selected = id; document.querySelector("#tab-chars")?.click(); loadDetail(); loadList(); } });
+  }
+
   root.append(pageHead("Kho nhân vật", "Nhân vật tự được tạo và dùng lại khi Story Remix viết truyện. Bạn không cần làm gì ở đây — chỉ xem, sửa hồ sơ hoặc lưu trữ khi muốn.",
-    h("div", { class: "row" }, addBtn, expBtn, impBtn)), dash, h("div", { class: "uv-layout" }, h("div", { class: "stack uv-left" }, filters(), listHost), detailHost));
+    h("div", { class: "row" }, addBtn, expBtn, impBtn)), dash, h("div", { class: "uv-tabs" }, tabs({ items: [["chars", "Nhân vật"], ["stories", "Truyện & dàn nhân vật"]], active: "chars", onSelect: (t) => showTop(t), label: "Kho nhân vật" })),
+    charsPane, storiesPane);
 
   // ---------------------------------------------------------------- bảng điều khiển
   function stat(label, value, hint) {

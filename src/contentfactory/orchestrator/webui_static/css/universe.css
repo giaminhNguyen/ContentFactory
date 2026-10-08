@@ -20,3 +20,16 @@
 .uv-hint { padding: var(--s-6) var(--s-4); text-align: center; }
 .uv-audit { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--s-3); }
 .uv-diff { white-space: pre-wrap; color: var(--muted); font-family: var(--mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+.uv-cast { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--s-3); }
+.uv-member { border: 1px solid var(--border); border-radius: var(--r-2); padding: var(--s-3) var(--s-4); display: flex; flex-direction: column; gap: var(--s-2); background: var(--surface); }
+.uv-fit { display: flex; align-items: center; gap: var(--s-2); }
+.uv-fit progress { flex: 1; height: 8px; }
+.uv-rel { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: var(--s-4); align-items: start; }
+@media (max-width: 700px) { .uv-rel { grid-template-columns: minmax(0, 1fr); } }
+.uv-graph { width: 100%; max-width: 340px; height: auto; }
+.uv-edge { stroke: var(--border-strong); stroke-width: 1.5; }
+.uv-edge-l { fill: var(--muted); font-size: 10px; }
+.uv-node { fill: var(--surface-2); stroke: var(--accent); stroke-width: 2; }
+.uv-node.new { stroke-dasharray: 4 3; }
+.uv-node-t { fill: var(--text); font-size: 12px; font-weight: 700; }
+.uv-tabs { margin-bottom: var(--s-4); }

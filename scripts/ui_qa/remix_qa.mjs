@@ -144,6 +144,30 @@ if (wanted("universe")) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------- Phase 3: dàn nhân vật (cần fixture --universe-demo)
+if (wanted("cast")) {
+  for (const [label, opts] of [["desktop", {}], ["mobile", { width: 390, height: 844 }], ["dark", { scheme: "dark" }]]) {
+    const page = await newPage(opts);
+    await go(page, "/universe");
+    await page.click("#tab-stories");
+    await page.waitForSelector(".uv-member");
+    check(`cast/${label}: hiện dàn 3 nhân vật với vai + lý do`, (await page.locator(".uv-member").count()) === 3 && /Dùng lại từ kho/.test(await page.locator("#panel-stories .uv-detail").innerText()) && /Mới \(chờ QA\)/.test(await page.locator("#panel-stories .uv-detail").innerText()));
+    check(`cast/${label}: có sơ đồ quan hệ và danh sách chữ tương đương`, (await page.locator("svg.uv-graph").count()) === 1 && (await page.locator(".uv-rel li").count()) === 2);
+    check(`cast/${label}: không lọt 'null'/'undefined'`, !/(null|undefined)/.test(await page.locator("#view").innerText()));
+    if (label === "desktop") {
+      await page.click("button:has-text('Thay nhân vật') >> nth=2");
+      await page.waitForSelector("dialog input[name=alt]");
+      check("cast: hộp thay nhân vật liệt kê ứng viên có điểm", /độ hợp|đã có trong dàn/.test(await page.locator("dialog").innerText()));
+      await shot(page, "cast-replace-dialog");
+      await page.click("dialog button:has-text('Huỷ')");
+    }
+    await shot(page, `cast-${label}`);
+    await noOverflowEl(page, ".uv-layout", `cast/${label}`);
+    await axe(page, `cast/${label}`);
+    clean(page, `cast/${label}`);
+  }
+}
+
 await browser.close();
 console.log(failures ? `\n${failures} kiểm tra thất bại` : "\nTất cả đạt");
 process.exit(failures ? 1 : 0);

@@ -62,3 +62,20 @@ class UniverseService:
 
     def import_apply(self, data: bytes, skip_conflicts: bool) -> dict:
         return EX.apply_import(self.u, data, skip_conflicts=skip_conflicts)
+
+    # ---- dàn nhân vật theo truyện (autocast)
+    def stories(self) -> dict:
+        return {"stories": CA.list_stories(self.u)}
+
+    def story(self, story_id: str) -> dict:
+        cast = CA.get_cast(self.u, story_id)
+        if not cast:
+            raise StageError(ErrorClass.POLICY, "STORY_NOT_FOUND", f"Truyện {story_id} chưa có dàn nhân vật.", resource="input")
+        return {"cast": cast, "orphans": CA.integrity(self.u, story_id), "can_replace": cast["state"] == "staged" and cast["cast_revision"] < 2}
+
+    def alternatives(self, story_id: str, q: dict) -> dict:
+        return {"alternatives": CA.alternatives(self.u, story_id, (q.get("slot") or [""])[0])}
+
+    def replace(self, story_id: str, body: dict) -> dict:
+        CA.replace_member(self.u, story_id, str(body.get("slot_id") or ""), str(body.get("character_id") or ""))
+        return self.story(story_id)

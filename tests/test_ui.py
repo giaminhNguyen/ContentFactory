@@ -671,6 +671,25 @@ class HttpTest(UiCase):
         self.assertEqual(self.call("GET", "/api/universe/audit?limit=5")[1]["events"][0]["action"], "lock")
         self.assertEqual(self.call("GET", "/api/universe/summary", token=False)[0], 401)
 
+    def test_universe_story_cast_endpoints(self):
+        self.app.stop()
+        from contentfactory.universe import casting as CA
+        d = self.o.universe.create_character({"display_name": "Thám Tử Vân", "core_personality": "điềm tĩnh quan sát tinh tế", "strengths": ["quan sát"], "genre_affinities": ["trinh thám"]})
+        CA.cast_story(self.o.universe, {"story_id": "demo-1", "genre": "trinh thám", "slots": [
+            {"slot_id": "hero", "role_code": "protagonist", "traits": ["điềm tĩnh", "quan sát"]},
+            {"slot_id": "villain", "role_code": "antagonist", "traits": ["tham vọng"], "relationships": [{"with": "hero", "type": "enemy_of"}]}]})
+        code, lst, _ = self.call("GET", "/api/universe/stories")
+        self.assertEqual((code, lst["stories"][0]["story_id"], lst["stories"][0]["reused"]), (200, "demo-1", 1))
+        code, st, _ = self.call("GET", "/api/universe/stories/demo-1")
+        self.assertEqual((code, st["orphans"], st["can_replace"], len(st["cast"]["relationships"])), (200, [], True, 1))
+        self.assertEqual(self.call("GET", "/api/universe/stories/nope")[0], 404)
+        code, alt, _ = self.call("GET", "/api/universe/stories/demo-1/alternatives?slot=villain")
+        self.assertEqual((code, [a["character_id"] for a in alt["alternatives"]]), (200, [d["character_id"]]))
+        code, rep, _ = self.call("POST", "/api/universe/stories/demo-1/replace", {"slot_id": "villain", "character_id": d["character_id"]})
+        self.assertEqual(code, 200)                                                                           # nhân vật có thể giữ vai khác trong cùng truyện? không: đã là chính ⇒ dàn vẫn hợp lệ
+        self.assertEqual(rep["orphans"], [])
+        self.assertEqual(self.call("POST", "/api/universe/stories/demo-1/replace", {"slot_id": "villain", "character_id": d["character_id"]})[1]["error"]["code"], "RECAST_LIMIT")
+
     def test_channel_run_endpoints(self):
         self.app.stop()                                                                    # không để vòng lặp nền chạy mất job con trong test
         self.o.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(i) for i in range(12, 0, -1)]))

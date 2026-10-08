@@ -56,6 +56,15 @@ def main() -> int:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000); w.writeframes(b"\x00\x00" * 8000 * 4)
     fx.update(srt=str(srt), story=str(story), wav=str(wav), youtube=URL)
     orc = Orchestrator(load_config(root))
+    if a.universe_demo:
+        from contentfactory.universe import casting as CA                                                   # noqa: E402
+        orc.universe.create_character({"display_name": "Thám Tử Vân", "core_personality": "điềm tĩnh quan sát tinh tế suy luận logic", "strengths": ["quan sát"], "motivations": ["tìm sự thật"],
+                                       "flaws": ["cô độc"], "communication_style": "nói chậm, chọn từ cẩn thận", "genre_affinities": ["trinh thám"]})
+        orc.universe.create_character({"display_name": "Hùng Sói", "core_personality": "nóng nảy trọng nghĩa khí nói ít làm nhiều", "motivations": ["trả ơn"], "flaws": ["bốc đồng"], "genre_affinities": ["hành động"]})
+        CA.cast_story(orc.universe, {"story_id": "demo-1", "genre": "trinh thám", "slots": [
+            {"slot_id": "hero", "role_code": "protagonist", "importance": 3, "traits": ["điềm tĩnh", "quan sát"], "goal": "Tìm ra kẻ đứng sau vụ án"},
+            {"slot_id": "villain", "role_code": "antagonist", "importance": 3, "traits": ["tham vọng", "tàn nhẫn"], "goal": "Che giấu tội ác", "relationships": [{"with": "hero", "type": "enemy_of"}]},
+            {"slot_id": "friend", "role_code": "ally", "traits": ["trung thành"], "relationships": [{"with": "hero", "type": "friend_of"}]}]})
     from tests.test_batches import FakeYouTube, discovery as make_discovery, entry as yt_entry         # noqa: E402 - kênh YouTube giả (chỉ metadata) cho Channel Run
     orc.batch_service()._discovery = make_discovery(FakeYouTube(videos=[yt_entry(30, live_status="is_upcoming"), yt_entry(29, live_status="was_live")] + [yt_entry(i) for i in range(28, 0, -1)]))
     fx["channel_url"] = "@abc"
