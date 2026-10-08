@@ -71,8 +71,8 @@ The agent MUST keep **Current State** below updated.
 
 - Active phase: `PHASE 1` (unlocked, not started)
 - Status: `NOT_STARTED`
-- Last approved commit: `Phase 0 commit (hash recorded below after commit)`
-- Current phase base commit: `Phase 0 commit` (Phase 0 base was `6f12443b11054e485a1498afdc0c9f4dd5861392`; branch `feat/dopamine-rollout`, cut from `feat/story-guidance-selective-rerun` HEAD — not from `main`)
+- Last approved commit: `200045e`
+- Current phase base commit: `200045e` (Phase 0 base was `6f12443b11054e485a1498afdc0c9f4dd5861392`; branch `feat/dopamine-rollout`, cut from `feat/story-guidance-selective-rerun` HEAD — not from `main`)
 - Current benchmark run: `BENCHMARK-001` baseline only (no candidate generated in Phase 0)
 - User decision required: `NO` (waiting for instruction to start Phase 1)
 
@@ -363,7 +363,7 @@ Yes.
 
 - Status: `APPROVED_COMMITTED`
 - Base commit: `6f12443b11054e485a1498afdc0c9f4dd5861392`
-- Approved commit: `see Decision Log` (hash recorded right after commit)
+- Approved commit: `200045e`
 - Notes: see PHASE 0 REPORT below.
 
 ### PHASE 0 REPORT
@@ -982,7 +982,7 @@ If a bug is caused by an already-approved earlier phase:
 |---|---:|---|---|---|
 | TBD | 0 | Plan created | Incremental phases, stop/report/confirm/commit each phase | TBD |
 | 2026-10-08 | 0 | Branch `feat/dopamine-rollout` created from `feat/story-guidance-selective-rerun` @ 6f12443; Phase 0 executed, awaiting approval | "chia nhánh và chạy AGENT_DOPAMINE_ROLLOUT.md" | executed |
-| 2026-10-08 | 0 | APPROVE PHASE 0; commit Phase 0 | "approve" | commit hash: TBD |
+| 2026-10-08 | 0 | APPROVE PHASE 0; commit Phase 0 | "approve" | 200045e |
 
 ---
 
