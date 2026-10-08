@@ -1,0 +1,147 @@
+diff --git a/Promtps/AGENT_DOPAMINE_ROLLOUT.md b/Promtps/AGENT_DOPAMINE_ROLLOUT.md
+index 761c2fd..258889e 100644
+--- a/Promtps/AGENT_DOPAMINE_ROLLOUT.md
++++ b/Promtps/AGENT_DOPAMINE_ROLLOUT.md
+@@ -69,12 +69,12 @@ The agent MUST keep **Current State** below updated.
+ 
+ ### 2.2 Current State
+ 
+-- Active phase: `PHASE 1` (unlocked, not started)
+-- Status: `NOT_STARTED`
++- Active phase: `PHASE 1`
++- Status: `WAITING_USER_CONFIRMATION`
+ - Last approved commit: `200045e`
+-- Current phase base commit: `200045e` (Phase 0 base was `6f12443b11054e485a1498afdc0c9f4dd5861392`; branch `feat/dopamine-rollout`, cut from `feat/story-guidance-selective-rerun` HEAD — not from `main`)
+-- Current benchmark run: `BENCHMARK-001` baseline only (no candidate generated in Phase 0)
+-- User decision required: `NO` (waiting for instruction to start Phase 1)
++- Current phase base commit: `1cc6d6c` (Phase 0 approved commit was `200045e`) (Phase 0 base was `6f12443b11054e485a1498afdc0c9f4dd5861392`; branch `feat/dopamine-rollout`, cut from `feat/story-guidance-selective-rerun` HEAD — not from `main`)
++- Current benchmark run: `BENCHMARK-001` candidate `p1-001` (benchmarks/BENCHMARK-001/candidates/p1-001/story.txt)
++- User decision required: `YES` — `APPROVE PHASE 1` / `ADJUST PHASE 1: ...` / `REJECT PHASE 1`
+ 
+ ### 2.3 Stop rule
+ 
+@@ -488,10 +488,92 @@ Yes.
+ 
+ ### Phase result
+ 
+-- Status: `NOT_STARTED` (unlocked by APPROVE PHASE 0)
+-- Base commit: `TBD`
+-- Approved commit: `TBD`
+-- Notes: `TBD`
++- Status: `WAITING_USER_CONFIRMATION`
++- Base commit: `1cc6d6c`
++- Approved commit: `TBD` (not committed until `APPROVE PHASE 1`)
++- Notes: see PHASE 1 REPORT below.
++
++### PHASE 1 REPORT
++
++```text
++PHASE 1 REPORT
++Status: WAITING_USER_CONFIRMATION
++Base commit: 1cc6d6c
++Candidate run: BENCHMARK-001 / p1-001  (python scripts/story_bench.py run BENCHMARK-001 --candidate p1-001 --yes)
++  1 candidate only, generation nondeterministic (no seed). CLI 2.1.294, model = CLI default. 10 agent turns, $47.56, ~2h03m.
++
++Files changed:
++- src/contentfactory/adapters/story_branch.py  (+REWRITE_CONTRACT, folded into `pre`; explore/create step wording; ADAPTER_VERSION 1->2)
++- src/contentfactory/story/assembler.py        (BUG-001 one-line guard, see below)
++- tests/test_story_branch.py (every /story-* prompt carries the contract), tests/test_assembler.py (BUG-001 regression)
++- benchmarks/BENCHMARK-001/candidates/p1-001/{story.txt, compare.json, run.json}  (oh-story/ workspace is gitignored)
++- Promtps/AGENT_DOPAMINE_ROLLOUT.md
++
++Behavioral change:
++- Prompt-only. Every ContentFactory prompt to oh-story (analyze/explore/create/handoff/outline/write) now starts with a "HỢP ĐỒNG VIẾT LẠI": it is a rewrite;
++  identify the source's primary reward engine and general payoff order and keep them; only change surface; skill rules about avoiding retelling / surprise do not apply;
++  do not add unreliable memory, moral inversion, antagonist rehabilitation, new mystery layers, slower psychological pacing unless already in the source;
++  user story-guidance still wins when it explicitly asks for such change. `explore` is told all directions are faithful rewrites that differ only in surface;
++  `create` picks "the direction that best keeps the source reward engine" instead of "the strongest suggested".
++- No new schema / stage / mode / validator; oh-story skills untouched (modules/ is not edited). Creative branching remains available to oh-story users.
++- ADAPTER_VERSION 2: prompts changed, so adapter input fingerprint changes. CONSEQUENCE: any existing job whose story workspace is re-run (rerun / resume of an
++  old job) is treated as stale and regenerated from scratch (old workspace kept as oh-story.stale-<fp>). Intended, but costs a full generation (~$40-50 here).
++
++Automated tests:
++- PASS tests.test_assembler tests.test_story_branch tests.test_story_bench tests.test_story_guidance (53) ; earlier PASS incl. test_source_adapter, test_automode (147). Full suite not run.
++
++Benchmark comparison (BENCHMARK-001):
++| Dimension | Source | Previous approved | Candidate p1-001 | Notes |
++| words | 11,946 | 12,884 | 13,421 | candidate +12% vs source; baseline +8% |
++| sentence words mean / p90 | 14.8 / 27 | 8.9 / 17 | 13.4 / 23 | candidate near source cadence; baseline choppy |
++| hook latency (words to first ?/!/quote) | 169 | 49 | 63 | source figure includes channel greeting; both rewrites hook fast |
++| longest span w/o ?/!/quote (words) | 775 | 290 | 330 | proxy only, source has no quote marks |
++| questions / 1k words | 10.88 | 4.66 | 9.46 | candidate restores the confrontational/interrogative texture |
++| exclamations / 1k words | 0.25 | 0.08 | 0.97 | candidate is more emphatic than both (watch for over-dramatic TTS) |
++| name-like phrases | 156 | 160 | 156 | no extra cast vs source |
++| unbalanced-quote paragraphs | 15 | 75 | 7 | fewer broken quote pairs than baseline |
++Key-term counts (source / approved / candidate): "Anh Ba" 0/6/0, "giấy nợ" 0/3/0, "chú Triệu" 0/4/0 (the invented subplot of the baseline is gone);
++"Đạo đức giả" 1/0/1, "vùng cao" (donate scholarship) 1/0/1, "ống tiêm" 3/0/2, "ma túy" 2/0/2, "cảnh sát" 5/0/4 (source payoffs missing from baseline are back).
++
++What is visibly/audibly better (vs previous approved Story):
++1. Source payoff chain is back, in source order: the class declaration ("Xin lỗi nhé, tôi hối hận rồi."), turning Khương Linh's hypocrisy against her ("Đạo đức giả"),
++   donating the scholarship to remote-area children, and the closing alley scene: disarms Giang Ngạn Tứ, "Mày có biết tại sao mày sống không tốt không?", syringe tests positive
++   for drugs, police take him away = public/legal consequence instead of the baseline's quiet hand-over ("Không ai lớn tiếng").
++2. No antagonist rehabilitation: no debt-slip / instalment subplot for Từ Phán Nhi, no Anh Ba / chú Triệu mystery layer, no "Vậy hôm nay hắn sợ cái gì?" suspense opening.
++3. Prose still cleaner than the source: ASR name variants unified (source Phá/Phán Nhi 47/35 -> candidate Phán Nhi only), concrete staging ("Bộp."), 7 vs 15 broken-quote paragraphs.
++4. Brief evidence of intent: the agent wrote the engine into its own artifacts ("vả mặt công khai + gậy ông đập lưng ông + hậu quả nặng, nhanh") and picked the direction that "không đổi nhịp, không cắt payoff".
++
++What got worse or is uncertain:
++1. NEAR-PARAPHRASE RISK (most important). Opening and final scene follow the source almost sentence for sentence (e.g. "Tôi vừa mở mắt ra đã phát hiện kẻ tung tin đồn bẩn về tôi ở kiếp trước đang đứng trên bục giảng.";
++   the alley dialogue "Mày có biết tại sao mày sống không tốt không?..." is quoted nearly verbatim). Phase 1 pushed fidelity hard; Phase 5 asks "still a rewrite, not a paraphrase".
++   Not measured here (no overlap metric yet). Needs your ear/eye: acceptable "cleaned retelling" or too close to the source?
++2. Candidate likely shares the source's weaknesses (e.g. simplistic motives; Khương Linh named 68 times vs 16 in baseline) — not independently assessed; only excerpts were read, not all 60k chars.
++3. Exclamation density 0.97/1k (4x source, 12x baseline): may read as melodramatic in TTS. Audio clarity not auditioned.
++4. Single nondeterministic sample + one benchmark of one genre: improvement is not yet evidence of generality. The contract is generic wording (no revenge-specific rule), but only a revenge source has been tested.
++5. Cost/latency: $47.56 and ~2h per generation, unchanged by the contract in kind but now recorded (baseline cost unknown).
++
++Source-engine retention:
++- visibly improved: LOW-to-MODERATE (baseline) -> HIGH on the payoff chain, from excerpts + term counts. Not a formal score.
++
++Bugs discovered/fixed in this phase:
++- BUG-001 (pre-existing, found by this candidate): Story Assembler kept the heading "## 第8章 Có nhện!" because titles ending in !/? were treated as body sentences,
++  so the validator raised TECHNICAL_MARKER and the real pipeline would have failed with STORY_INVALID. Fixed with a minimal guard (marked headings "##"/"第N章" are always headings; the
++  "Chương 2 đã kết thúc..." exemption applies only to the plain-text patterns). Regression test added. NOTE scope: touches assembler (Phase 1 forbids an assembler REWRITE, this is a 1-line fix
++  that was needed to validate the candidate). It is independent of the prompt contract; say `ADJUST` if you prefer it split into its own commit/revert. The candidate story.txt was RE-ASSEMBLED from the same 14 chapter files (no regeneration); run.json says so.
++
++Candidate artifacts:
++- source: benchmarks/BENCHMARK-001/source.txt
++- previous approved: benchmarks/BENCHMARK-001/approved/story.txt
++- candidate: benchmarks/BENCHMARK-001/candidates/p1-001/story.txt (+ compare.json, run.json)
++- report: this section
++
++Agent recommendation:
++- APPROVE the prompt contract + BUG-001 fix, after you sample-listen/read p1-001 for the near-paraphrase concern. If you find it too close to the source, use
++  `ADJUST PHASE 1: ...` (I would soften "only change surface" to allow re-staging scenes while keeping payoff order) rather than REJECT.
++
++USER DECISION REQUIRED.
++Do not commit or continue until explicit confirmation.
++```
+ 
+ ---
+ 
+@@ -957,6 +1039,7 @@ Do not delete old rows. Mark status instead.
+ | Bug ID | Phase found | Symptom | Root cause | Fix | Regression test/evidence | Status | Commit |
+ |---|---:|---|---|---|---|---|---|
+ | _example_ | 1 | Candidate ignored source payoff | Conflicting creative-branch instruction | Scoped preservation override in ContentFactory wrapper | BENCHMARK-001 comparison | EXAMPLE ONLY | - |
++| BUG-001 | 1 (pre-existing) | Real pipeline would fail STORY_INVALID/TECHNICAL_MARKER: `## 第8章 Có nhện!` survived assembly | `_is_heading` exempted any heading whose title ends in .!? as a body sentence, including unambiguous `##` / `第N章` forms | exemption limited to the 2 plain-text heading patterns | tests/test_assembler.py::test_marked_headings_are_removed_even_when_title_ends_with_punctuation; p1-001 re-assembled clean | FIXED_UNCOMMITTED | - |
+ 
+ Status values:
+ 
+@@ -983,6 +1066,7 @@ If a bug is caused by an already-approved earlier phase:
+ | TBD | 0 | Plan created | Incremental phases, stop/report/confirm/commit each phase | TBD |
+ | 2026-10-08 | 0 | Branch `feat/dopamine-rollout` created from `feat/story-guidance-selective-rerun` @ 6f12443; Phase 0 executed, awaiting approval | "chia nhánh và chạy AGENT_DOPAMINE_ROLLOUT.md" | executed |
+ | 2026-10-08 | 0 | APPROVE PHASE 0; commit Phase 0 | "approve" | 200045e |
++| 2026-10-08 | 1 | Phase 1 started; REWRITE_CONTRACT added; candidate p1-001 generated ($47.56); BUG-001 fixed; awaiting approval | "ok phase 1" | uncommitted |
+ 
+ ---
+ 
+@@ -991,9 +1075,11 @@ If a bug is caused by an already-approved earlier phase:
+ | Phase | Benchmark | Source-engine retention | Audio clarity | Reward cadence | Cognitive friction | Continuity | Human verdict | Candidate path |
+ |---:|---|---|---|---|---|---|---|---|
+ | 0 | BENCHMARK-001 | Low-to-moderate (approved Story drifts to suspense/ambiguity; qualitative) | Good (clean paragraphs, short sentences) | Slower than source: payoffs delayed/softened, quiet ending | Higher setup load (new entities/subplots: Anh Ba, giấy nợ, ...) | No known break | approved | benchmarks/BENCHMARK-001/approved/story.txt (baseline) |
++| 1 | BENCHMARK-001 | High on payoff chain (source order restored; invented subplots gone) | Not auditioned; prose clean, broken quotes 75->7 | Close to source cadence (sent mean 13.4 vs 14.8) | Name-like phrases = source (156) | No break seen (only excerpts + term counts read) | pending | benchmarks/BENCHMARK-001/candidates/p1-001/story.txt |
+ 
+ Use qualitative values or documented rubric scales consistently. Do not fabricate precision.
+ 
++
+ ---
+ 
+ # 9. Rollback protocol
