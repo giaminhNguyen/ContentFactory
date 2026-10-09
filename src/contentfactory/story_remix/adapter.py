@@ -33,8 +33,13 @@ class StoryRemixAdapter:
         ctx.log("story_remix_plan_start", chapters=chapters_for(profile))
         plan = plan_story(self.llm, self.universe_factory(), source, bundle["title"], lang, mode, profile, rdir, ctx.job_id, ctx, ledger)
         target = int(profile.get("chapter_chars", 3000))
+        try:
+            meta = ctx.read_json("metadata")
+        except (KeyError, OSError, ValueError):
+            meta = {}
+        marks = W.source_brand_marks(bundle.get("title") or "", str((meta.get("metadata") or {}).get("channel") or ""))
         res = W.write_chapters(self.llm, ledger, rdir, plan["bible"], plan["outline"], plan["cast"], self.universe_factory().profiles(plan["cast"]), plan["dna"], lang, target,
-                               st["audio_readability"], st["quality_repair_max_passes"], ctx)
+                               st["audio_readability"], st["quality_repair_max_passes"], ctx, marks)
         ledger.save()
         cost = ledger.report()
         atomic_write_json(rdir / "writer_report.json", {"chapters": res["chapters"], "ran": res["ran"], "skipped": res["skipped"]})
@@ -66,7 +71,12 @@ class StoryRemixAdapter:
             chapters = json.loads((rdir / "writer_report.json").read_text(encoding="utf-8"))["chapters"]
         except (OSError, ValueError):
             return {}
-        qa = W.final_qa(chapters, cast["members"], story_text, mem)
+        try:
+            meta = ctx.read_json("metadata")
+        except (KeyError, OSError, ValueError):
+            meta = {}
+        marks = W.source_brand_marks(str(meta.get("title") or ""), str((meta.get("metadata") or {}).get("channel") or ""))
+        qa = W.final_qa(chapters, cast["members"], story_text, mem, marks)
         out: dict = {"final_qa_accepted": qa["accepted"]}
         if self.publisher is not None and qa["accepted"] and mode["character_universe"]["auto_update_after_qa"]:
             try:                                                        # lỗi publish KHÔNG làm hỏng truyện đã đạt QA: ghi rõ, có thể thử lại thủ công (idempotent)

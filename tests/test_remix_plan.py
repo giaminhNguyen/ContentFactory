@@ -308,6 +308,17 @@ class SchemaTest(unittest.TestCase):
         self.assertEqual(upd["state_changes"], [{"character_id": "ch_aaaaaaaaaaaa", "status": "giận"}, {"character_id": "ch_bbbbbbbbbbbb", "location": "nhà"},
                                                 {"character_id": "ch_bbbbbbbbbbbb", "notes": "x"}])           # người ngoài dàn bỏ qua; khoá danh tính bị bỏ
 
+    def test_old_channel_brand_traces_are_blocked_in_chapters_and_final_qa(self):
+        from contentfactory.story_remix import writer as W
+        marks = W.source_brand_marks("Anh Ben Travel Số 1814 - Tham Quan Nhật Bản", "Anh Ben Audio")
+        self.assertEqual(marks, ["Anh Ben Audio", "Anh Ben Travel"])
+        self.assertEqual(W.brand_hit("Nghe truyện tại kênh AnhBen Audio nhé", marks), "Anh Ben Audio")          # không phụ thuộc khoảng trắng/hoa thường
+        self.assertIsNone(W.brand_hit("Anh Hoàng và Ben gặp nhau ở bến tàu", marks))                               # tên riêng thuộc cốt truyện không bị xoá nhầm
+        members = [{"character_id": "ch_aaaaaaaaaaaa", "display_name": "Kiều An"}]
+        qa = W.final_qa([], members, "Kiều An nghe Anh Ben Audio kể chuyện", {}, marks)
+        self.assertFalse(qa["accepted"])
+        self.assertIn("SOURCE_BRAND_TRACE", [p["code"] for p in qa["problems"]])
+
     def test_integrity_and_quality_constraints_are_kept(self):
         p = premise("P1")
         for bad in ({**p, "slots": [{**p["slots"][0], "role_code": "vua"}, *p["slots"][1:]]},                  # vai không thuộc danh mục

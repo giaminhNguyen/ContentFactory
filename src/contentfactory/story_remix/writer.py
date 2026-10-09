@@ -159,7 +159,26 @@ def _sentences(text: str) -> list[str]:
     return [s for s in re.split(r"(?<=[.!?…])\s+|\n+", text) if s.strip()]
 
 
-def qa_chapter(text: str, chapter: dict, members: list[dict], upd: dict, mem_before: dict, target: int, readability: str) -> list[dict]:
+def source_brand_marks(title: str, channel: str = "") -> list[str]:
+    """Dấu hiệu nhận diện KÊNH GỐC cần loại khỏi truyện mới: tên kênh, phần đầu tên video trước "Số/-/|" (vd "Anh Ben Travel"), chữ trong 【】/[] và sau "|" cuối."""
+    from ..story.naming import brand_marks
+    head = re.split(r"\s+(?:Số|số|-|–|\|)\s*", (title or "").strip(), 1)[0].strip()
+    marks = [channel.strip(), head, *brand_marks(title)]
+    out = []
+    for m in marks:
+        m = re.sub(r"\s*-\s*Videos$", "", m).strip()
+        if len(m) >= 4 and m.lower() not in {x.lower() for x in out}:
+            out.append(m)
+    return out
+
+
+def brand_hit(text: str, marks: list[str]) -> str | None:
+    """Dấu hiệu kênh gốc còn sót trong văn bản (so khớp không phân biệt hoa/thường và không phụ thuộc khoảng trắng)."""
+    flat = re.sub(r"\s+", "", text).lower()
+    return next((m for m in marks if re.sub(r"\s+", "", m).lower() in flat), None)
+
+
+def qa_chapter(text: str, chapter: dict, members: list[dict], upd: dict, mem_before: dict, target: int, readability: str, marks: list[str] | None = None) -> list[dict]:
     """Lỗi tất định của một chương: [{code, severity: block|warn, message}]. Không dùng LLM (rẻ, lặp lại được)."""
     issues = []
     n = len(text)
@@ -169,6 +188,9 @@ def qa_chapter(text: str, chapter: dict, members: list[dict], upd: dict, mem_bef
         issues.append({"code": "SHORT", "severity": "warn", "message": f"Chương {n} ký tự, ngắn hơn mục tiêu ≈ {target}."})
     elif n > 1.7 * target:
         issues.append({"code": "TOO_LONG", "severity": "warn", "message": f"Chương {n} ký tự, dài hơn nhiều so với mục tiêu ≈ {target}."})
+    hit = brand_hit(text, marks or [])
+    if hit:
+        issues.append({"code": "SOURCE_BRAND_TRACE", "severity": "block", "message": f"Còn dấu vết kênh/watermark của nguồn cũ trong lời kể: “{hit}”. Xoá hẳn, không thay bằng biến thể."})
     by_id = {m["character_id"]: m for m in members}
     low = " " + " ".join(SIM.words(text)) + " "
     missing = [by_id[c]["display_name"] for c in chapter["cast"] if c in by_id and " " + " ".join(SIM.words(by_id[c]["display_name"])) + " " not in low]
@@ -204,7 +226,7 @@ def _cast_lines(members: list[dict], profiles: dict) -> str:
 
 # ---------------------------------------------------------------------------------------------- vòng viết
 def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dict, cast: dict, profiles: dict, dna: dict, lang: str, target_chars: int, readability: str,
-                   repair_passes: int, ctx=None) -> dict:
+                   repair_passes: int, ctx=None, marks: list[str] | None = None) -> dict:
     """Viết mọi chương theo thứ tự; resume theo checkpoint từng chương. Trả {sections, memory, chapters[{n, chars, repairs, issues}], ran, skipped}."""
     ch_dir, mem_dir = out_dir / "chapters", out_dir / "memory"
     ch_dir.mkdir(parents=True, exist_ok=True)
@@ -271,12 +293,12 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
 
         mem_prompt = lambda text, err: MEMORY_PROMPT.format(n=n, err=err, mark=MARK, cast=_cast_lines(members, profiles), text=text)   # noqa: E731
         text, upd = _ask(llm, ledger, f"chapter_{n}", prompt, parse, ctx, parse_memory, mem_prompt)
-        repairs, issues = 0, qa_chapter(text, ch, members, upd, mem, target_chars, readability)
+        repairs, issues = 0, qa_chapter(text, ch, members, upd, mem, target_chars, readability, marks)
         while issues and repairs < repair_passes and any(i["severity"] in ("block", "warn") for i in issues):
             repairs += 1
             rp = REPAIR_PROMPT.format(n=n, target=target_chars, issues="\n".join(f"- {i['message']}" for i in issues), cast=_cast_lines(members, profiles), text=text, mark=MARK)
             text, upd = _ask(llm, ledger, f"chapter_{n}_repair", rp, parse, ctx, parse_memory, mem_prompt)
-            issues = qa_chapter(text, ch, members, upd, mem, target_chars, readability)
+            issues = qa_chapter(text, ch, members, upd, mem, target_chars, readability, marks)
         blocking = [i for i in issues if i["severity"] == "block"]
         if blocking:
             atomic_write_text(text_f.with_suffix(".rejected.md"), text)
@@ -318,13 +340,16 @@ def _ask(llm, ledger: Ledger, step: str, prompt: str, parse, ctx, parse_memory=N
 
 
 # ---------------------------------------------------------------------------------------------- QA cuối truyện
-def final_qa(chapters: list[dict], members: list[dict], text: str, memory: dict) -> dict:
+def final_qa(chapters: list[dict], members: list[dict], text: str, memory: dict, marks: list[str] | None = None) -> dict:
     """Kiểm cuối sau khi ghép story.txt: mọi nhân vật trong dàn có mặt; tỷ lệ chương còn cảnh báo; mạch chưa giải quyết. `accepted` quyết định việc publish kho nhân vật."""
     low = " " + " ".join(SIM.words(text)) + " "
     absent = [m["display_name"] for m in members if " " + " ".join(SIM.words(m["display_name"])) + " " not in low]
     warned = [c["n"] for c in chapters if any(i["severity"] == "warn" for i in c["issues"])]
     blocking = [c["n"] for c in chapters if any(i["severity"] == "block" for i in c["issues"])]
     problems = []
+    hit = brand_hit(text, marks or [])
+    if hit:
+        problems.append({"code": "SOURCE_BRAND_TRACE", "message": f"Truyện còn dấu vết kênh/watermark của nguồn cũ: “{hit}”."})
     if absent:
         problems.append({"code": "CAST_ABSENT", "message": f"Nhân vật trong dàn không xuất hiện trong truyện: {', '.join(absent)}."})
     if blocking:
