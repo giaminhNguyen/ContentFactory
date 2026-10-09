@@ -255,6 +255,39 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(Invalid):
             extract_json("không có json")
 
+    def test_arbitrary_length_and_count_limits_never_fail_or_cut(self):
+        # Lỗi thật (job 000016): genre dài > 80 ký tự làm hỏng job sau 3 lượt gọi. Giờ văn bản dài/danh sách nhiều mục được nhận NGUYÊN VẸN.
+        long = "Ngôn tình đô thị kết hợp huyền huyễn, thần côn hài hước đối đầu tổng tài lạnh lùng trong gia tộc hào môn " * 3
+        many = [f"phần thưởng {i}" for i in range(30)]
+        dna = SC.source_dna({**DNA, "genre": long, "reward_types": many, "subgenres": many, "avoid": many})
+        self.assertEqual((dna["genre"], dna["reward_types"]), (long.strip(), many))
+        p = premise("P1")
+        big = SC.premise({**p, "id": "IDEA_NUMBER_ONE_LONG", "twist": long, "payoff_plan": p["payoff_plan"] * 10})
+        self.assertEqual((big["twist"], len(big["payoff_plan"])), (long.strip(), len(p["payoff_plan"]) * 10))
+
+    def test_safe_format_slips_are_fixed_in_code_not_by_another_llm_call(self):
+        dna = SC.source_dna({**DNA, "genre": ["báo thù", "phản đòn"], "reward_types": "vạch mặt", "payoff_cadence": {"first_payoff_by_pct": "15%", "payoffs_per_10pct": 9}})
+        self.assertEqual((dna["genre"], dna["reward_types"]), ("báo thù; phản đòn", ["vạch mặt"]))
+        self.assertEqual(dna["payoff_cadence"], {"first_payoff_by_pct": 15, "payoffs_per_10pct": 5})          # lệch thang đo ⇒ kẹp về biên
+        p = premise("P1")
+        s0 = {**p["slots"][0], "slot_id": " Hero ", "role_code": "Protagonist"}
+        s1 = {**p["slots"][1], "relationships": [{"with": "HERO", "type": "kẻ thù"}]}
+        fixed = SC.premise({**p, "slots": [s0, s1, *p["slots"][2:]]})
+        self.assertEqual((fixed["slots"][0]["slot_id"], fixed["slots"][0]["role_code"], fixed["slots"][1]["relationships"][0]["with"]), ("hero", "protagonist", "hero"))
+        long = "bằng chứng rất dài " * 40
+        rv = GT._review({"verdict": "Similar", "overlaps": [{"aspect": "tình tiết", "severity": "HIGH", "evidence": long}]})
+        self.assertEqual((rv["verdict"], rv["overlaps"][0]["severity"], rv["overlaps"][0]["evidence"]), ("similar", "high", long))   # bằng chứng không bị cắt
+
+    def test_integrity_and_quality_constraints_are_kept(self):
+        p = premise("P1")
+        for bad in ({**p, "slots": [{**p["slots"][0], "role_code": "vua"}, *p["slots"][1:]]},                  # vai không thuộc danh mục
+                    {**p, "payoff_plan": p["payoff_plan"][:2]},                                             # quá ít điểm thưởng (cơ chế dopamine)
+                    {**p, "slots": [s for s in p["slots"] if s["role_code"] != "protagonist"] + [p["slots"][-1]]}):
+            with self.assertRaises(Invalid):
+                SC.premise(bad)
+        with self.assertRaises(Invalid):
+            SC.source_dna({**DNA, "genre": ""})
+
     def test_premise_validation(self):
         good = premise("P1")
         self.assertEqual(SC.premise(good)["id"], "P1")

@@ -71,12 +71,15 @@ def split_output(raw: str) -> tuple[str, dict]:
     return text.strip(), upd
 
 
-def _strs(v, what: str, mx: int = 12, ln: int = 300) -> list[str]:
+def _strs(v, what: str) -> list[str]:
+    """Danh sách chuỗi, KHÔNG giới hạn số mục/độ dài (bộ nhớ tự giới hạn khi hiển thị). Sửa an toàn: một chuỗi → [chuỗi], số → chuỗi."""
     if v is None:
         return []
-    if not isinstance(v, list) or len(v) > mx or not all(isinstance(x, str) and len(x) <= ln for x in v):
-        raise Invalid(f"{what}: phải là danh sách ≤ {mx} chuỗi (mỗi chuỗi ≤ {ln} ký tự).")
-    return [x.strip() for x in v if x.strip()]
+    if isinstance(v, str):
+        v = [v]
+    if not isinstance(v, list) or not all(isinstance(x, (str, int, float)) and not isinstance(x, bool) for x in v):
+        raise Invalid(f"{what}: phải là danh sách chuỗi.")
+    return [str(x).strip() for x in v if str(x).strip()]
 
 
 def check_update(upd: dict, cast_ids: set[str]) -> dict:
@@ -87,11 +90,11 @@ def check_update(upd: dict, cast_ids: set[str]) -> dict:
         bad = set(s) - {"character_id", *STATE_KEYS}
         if bad:
             raise Invalid(f"state_changes: không được đổi {', '.join(sorted(bad))} (danh tính cốt lõi là bất biến; chỉ {', '.join(STATE_KEYS)}).")
-        out["state_changes"].append({k: str(s[k])[:200] for k in s if isinstance(s[k], str) or k == "character_id"})
+        out["state_changes"].append({k: str(s[k]) for k in s if isinstance(s[k], str) or k == "character_id"})
     for p in upd.get("new_named_persons") or []:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not p["name"].strip():
             raise Invalid("new_named_persons: mỗi mục cần {name, minor}.")
-        out["new_named_persons"].append({"name": p["name"].strip()[:60], "minor": bool(p.get("minor", False))})
+        out["new_named_persons"].append({"name": p["name"].strip(), "minor": bool(p.get("minor", False))})
     return out
 
 

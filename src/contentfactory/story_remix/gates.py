@@ -39,14 +39,17 @@ def plan_text(premise: dict, bible: dict, outline: dict, cast: dict) -> str:
 
 
 def _review(v) -> dict:
-    if not isinstance(v, dict) or v.get("verdict") not in ("distinct", "similar", "retell"):
+    """Không cắt bằng chứng; chỉ chuẩn hoá chữ hoa/thường của nhãn (sửa an toàn bằng code)."""
+    verdict = str(v.get("verdict") or "").strip().lower() if isinstance(v, dict) else ""
+    if verdict not in ("distinct", "similar", "retell"):
         raise Invalid("verdict phải là distinct|similar|retell.")
     ov = []
-    for o in (v.get("overlaps") or [])[:12]:
-        if not isinstance(o, dict) or o.get("severity") not in ("low", "medium", "high"):
+    for o in v.get("overlaps") or []:
+        sev = str(o.get("severity") or "").strip().lower() if isinstance(o, dict) else ""
+        if sev not in ("low", "medium", "high"):
             raise Invalid("overlaps[].severity phải là low|medium|high.")
-        ov.append({"aspect": str(o.get("aspect", ""))[:40], "severity": o["severity"], "evidence": str(o.get("evidence", ""))[:300]})
-    return {"verdict": v["verdict"], "overlaps": ov}
+        ov.append({"aspect": str(o.get("aspect", "")), "severity": sev, "evidence": str(o.get("evidence", ""))})
+    return {"verdict": verdict, "overlaps": ov}
 
 
 def originality_gate(premise: dict, bible: dict, outline: dict, cast: dict, source_text: str, source_rights: str, llm, ledger: Ledger, ctx=None, review: bool = True) -> dict:
