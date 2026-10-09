@@ -175,7 +175,7 @@ class ClaudeCliRunner:
         if not result:
             raise StageError(ErrorClass.TRANSIENT, "AGENT_NO_RESULT", f"exit={p.returncode} {err[-300:]}")
         return {"session_id": result.get("session_id"), "text": text,
-                "cost_usd": float(result.get("total_cost_usd") or 0.0), "is_error": bool(result.get("is_error"))}
+                "cost_usd": float(result.get("total_cost_usd") or 0.0), "is_error": bool(result.get("is_error")), "usage": result.get("usage") or {}}
 
 
 def guidance_block(text: str) -> str:

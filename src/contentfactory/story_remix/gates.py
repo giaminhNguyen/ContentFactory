@@ -78,7 +78,7 @@ def originality_gate(premise: dict, bible: dict, outline: dict, cast: dict, sour
         bump("high" if retell >= RETELL_HIGH else "medium", f"{len(close)}/{len(beats)} beat gần trùng một đoạn nguồn (Jaccard ≥ 0.5)")
     opinion = None
     if review:
-        opinion = ask_json(llm, ledger, "originality_review", ST.SYS, REVIEW_PROMPT.format(plan=ptxt[:20000], source=ST.excerpt(source_text, 60_000)), _review, ctx)
+        opinion = ask_json(llm, ledger, "originality_review", ST.SYS, REVIEW_PROMPT.format(plan=ptxt, source=ST.excerpt(source_text, 60_000)), _review, ctx)
         worst = max([SEV[o["severity"]] for o in opinion["overlaps"]] + [0])
         if opinion["verdict"] == "retell" or worst == 3:
             bump("high", f"nhận xét mô hình: {opinion['verdict']}; " + "; ".join(o["evidence"] for o in opinion["overlaps"] if o["severity"] == "high")[:300])

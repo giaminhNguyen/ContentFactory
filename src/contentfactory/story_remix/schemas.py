@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from . import similarity as SIM
 from .core import Invalid
 
 DNA_VERSION = 1
@@ -59,6 +60,24 @@ def slug(v) -> str:
     t = unicodedata.normalize("NFD", str(v or "")).replace("đ", "d").replace("Đ", "D")
     t = "".join(c for c in t if unicodedata.category(c) != "Mn").lower()
     return re.sub(r"_+", "_", re.sub(r"[^a-z0-9_]", "_", t)).strip("_")
+
+
+def cast_names(members: list[dict]) -> dict[str, str]:
+    """{tên hiển thị đã chuẩn hoá: character_id} — để sửa bằng code khi LLM ghi tên thay vì id."""
+    return {" ".join(SIM.words(m["display_name"])): m["character_id"] for m in members}
+
+
+def cast_id(v, cast_ids: set[str], names: dict[str, str] | None = None) -> str | None:
+    """Sửa an toàn bằng code: LLM hay ghi tên ("Đặng Yến", "Yến") hoặc "ch_x (Tên)" thay vì đúng id. Khớp duy nhất mới nhận."""
+    v = str(v or "").strip()
+    if v in cast_ids:
+        return v
+    m = re.search(r"ch_[0-9a-f]{12}", v)
+    if m and m.group(0) in cast_ids:
+        return m.group(0)
+    w = " ".join(SIM.words(v))
+    hits = {cid for nm, cid in (names or {}).items() if w and (nm == w or nm.endswith(" " + w))}
+    return hits.pop() if len(hits) == 1 else None
 
 
 def _obj(v, what: str) -> dict:
@@ -128,14 +147,22 @@ def premise_candidates(d, want: int) -> dict:
     c = d.get("candidates")
     if not isinstance(c, list) or len(c) < 2:
         raise Invalid("candidates: cần ít nhất 2 ý tưởng khác nhau.")
-    out = [premise(p, f"candidates[{i}]. ") for i, p in enumerate(c[:want + 2])]
-    if len({p["id"] for p in out}) != len(out):
-        raise Invalid("candidates: id trùng.")
+    out, first_err = [], None
+    for i, p in enumerate(c[:want + 2]):
+        try:
+            out.append(premise(p, f"candidates[{i}]. "))
+        except Invalid as e:                                         # một ý tưởng hỏng không bắt cả lượt gọi lại: giữ các ý tưởng hợp lệ nếu còn ≥ 2
+            first_err = first_err or e
+    if len(out) < 2:
+        raise first_err or Invalid("candidates: cần ít nhất 2 ý tưởng hợp lệ.")
+    if len({p["id"] for p in out}) != len(out):                      # id trùng: đánh số lại bằng code (id chỉ là nhãn nội bộ)
+        for i, p in enumerate(out, 1):
+            p["id"] = f"P{i}"
     return {"version": 1, "candidates": out}
 
 
 # ---------------------------------------------------------------------------------------------- bible / outline
-def story_bible(d, cast_ids: set[str]) -> dict:
+def story_bible(d, cast_ids: set[str], names: dict[str, str] | None = None) -> dict:
     d = _obj(d, "story_bible")
     cast = d.get("cast")
     if not isinstance(cast, list):
@@ -143,9 +170,9 @@ def story_bible(d, cast_ids: set[str]) -> dict:
     got, out_cast = set(), []
     for m in cast:
         m = _obj(m, "cast[]")
-        cid = m.get("character_id")
-        if cid not in cast_ids:
-            raise Invalid(f"cast: character_id {cid!r} không thuộc dàn đã chốt ({', '.join(sorted(cast_ids))}). Không được tự thêm nhân vật chính ngoài dàn.")
+        cid = cast_id(m.get("character_id"), cast_ids, names)
+        if cid is None:
+            raise Invalid(f"cast: character_id {m.get('character_id')!r} không thuộc dàn đã chốt ({', '.join(sorted(cast_ids))}). Không được tự thêm nhân vật chính ngoài dàn.")
         got.add(cid)
         out_cast.append({"character_id": cid, "arc": _s(m, "arc", where="cast[]. "), "secrets": _l(m, "secrets", req=False, where="cast[]. "), "voice_notes": _s(m, "voice_notes", req=False, where="cast[]. ")})
     if got != cast_ids:
@@ -162,7 +189,7 @@ def story_bible(d, cast_ids: set[str]) -> dict:
             "world_rules": _l(d, "world_rules", req=False), "cast": out_cast, "causal_chain": cc, "themes": _l(d, "themes", req=False), "originality_notes": _l(d, "originality_notes", req=False)}
 
 
-def outline(d, cast_ids: set[str], protagonist_id: str, chapters_min: int, chapters_max: int) -> dict:
+def outline(d, cast_ids: set[str], protagonist_id: str, chapters_min: int, chapters_max: int, names: dict[str, str] | None = None) -> dict:
     d = _obj(d, "outline")
     chs = d.get("chapters")
     if not isinstance(chs, list) or not chapters_min <= len(chs) <= chapters_max:
@@ -172,6 +199,8 @@ def outline(d, cast_ids: set[str], protagonist_id: str, chapters_min: int, chapt
         c = _obj(c, f"chapters[{i}]")
         w = f"chapters[{i}]. "
         on = c.get("cast")
+        if isinstance(on, list):
+            on = [cast_id(x, cast_ids, names) or x for x in on]
         if not isinstance(on, list) or not on or any(x not in cast_ids for x in on):
             raise Invalid(f"{w}cast: danh sách character_id thuộc dàn đã chốt ({', '.join(sorted(cast_ids))}); tên tự do không được chấp nhận.")
         seen.update(on)

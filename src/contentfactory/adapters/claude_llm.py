@@ -1,6 +1,6 @@
 """TextLLM thật cho Story Remix: một lượt Claude Code không công cụ (cùng runner stream-json với story_branch, nên cùng cách đăng nhập/giới hạn/timeout/huỷ).
 
-Chi phí lấy từ `total_cost_usd` của CLI; thiếu hoặc 0 ⇒ trả None (= không rõ, KHÔNG suy đoán). Token không được CLI báo ở lớp này ⇒ None.
+Chi phí lấy từ `total_cost_usd` của CLI; thiếu hoặc 0 ⇒ trả None (= không rõ, KHÔNG suy đoán). Token lấy từ `usage` CLI báo (gồm cache); thiếu ⇒ None.
 """
 from __future__ import annotations
 
@@ -45,4 +45,7 @@ class ClaudeCliLLM:
         if turn["is_error"]:
             raise StageError(ErrorClass.TRANSIENT, "LLM_ERROR", (turn["text"] or "lỗi không rõ")[:300])
         cost = float(turn.get("cost_usd") or 0.0)
-        return {"text": turn["text"], "cost_usd": cost if cost > 0 else None, "tokens_in": None, "tokens_out": None, "seconds": round(time.time() - t0, 3)}
+        u = turn.get("usage") or {}                                   # token THẬT do Claude CLI báo (đầu vào gồm cả cache); thiếu ⇒ None, không suy đoán
+        tin = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")) if u else None
+        return {"text": turn["text"], "cost_usd": cost if cost > 0 else None, "tokens_in": tin or None, "tokens_out": int(u["output_tokens"]) if u.get("output_tokens") is not None else None,
+                "seconds": round(time.time() - t0, 3)}

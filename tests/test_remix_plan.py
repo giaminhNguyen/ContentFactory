@@ -319,6 +319,25 @@ class SchemaTest(unittest.TestCase):
         self.assertFalse(qa["accepted"])
         self.assertIn("SOURCE_BRAND_TRACE", [p["code"] for p in qa["problems"]])
 
+    def test_long_ai_fields_flow_through_casting_without_loss_or_failure(self):
+        # Hồi quy hệ thống: nới giới hạn ở schema Remix không được làm vỡ các bước SAU (hồ sơ nhân vật có giới hạn riêng từng mục).
+        from contentfactory.orchestrator.remix_universe import UniverseBridge
+        from contentfactory.story_remix.core import Invalid as _I
+        tmp = Path(tempfile.mkdtemp())
+        uni = Universe(UniverseDB(tmp / "u.db"))
+        self.addCleanup(uni.db.close)
+        bridge = UniverseBridge(uni)
+        long_goal = "Tìm ra kẻ đã hại mẹ mình suốt mười năm qua, và giành lại danh dự cho cả gia tộc trước toàn bộ triều đình. " * 6
+        p = premise("P1")
+        p["slots"][0]["goal"] = long_goal
+        p["slots"][0]["traits"] = ["rất điềm tĩnh " + "và quan sát tinh tế " * 8, *[f"đặc điểm số {i}" for i in range(14)]]
+        p = SC.premise(p)
+        genre = "Ngôn tình cổ đại cung đấu–hầu phủ, nữ chính thức tỉnh, nam chính trừng phạt kẻ phụ bạc"
+        cast = bridge.cast("story-long", p, genre, SM.parse({"mode": "story_remix"})["character_universe"], None)
+        self.assertEqual(len(cast["members"]), len(p["slots"]))
+        prof = bridge.profiles(cast)[next(m["character_id"] for m in cast["members"] if m["role_code"] == "protagonist")]
+        self.assertEqual(" ".join(" ".join(prof["motivations"]).split()), " ".join(long_goal.split()))        # mục tiêu dài được chia mục, không mất chữ
+
     def test_integrity_and_quality_constraints_are_kept(self):
         p = premise("P1")
         for bad in ({**p, "slots": [{**p["slots"][0], "role_code": "vua"}, *p["slots"][1:]]},                  # vai không thuộc danh mục
@@ -351,6 +370,51 @@ class SchemaTest(unittest.TestCase):
             SC.outline(ok, ids, "ch_aaaaaaaaaaaa", 4, 5)                                                                                         # số chương
         with self.assertRaises(Invalid):
             SC.story_bible({"cast": [{"character_id": "ch_zzzzzzzzzzzz", "arc": "x"}]}, ids)
+
+    def test_outline_and_bible_cast_given_as_names_are_mapped_in_code(self):
+        ids = {"ch_aaaaaaaaaaaa", "ch_bbbbbbbbbbbb"}
+        names = {"đặng yến": "ch_aaaaaaaaaaaa", "bùi thảo": "ch_bbbbbbbbbbbb"}
+        ch = lambda i, cast: {"n": i, "title": "t", "goal": "g", "beats": ["b"], "cast": cast, "hook": "h", "payoff": None}          # noqa: E731
+        o = SC.outline({"chapters": [ch(1, ["Đặng Yến", "ch_bbbbbbbbbbbb (Bùi Thảo)"]), ch(2, ["Yến", "Đặng Yến"]), ch(3, ["ch_aaaaaaaaaaaa"])]}, ids, "ch_aaaaaaaaaaaa", 3, 5, names)
+        self.assertEqual([c["cast"] for c in o["chapters"]], [["ch_aaaaaaaaaaaa", "ch_bbbbbbbbbbbb"], ["ch_aaaaaaaaaaaa"], ["ch_aaaaaaaaaaaa"]])
+        with self.assertRaises(Invalid):                                                                                         # tên lạ vẫn bị từ chối (toàn vẹn dàn đã chốt)
+            SC.outline({"chapters": [ch(1, ["Người Lạ"]), ch(2, ["ch_aaaaaaaaaaaa"]), ch(3, ["ch_bbbbbbbbbbbb"])]}, ids, "ch_aaaaaaaaaaaa", 3, 5, names)
+        b = SC.story_bible({"title": "t", "premise_id": "P1", "setting": {"place": "x"}, "cast": [{"character_id": "Bùi Thảo", "arc": "a"}, {"character_id": "Đặng Yến", "arc": "b"}],
+                            "causal_chain": [{"event": "e", "cause": "c", "effect": "f"}] * 3}, ids, names)
+        self.assertEqual({m["character_id"] for m in b["cast"]}, ids)
+
+    def test_one_bad_premise_candidate_does_not_force_regenerating_the_valid_ones(self):
+        good = [premise("P1"), premise("P2"), premise("P3")]
+        bad = {**premise("P4"), "slots": [{**premise("P4")["slots"][0], "role_code": "vua"}, *premise("P4")["slots"][1:]]}
+        out = SC.premise_candidates({"candidates": [good[0], bad, good[1], good[2]]}, 3)
+        self.assertEqual([c["id"] for c in out["candidates"]], ["P1", "P2", "P3"])
+        dup = SC.premise_candidates({"candidates": [good[0], {**good[1], "id": "P1"}]}, 3)                                       # id trùng ⇒ đánh số lại bằng code
+        self.assertEqual([c["id"] for c in dup["candidates"]], ["P1", "P2"])
+        with self.assertRaises(Invalid):                                                                                         # còn < 2 ý tưởng hợp lệ ⇒ mới gọi lại
+            SC.premise_candidates({"candidates": [good[0], bad]}, 3)
+
+    def test_real_token_usage_from_cli_is_recorded_and_missing_usage_stays_unknown(self):
+        from contentfactory.adapters.claude_llm import ClaudeCliLLM
+
+        class Runner:
+            def __init__(self, usage):
+                self.usage = usage
+
+            def run(self, *a, **k):
+                return {"text": "{}", "cost_usd": 0.5, "is_error": False, "usage": self.usage}
+        r = ClaudeCliLLM(runner=Runner({"input_tokens": 10, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 1000, "output_tokens": 7})).complete("p", system="s", step="x")
+        self.assertEqual((r["tokens_in"], r["tokens_out"], r["cost_usd"]), (1110, 7, 0.5))
+        r = ClaudeCliLLM(runner=Runner({})).complete("p", system="s", step="x")
+        self.assertEqual((r["tokens_in"], r["tokens_out"]), (None, None))                                                       # không suy đoán
+
+    def test_prompts_keep_full_character_info_and_all_open_threads(self):
+        from contentfactory.story_remix import writer as W
+        long = "tính cách " + "rất phức tạp và nhiều lớp " * 30
+        members = [{"character_id": "ch_aaaaaaaaaaaa", "display_name": "Kiều An", "role_code": "protagonist"}]
+        self.assertIn(long, W._cast_lines(members, {"ch_aaaaaaaaaaaa": {"core_personality": long, "communication_style": long}}))
+        mem = W.empty_memory()
+        mem["unresolved"] = [f"mạch {i}" for i in range(40)]
+        self.assertEqual(len(json.loads(W.memory_view(mem))["unresolved"]), 40)
 
     def test_asr_transcript_capitalised_sentence_starts_are_not_proper_names(self):
         # Lỗi chỉ lộ khi chạy nguồn thật: ASR viết hoa đầu câu nhưng thiếu dấu chấm ⇒ "Cậu/Không/Lúc" bị coi là tên riêng và trừ điểm novelty oan.

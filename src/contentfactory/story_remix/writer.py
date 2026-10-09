@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from ..fsutil import atomic_write_json, atomic_write_text
+from . import schemas as SC
 from . import similarity as SIM
 from ..contracts import ErrorClass, StageError
 from .core import Invalid, Ledger, extract_json, fail, fingerprint
@@ -104,17 +105,7 @@ def _strs(v, what: str) -> list[str]:
     return [str(x).strip() for x in v if str(x).strip()]
 
 
-def _cast_id(v, cast_ids: set[str], names: dict[str, str]) -> str | None:
-    """Sửa an toàn bằng code: LLM hay ghi tên ("Đặng Yến", "Yến") hoặc "ch_x (Tên)" thay vì đúng id. Khớp duy nhất mới nhận."""
-    v = str(v or "").strip()
-    if v in cast_ids:
-        return v
-    m = re.search(r"ch_[0-9a-f]{12}", v)
-    if m and m.group(0) in cast_ids:
-        return m.group(0)
-    w = " ".join(SIM.words(v))
-    hits = {cid for nm, cid in names.items() if w and (nm == w or nm.endswith(" " + w))}
-    return hits.pop() if len(hits) == 1 else None
+_cast_id = SC.cast_id
 
 
 def check_update(upd: dict, cast_ids: set[str], names: dict[str, str] | None = None) -> dict:
@@ -151,7 +142,7 @@ def merge_memory(mem: dict, upd: dict, chapter: int) -> dict:
 
 
 def memory_view(mem: dict) -> str:
-    return json.dumps({"facts": mem["facts"][-30:], "character_state": mem["character_state"], "unresolved": mem["unresolved"][-12:], "minor_persons": [p["name"] for p in mem["minor_persons"]]}, ensure_ascii=False)
+    return json.dumps({"facts": mem["facts"][-30:], "character_state": mem["character_state"], "unresolved": mem["unresolved"], "minor_persons": [p["name"] for p in mem["minor_persons"]]}, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------------------------- QA từng chương
@@ -221,7 +212,7 @@ def qa_chapter(text: str, chapter: dict, members: list[dict], upd: dict, mem_bef
 
 
 def _cast_lines(members: list[dict], profiles: dict) -> str:
-    return "\n".join(f"- {m['character_id']} | {m['display_name']} | vai {m['role_code']} | {profiles.get(m['character_id'], {}).get('core_personality', '')[:160]} | cách nói: {profiles.get(m['character_id'], {}).get('communication_style', '')[:100]}" for m in members)
+    return "\n".join(f"- {m['character_id']} | {m['display_name']} | vai {m['role_code']} | {profiles.get(m['character_id'], {}).get('core_personality', '')} | cách nói: {profiles.get(m['character_id'], {}).get('communication_style', '')}" for m in members)
 
 
 # ---------------------------------------------------------------------------------------------- vòng viết
@@ -233,7 +224,7 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
     mem_dir.mkdir(parents=True, exist_ok=True)
     members = cast["members"]
     ids = {m["character_id"] for m in members}
-    names = {" ".join(SIM.words(m["display_name"])): m["character_id"] for m in members}
+    names = SC.cast_names(members)
     total = len(outline["chapters"])
     mem = empty_memory()
     bible_fp, cast_fp = fingerprint(b=bible), fingerprint(c=[m["character_id"] for m in members])

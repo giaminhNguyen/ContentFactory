@@ -57,6 +57,15 @@ class CastTest(Base):
         self.assertEqual(len(cast["relationships"]), 2)
         self.assertEqual(len({m["display_name"] for m in cast["members"]}), 3)
 
+    def test_long_descriptive_genre_does_not_break_new_character_creation(self):
+        # Lỗi thật (8 job batch): genre DNA dài 86 ký tự > thẻ genre_affinities 40 ký tự ⇒ hồ sơ bị từ chối, bị nuốt và báo nhầm CAST_DUPLICATE.
+        g = "Ngôn tình cổ đại cung đấu–hầu phủ, nữ chính thức tỉnh, nam chính trừng phạt kẻ phụ bạc"
+        self.assertEqual(C.affinity_tag(g), "Ngôn tình cổ đại cung đấu")
+        self.assertLessEqual(len(C.affinity_tag("a " * 60)), 40)
+        cast = C.cast_story(self.u, req(genre=g))
+        self.assertEqual(len(cast["members"]), 3)
+        self.assertTrue(g.startswith(cast["genre"]))                                                        # genre chỉ là khoá so khớp độ hợp thể loại (đã giới hạn 80 từ trước)
+
     def test_reuses_fitting_character_with_explainable_score(self):
         d = self.u.create_character(DETECTIVE)
         cast = C.cast_story(self.u, req())

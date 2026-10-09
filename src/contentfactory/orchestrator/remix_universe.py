@@ -16,7 +16,7 @@ class UniverseBridge:
 
     def _request(self, story_id: str, premise: dict, genre: str, cu: dict) -> dict:
         return {"story_id": story_id, "genre": genre, "reuse_strategy": cu["reuse_strategy"], "allow_new": cu["allow_new_characters"], "pinned_character_ids": cu["pinned_character_ids"],
-                "slots": [{"slot_id": s["slot_id"], "role_code": s["role_code"], "importance": s["importance"], "traits": s["traits"], "goal": s["goal"],
+                "slots": [{"slot_id": s["slot_id"], "role_code": s["role_code"], "importance": s["importance"], "traits": CA.pack_text(" ; ".join(s["traits"]).replace(" ; ", ", "), 80, 12) if any(len(t) > 80 for t in s["traits"]) or len(s["traits"]) > 12 else s["traits"], "goal": s["goal"],
                            "relationships": [{"with": r["with"], "type": r["type"]} for r in s["relationships"]]} for s in premise["slots"]]}
 
     def continuity(self, premise: dict, genre: str) -> float:

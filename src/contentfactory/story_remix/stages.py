@@ -174,14 +174,14 @@ def cast_brief(cast: dict, profiles: dict[str, dict]) -> str:
     rows = []
     for m in cast["members"]:
         p = profiles.get(m["character_id"], {})
-        rows.append(f"- {m['character_id']} | {m['display_name']} | vai {m['role_code']} | tính cách: {p.get('core_personality', '')[:200]} | mục tiêu: {m['goal']}")
+        rows.append(f"- {m['character_id']} | {m['display_name']} | vai {m['role_code']} | tính cách: {p.get('core_personality', '')} | mục tiêu: {m['goal']}")
     return "\n".join(rows)
 
 
 def make_bible(llm, ledger: Ledger, premise: dict, cast: dict, profiles: dict, dna: dict, lang: str, ctx=None) -> dict:
     ids = {m["character_id"] for m in cast["members"]}
     prompt = BIBLE_PROMPT.format(cast=cast_brief(cast, profiles), premise=json.dumps(premise, ensure_ascii=False, indent=1), dna=json.dumps({k: dna[k] for k in ("reward_types", "emotional_promise", "payoff_cadence", "escalation_pattern", "tone")}, ensure_ascii=False), lang=lang)
-    return ask_json(llm, ledger, "story_bible", SYS, prompt, lambda d: SC.story_bible(d, ids), ctx)
+    return ask_json(llm, ledger, "story_bible", SYS, prompt, lambda d: SC.story_bible(d, ids, SC.cast_names(cast["members"])), ctx)
 
 
 OUTLINE_PROMPT = """Lập ĐẠI CƯƠNG {lo}–{hi} chương cho truyện audio ORIGINAL dưới đây.
@@ -209,4 +209,4 @@ def make_outline(llm, ledger: Ledger, bible: dict, cast: dict, profiles: dict, d
     first_ch, gap = cadence_limits(dna, n_chapters)
     prompt = OUTLINE_PROMPT.format(lo=lo, hi=hi, cast=cast_brief(cast, profiles), bible=json.dumps(bible, ensure_ascii=False), dna=json.dumps({k: dna[k] for k in ("reward_types", "hook_pattern", "payoff_cadence", "escalation_pattern")}, ensure_ascii=False),
                                    first_ch=first_ch, gap=gap, protagonist=prot, lang=lang, extra=(f"SỬA CÁC LỖI SAU CỦA BẢN TRƯỚC: {feedback}\n" if feedback else ""))
-    return ask_json(llm, ledger, "outline" if not feedback else "outline_repair", SYS, prompt, lambda d: SC.outline(d, ids, prot, lo, hi), ctx)
+    return ask_json(llm, ledger, "outline" if not feedback else "outline_repair", SYS, prompt, lambda d: SC.outline(d, ids, prot, lo, hi, SC.cast_names(cast["members"])), ctx)

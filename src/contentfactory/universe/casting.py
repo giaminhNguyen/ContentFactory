@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import re
 import time
 import uuid
 
@@ -68,7 +69,7 @@ def normalize_request(raw: dict, roles: set[str]) -> dict:
             rels.append({"with": r["with"], "type": r["type"].strip()[:40], "direction": r.get("direction", "mutual") if r.get("direction") in ("mutual", "out", "in") else "mutual"})
         out.append({"slot_id": s["slot_id"], "role_code": s["role_code"], "importance": imp, "traits": _list(s.get("traits"), f"slot {s['slot_id']} traits", 12, 80),
                     "skills": _list(s.get("skills"), f"slot {s['slot_id']} skills", 12, 80), "must_do": _list(s.get("must_do"), f"slot {s['slot_id']} must_do", 12, 80),
-                    "goal": str(s.get("goal") or "")[:300], "relationships": rels, "variant_facts": s.get("variant_facts") if isinstance(s.get("variant_facts"), dict) else {},
+                    "goal": str(s.get("goal") or "")[:2000], "relationships": rels, "variant_facts": s.get("variant_facts") if isinstance(s.get("variant_facts"), dict) else {},
                     "label": str(s.get("label") or "")[:80]})
     ids = {s["slot_id"] for s in out}
     for s in out:
@@ -194,6 +195,35 @@ def _ensemble_issues(slots: dict[str, dict], assign: dict[str, dict]) -> list[di
     return issues
 
 
+def pack_text(text, limit: int, max_items: int = 8) -> list[str]:
+    """Chia một đoạn dài thành tối đa `max_items` mục ≤ `limit` ký tự, ngắt ở ranh giới câu/mệnh đề/từ — KHÔNG làm mất chữ nào (hồ sơ nhân vật giới hạn từng mục)."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?;,])\s+", str(text or "").strip()) if p.strip()]
+    out, cur = [], ""
+    for p in parts:
+        for w in p.split(" "):
+            while len(w) > limit:                                    # từ dài bất thường: cắt cứng để không vượt giới hạn mục
+                if cur:
+                    out.append(cur); cur = ""
+                out.append(w[:limit]); w = w[limit:]
+            if len(cur) + len(w) + 1 > limit and cur:
+                out.append(cur); cur = w
+            else:
+                cur = f"{cur} {w}".strip()
+    if cur:
+        out.append(cur)
+    if len(out) > max_items:                                         # quá nhiều mục: gộp phần dư vào mục cuối chỉ khi còn chỗ; nếu không, báo lỗi rõ thay vì mất chữ
+        raise err("CAST_PROFILE_TOO_LONG", f"Văn bản dài {len(str(text))} ký tự không xếp vừa {max_items} mục × {limit} ký tự của hồ sơ nhân vật.", "Rút gọn mô tả vai.")
+    return out
+
+
+def affinity_tag(genre: str, limit: int = 40) -> str:
+    """`genre_affinities` của hồ sơ nhân vật là THẺ ngắn (≤ 40 ký tự); thể loại DNA có thể là cả cụm mô tả. Lấy mệnh đề đầu, rồi cắt ở ranh giới từ (chỉ cho thẻ này, không đổi thể loại của truyện)."""
+    g = re.split(r"\s*[,;:–—|/]\s*|\s+-\s+", (genre or "").strip(), 1)[0].strip()
+    if len(g) > limit:
+        g = g[:limit].rsplit(" ", 1)[0].strip()
+    return g
+
+
 # ---------------------------------------------------------------------------------------------- factory tạo nhân vật mới
 class SyntheticFactory:
     """Factory tất định cho test/fixture: sinh hồ sơ gốc khác biệt theo (story_id, slot, lần thử). Bản LLM ở Phase 4/5 cùng chữ ký."""
@@ -211,8 +241,12 @@ class SyntheticFactory:
         name = f"{self.LAST[r(len(self.LAST), 1)]} {self.FIRST[r(len(self.FIRST), 2)]}"
         t = [self.TRAITS[(r(len(self.TRAITS), 3) + 5 * i + attempt) % len(self.TRAITS)] for i in range(3)]
         need = list(slot["traits"])
-        return {"display_name": name if not slot.get("label") else slot["label"], "core_personality": ", ".join(need + t) + f" ({slot['role_code']})", "temperament": t[0],
-                "motivations": [slot["goal"] or f"mục tiêu của vai {slot['role_code']}"], "strengths": need[:3] + [t[1]], "flaws": [t[2]],
+        core = ", ".join(need + t) + f" ({slot['role_code']})"
+        strengths = need[:3] + [t[1]]
+        if len(core) > 1000:                                         # tính cách quá dài: core giữ phần ngắn, TOÀN BỘ đặc điểm của vai chuyển sang điểm mạnh (không bỏ chữ nào)
+            core, strengths = ", ".join(t) + f" ({slot['role_code']})", need + [t[1]]
+        return {"display_name": name if not slot.get("label") else slot["label"], "core_personality": core, "temperament": t[0],
+                "motivations": pack_text(slot["goal"], 200) or [f"mục tiêu của vai {slot['role_code']}"], "strengths": [x for s_ in strengths for x in pack_text(s_, 200, 8)], "flaws": [t[2]],
                 "communication_style": self.STYLES[(r(len(self.STYLES), 4) + attempt) % len(self.STYLES)], "genre_affinities": [ctx["genre"]] if ctx["genre"] else []}
 
 
@@ -326,15 +360,16 @@ def _build(uni: Universe, req: dict, fp: str, factory, job_id, actor: str, cast_
     missing = [sid for sid in slots if sid not in assign]
     if missing and not req["allow_new"]:
         raise err("CAST_INCOMPLETE", f"Không đủ nhân vật phù hợp cho vai: {', '.join(slots[s]['role_code'] for s in missing)} và đang tắt việc tạo nhân vật mới.", "Bật “Cho phép tạo nhân vật mới”.")
-    ctx = {"story_id": req["story_id"], "genre": req["genre"]}
+    ctx = {"story_id": req["story_id"], "genre": affinity_tag(req["genre"])}
     taken = [byid[c] for c in assign.values()]
     for sid in sorted(missing, key=lambda s: -slots[s]["importance"]):
-        prof = None
-        for attempt in range(4):
+        prof, last_err = None, ""
+        for attempt in range(12):                                   # kho đầy dần: tên/tính cách dễ trùng hơn ⇒ thử nhiều lần (không tốn AI)
             try:
                 cand_prof = S.clean_profile(factory(slots[sid], ctx, attempt))
             except Exception as e:                                   # noqa: BLE001
                 if hasattr(e, "code"):
+                    last_err = f"{getattr(e, 'code', '')}: {getattr(e, 'message', e)}"
                     continue
                 raise
             dup = bool(uni.near_duplicates(cand_prof)) or any(name_key(t["display_name"]) == name_key(cand_prof["display_name"]) or _jacc(t, cand_prof) >= 0.7
@@ -343,7 +378,8 @@ def _build(uni: Universe, req: dict, fp: str, factory, job_id, actor: str, cast_
                 prof = cand_prof
                 break
         if prof is None:
-            raise err("CAST_DUPLICATE", f"Không tạo được nhân vật mới đủ khác biệt cho vai {slots[sid]['role_code']}.", "Thử lại hoặc thêm đặc điểm riêng cho vai.")
+            why = f" Hồ sơ bị từ chối: {last_err[:200]}" if last_err else ""
+            raise err("CAST_DUPLICATE", f"Không tạo được nhân vật mới đủ khác biệt cho vai {slots[sid]['role_code']}.{why}", "Thử lại hoặc thêm đặc điểm riêng cho vai.")
         created[sid] = (S.new_id(), prof)
     issues_new = _ensemble_issues(slots, {**{sid: byid[c] for sid, c in assign.items()}, **{sid: p for sid, (_, p) in created.items()}})
     # ---- ghi (một giao dịch): world + cast đóng băng + quan hệ + candidates staged
