@@ -12,6 +12,22 @@ from ..contracts import ErrorClass, LLMResult, StageContext, StageError
 from .story_branch import ClaudeCliRunner
 
 
+class _NoCtx:
+    """Ngữ cảnh rỗng khi gọi ngoài pipeline (benchmark/CLI): không có huỷ, log bỏ qua."""
+    class cancel:
+        @staticmethod
+        def is_set() -> bool:
+            return False
+
+        @staticmethod
+        def check() -> None:
+            return None
+
+    @staticmethod
+    def log(*a, **k) -> None:
+        return None
+
+
 class ClaudeCliLLM:
     def __init__(self, cfg: dict | None = None, runner=None) -> None:
         cfg = dict(cfg or {})
@@ -25,7 +41,7 @@ class ClaudeCliLLM:
 
     def complete(self, prompt: str, *, system: str, step: str, ctx: StageContext | None = None) -> LLMResult:
         t0 = time.time()
-        turn = self.runner.run(f"{system}\n\n{prompt}", self._dir(), None, ctx)
+        turn = self.runner.run(f"{system}\n\n{prompt}", self._dir(), None, ctx or _NoCtx)
         if turn["is_error"]:
             raise StageError(ErrorClass.TRANSIENT, "LLM_ERROR", (turn["text"] or "lỗi không rõ")[:300])
         cost = float(turn.get("cost_usd") or 0.0)

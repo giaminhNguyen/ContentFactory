@@ -278,6 +278,15 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(Invalid):
             SC.story_bible({"cast": [{"character_id": "ch_zzzzzzzzzzzz", "arc": "x"}]}, ids)
 
+    def test_asr_transcript_capitalised_sentence_starts_are_not_proper_names(self):
+        # Lỗi chỉ lộ khi chạy nguồn thật: ASR viết hoa đầu câu nhưng thiếu dấu chấm ⇒ "Cậu/Không/Lúc" bị coi là tên riêng và trừ điểm novelty oan.
+        asr = " ".join(["Cậu ấy nói rằng cậu không biết Lúc đó lúc nào không biết Hạnh gặp Khuê rồi Không ai tin cậu lúc đó"] * 6 + ["Hạnh Khuê"] * 3)
+        names = SIM.proper_names(asr)
+        self.assertIn("Hạnh", names)
+        self.assertIn("Khuê", names)
+        for common in ("Cậu", "Không", "Lúc"):
+            self.assertNotIn(common, names)
+
     def test_similarity_helpers(self):
         self.assertEqual(SIM.containment("a b c d e f", "a b c d e f g"), 1.0)
         self.assertEqual(SIM.containment("x y z w", "a b c d"), 0.0)

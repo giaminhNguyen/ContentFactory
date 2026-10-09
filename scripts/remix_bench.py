@@ -38,7 +38,8 @@ def sources(only: list[str] | None = None) -> dict[str, Path]:
     return {k: v for k, v in out.items() if not only or k in only}
 
 
-def run_one(bid: str, path: Path, llm, out_dir: Path, mode_cfg: dict, write: bool, baseline: dict | None) -> dict:
+def run_one(bid: str, path: Path, llm, out_dir: Path, mode_cfg: dict, write: bool, baseline: dict | None, profile: dict | None = None) -> dict:
+    profile = profile or PROFILE
     text = path.read_text(encoding="utf-8")
     t0 = time.time()
     with tempfile.TemporaryDirectory() as tmp:
@@ -46,10 +47,18 @@ def run_one(bid: str, path: Path, llm, out_dir: Path, mode_cfg: dict, write: boo
         bridge = UniverseBridge(uni)
         d = out_dir / bid
         ledger = Ledger(d / "cost_report.json", mode_cfg["story"].get("budget_usd"))
-        plan = plan_story(llm, bridge, text, bid, "vi", mode_cfg, PROFILE, d, f"bench-{bid}", None, ledger)
+        try:
+            return _run_inner(bid, text, uni, bridge, llm, d, ledger, mode_cfg, write, baseline, profile, t0)
+        finally:
+            uni.db.close()                                                         # Windows: phải đóng SQLite trước khi xoá thư mục tạm
+
+
+def _run_inner(bid, text, uni, bridge, llm, d, ledger, mode_cfg, write, baseline, profile, t0) -> dict:
+    if True:
+        plan = plan_story(llm, bridge, text, bid, "vi", mode_cfg, profile, d, f"bench-{bid}", None, ledger)
         chapters = None
         if write:
-            res = W.write_chapters(llm, ledger, d, plan["bible"], plan["outline"], plan["cast"], bridge.profiles(plan["cast"]), plan["dna"], "vi", PROFILE["chapter_chars"],
+            res = W.write_chapters(llm, ledger, d, plan["bible"], plan["outline"], plan["cast"], bridge.profiles(plan["cast"]), plan["dna"], "vi", profile["chapter_chars"],
                                    mode_cfg["story"]["audio_readability"], mode_cfg["story"]["quality_repair_max_passes"])
             chapters = {"written": len(res["ran"]), "repairs": sum(c["repairs"] for c in res["chapters"]), "warned": sum(1 for c in res["chapters"] if c["issues"])}
         cost = ledger.report()
@@ -72,14 +81,15 @@ def run_one(bid: str, path: Path, llm, out_dir: Path, mode_cfg: dict, write: boo
     return row
 
 
-def run(llm, out_dir: Path, only: list[str] | None = None, write: bool = False, baseline_dir: Path | None = None, llm_name: str = "fake") -> dict:
-    mode_cfg = SM.parse({"mode": "story_remix"})
+def run(llm, out_dir: Path, only: list[str] | None = None, write: bool = False, baseline_dir: Path | None = None, llm_name: str = "fake", extra: dict | None = None,
+        profile: dict | None = None, budget: float | None = None) -> dict:
+    mode_cfg = SM.parse({"mode": "story_remix", "story": {"budget_usd": budget}})
     rows = []
-    for bid, p in sources(only).items():
+    for bid, p in {**({} if extra and not only else sources(only)), **(extra or {})}.items():
         base = None
         if baseline_dir and (baseline_dir / f"{bid}.json").is_file():
             base = json.loads((baseline_dir / f"{bid}.json").read_text(encoding="utf-8"))
-        rows.append(run_one(bid, p, llm, out_dir, mode_cfg, write, base))
+        rows.append(run_one(bid, p, llm, out_dir, mode_cfg, write, base, profile))
     genres = {r["dna"]["genre"] for r in rows}
     summary = {"benchmarks": len(rows), "distinct_genres": len(genres), "llm": llm_name, "all_gates_pass": all(r["dopamine"] == "pass" and r["originality"]["decision"] in ("pass", "pass_with_note") for r in rows),
                "note": ("LLM GIẢ: số liệu chỉ chứng minh đường ống/cổng/cơ chế thưởng theo thể loại, không phải chất lượng văn bản hay chi phí thật." if llm_name == "fake"
@@ -105,6 +115,9 @@ def main(argv=None) -> int:
     r.add_argument("--only", nargs="*")
     r.add_argument("--write", action="store_true", help="viết cả chương (tốn nhiều hơn)")
     r.add_argument("--baseline", type=Path)
+    r.add_argument("--source", type=Path, action="append", help="thêm một nguồn tuỳ ý (id = tên thư mục cha), vd benchmarks/BENCHMARK-001/source.txt")
+    r.add_argument("--chapters", type=int, help="số chương mục tiêu (mặc định 4)")
+    r.add_argument("--budget", type=float, help="ngân sách USD tối đa (dừng an toàn khi chi phí đã biết vượt)")
     r.add_argument("--out", type=Path)
     a = ap.parse_args(argv)
     if a.llm == "claude" and not a.confirm_spend:
@@ -117,7 +130,9 @@ def main(argv=None) -> int:
         from contentfactory.adapters.fake_remix import FakeRemixLLM
         llm = FakeRemixLLM(cost=0.0, report_cost=False)
     out = a.out or OUT_DIR / time.strftime("%Y%m%d-%H%M%S")
-    rep = run(llm, out, a.only, a.write, a.baseline, a.llm)
+    extra = {p.parent.name: p for p in (a.source or [])}
+    profile = {**PROFILE, "target_chars": (a.chapters or 4) * PROFILE["chapter_chars"], "chapters": a.chapters or 4}
+    rep = run(llm, out, a.only, a.write, a.baseline, a.llm, extra, profile, a.budget)
     print(json.dumps(rep["summary"], ensure_ascii=False, indent=1))
     print("báo cáo:", out / "report.md")
     return 0

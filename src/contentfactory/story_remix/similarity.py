@@ -44,7 +44,16 @@ def proper_names(source: str, min_count: int = 2) -> list[str]:
             nm = " ".join(seq)
             counts[nm] = counts.get(nm, 0) + 1
         i = j + 1
-    return sorted(n for n, c in counts.items() if c >= min_count)
+    # Transcript ASR thường viết hoa đầu câu mà không có dấu chấm ⇒ từ thường ("Cậu", "Không", "Lúc") trông như tên riêng. Tên riêng thật gần như LUÔN viết hoa:
+    # giữ lại chỉ khi mọi từ của nó hiếm khi xuất hiện ở dạng chữ thường trong chính văn bản (lỗi này chỉ lộ khi chạy với nguồn thật).
+    cap_n: dict[str, int] = {}
+    low_n: dict[str, int] = {}
+    for w, _ in toks:
+        (cap_n if w[0].isupper() else low_n)[w.lower()] = (cap_n if w[0].isupper() else low_n).get(w.lower(), 0) + 1
+
+    def proper(nm: str) -> bool:
+        return all(low_n.get(w.lower(), 0) * 10 <= cap_n.get(w.lower(), 0) for w in nm.split())
+    return sorted(n for n, c in counts.items() if c >= min_count and proper(n))
 
 
 def reused_names(names: list[str], text: str) -> list[str]:
