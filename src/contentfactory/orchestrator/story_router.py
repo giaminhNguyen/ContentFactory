@@ -42,6 +42,14 @@ class StoryModeRouter:
         prefix, budget = title_budget(ctx.config.get("channel_config"), ctx.params.get("channel") or "default")
         return self._titler(outline or story_text, bundle, ctx, prefix, budget)
 
+    def health(self) -> dict:
+        return self.default.health()
+
+    def __getattr__(self, name):                       # thuộc tính khác (vd test kiểm adapter cũ) đi thẳng tới adapter mặc định
+        if name.startswith("__") or name in ("default", "_factory", "_remix"):
+            raise AttributeError(name)
+        return getattr(self.default, name)
+
 
 def title_budget(channel_cfg: dict | None, channel_id: str) -> tuple[str, int]:
     """(tiền tố tiêu đề YouTube của kênh, số ký tự còn lại cho tên truyện trong giới hạn 100)."""
@@ -50,11 +58,3 @@ def title_budget(channel_cfg: dict | None, channel_id: str) -> tuple[str, int]:
     seq = "9" * (len(str(int(ch["sequence"].get("last_used", 0)) + 1)) + 1)
     prefix = MD.render_template(ch["title_template"], {"channel_name": ch["name"], "project_title": "", "sequence": seq}, "title_template").lstrip()
     return prefix, MD.TITLE_MAX_CHARS - len(prefix)
-
-    def health(self) -> dict:
-        return self.default.health()
-
-    def __getattr__(self, name):                       # thuộc tính khác (vd test kiểm adapter cũ) đi thẳng tới adapter mặc định
-        if name.startswith("__") or name in ("default", "_factory", "_remix"):
-            raise AttributeError(name)
-        return getattr(self.default, name)

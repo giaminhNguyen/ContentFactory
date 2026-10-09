@@ -38,5 +38,14 @@ class TitlerTest(unittest.TestCase):
         self.assertIn("còn dấu vết nguồn cũ", llm.prompts[1])                 # lượt 2 được báo lý do
 
 
+class RouterTest(unittest.TestCase):
+    def test_router_keeps_health_and_forwarding(self):                             # hồi quy: title_budget từng chèn nhầm giữa class làm mất health/__getattr__
+        from contentfactory.adapters import fake
+        from contentfactory.orchestrator.story_router import StoryModeRouter
+        r = StoryModeRouter(fake.FakeStory(), None)
+        self.assertTrue(r.health()["ok"])
+        self.assertEqual(r.generate.__self__.__class__.__name__, "StoryModeRouter")
+
+
 if __name__ == "__main__":
     unittest.main()
