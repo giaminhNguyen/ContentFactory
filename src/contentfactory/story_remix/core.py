@@ -115,7 +115,7 @@ def ask_json(llm: TextLLM, ledger: Ledger, step: str, system: str, prompt: str, 
             return validate(data)
         except Invalid as e:
             err, last = str(e)[:500], data
-    raise fail("REMIX_LLM_INVALID", f"Bước {step}: LLM không trả dữ liệu hợp lệ sau {retries + 1} lần ({err}).", {"hint": "Chạy lại; nếu lặp lại, đổi mô hình hoặc rút gọn tuỳ chọn.", "step": step})
+    raise StageError(ErrorClass.TRANSIENT, "REMIX_LLM_INVALID", f"Bước {step}: LLM không trả dữ liệu hợp lệ sau {retries + 1} lần ({err}).", {"hint": "Chạy lại; nếu lặp lại, đổi mô hình hoặc rút gọn tuỳ chọn.", "step": step})
 
 
 # ---------------------------------------------------------------------------------------------- checkpoint theo bước

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..fsutil import atomic_write_json, atomic_write_text
 from . import similarity as SIM
+from ..contracts import ErrorClass, StageError
 from .core import Invalid, Ledger, extract_json, fail, fingerprint
 from .stages import SYS
 
@@ -298,7 +299,7 @@ def _ask(llm, ledger: Ledger, step: str, prompt: str, parse, ctx, parse_memory=N
                 kept = e.text
         except Invalid as e:
             err = str(e)[:400]
-    raise fail("REMIX_LLM_INVALID", f"Bước {step}: LLM không trả đúng định dạng sau 3 lần ({err}).", {"hint": "Chạy lại; các chương đã xong được giữ.", "step": step})
+    raise StageError(ErrorClass.TRANSIENT, "REMIX_LLM_INVALID", f"Bước {step}: LLM không trả đúng định dạng sau 3 lần ({err}).", {"hint": "Chạy lại; các chương đã xong được giữ.", "step": step})
 
 
 # ---------------------------------------------------------------------------------------------- QA cuối truyện

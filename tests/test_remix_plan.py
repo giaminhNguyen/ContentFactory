@@ -113,6 +113,7 @@ class DnaTest(Base):
         e = self.code(Bad())
         self.assertEqual(e.code, "REMIX_LLM_INVALID")
         self.assertEqual(e.detail["step"], "source_dna")
+        self.assertEqual(e.error_class.name, "TRANSIENT")                                                        # orchestrator tự chạy lại (có giới hạn), không fail ngay
 
 
 class PremiseTest(Base):
