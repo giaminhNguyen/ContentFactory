@@ -987,7 +987,7 @@ if (wanted("real")) {
   const pv = probe(path.join(dir, "tiktok", parts[0])).streams.find((s) => s.codec_type === "video");
   check("TikTok thật: 1080x1920", pv.width === 1080 && pv.height === 1920 && parts.length >= 1, `${pv.width}x${pv.height} x${parts.length}`);
   check("thumbnail thật có trong gói", fs.statSync(path.join(dir, "youtube", "thumbnail.jpg")).size > 5000);
-  check("tiêu đề YouTube đúng mẫu kênh", d.output.youtube_title === "[Full Audio 1] | Ngôi nhà cuối ngõ", d.output.youtube_title);
+  check("tiêu đề YouTube đúng mẫu kênh", /^\[Full Audio\]\[.+ số 1\] \| Ngôi nhà cuối ngõ$/.test(d.output.youtube_title), d.output.youtube_title);
   check("không lỗi console/mạng", page.problems.length === 0, page.problems.slice(0, 3).join(" | "));
   // phần video nền: trang pool hiện đã đồng bộ
   await go(page, "/pools");

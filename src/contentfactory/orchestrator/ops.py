@@ -177,7 +177,7 @@ CHANNEL_TEMPLATE = {
             "sequence.last_used: số Full Audio đã đăng trước đó. watermark: file trong thư mục kênh (không bắt buộc). "
             "preset.tts_profile: tên profile trong tts_profiles/ (trống = tự chọn). preset.pools: pool video nguồn cho youtube/tiktok (trống = tự chọn). "
             "preset.render.youtube/tiktok: override profile render. preset.tiktok: speed/target_part_sec (trống = theo config). publishing: privacy, account_id, tags, playlists, made_for_kids.",
-    "title_template": "[Full Audio {sequence}] | {project_title}",
+    "title_template": "[Full Audio][{channel_name} số {sequence}] | {project_title}",
     "description_template": "{project_title}\n\n{channel_name}",
     "sequence": {"last_used": 0},
     "publishing": {"privacy": "private", "made_for_kids": False},

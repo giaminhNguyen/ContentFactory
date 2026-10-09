@@ -44,6 +44,18 @@ class StoryRemixAdapter:
                  "originality": plan["originality"]["decision"], "plan_steps_ran": plan["steps"]["ran"], "plan_steps_skipped": plan["steps"]["skipped"]}
         return {"sections": res["sections"], "stats": stats}
 
+    def outline_of(self, bundle, profile: dict, out_dir: Path) -> str | None:
+        """Dàn ý đã thiết kế (story bible + outline) — dùng để đặt tên truyện."""
+        parts = [(out_dir / "remix" / f).read_text(encoding="utf-8") for f in ("story_bible.json", "outline.json") if (out_dir / "remix" / f).is_file()]
+        return "\n\n".join(parts) or None
+
+    def title(self, story_text: str, bundle, ctx: StageContext) -> str | None:
+        """Tên truyện mới đã được đặt lúc lập kế hoạch (story bible) — không tốn thêm lượt gọi."""
+        try:
+            return json.loads((ctx.stage_dir / "remix" / "story_bible.json").read_text(encoding="utf-8")).get("title") or None
+        except (OSError, ValueError):
+            return None
+
     def finalize(self, story_text: str, ctx: StageContext) -> dict:
         """QA cuối + (nếu đạt và bật ‘tự cập nhật kho sau QA’) publish Kho nhân vật. Idempotent: chạy lại cùng kết quả không làm gì thêm."""
         mode = (ctx.params or {}).get("story_mode") or {}

@@ -371,7 +371,7 @@ class JobsViewTest(UiCase):
         done = self.run_job()
         d = self.svc.job_detail(done)
         self.assertEqual([p["state"] for p in d["pipeline"]], ["done"] * 8)
-        self.assertEqual((d["diagnosis"]["status"], d["output"]["tiktok_parts"] > 0, d["output"]["youtube_title"].startswith("[Full Audio 5]")), ("completed", True, True))
+        self.assertEqual((d["diagnosis"]["status"], d["output"]["tiktok_parts"] > 0, d["output"]["youtube_title"].startswith("[Full Audio][Kênh Thử số 5]")), ("completed", True, True))
         dh = self.svc.job_detail(h)
         self.assertEqual([p["state"] for p in dh["pipeline"]][:3], ["done", "held", "waiting"])
         self.assertEqual(dh["diagnosis"]["resume"]["actions"], ["resume", "enable_auto_resume"])
@@ -455,7 +455,7 @@ class ChannelsTest(UiCase):
             self.assertIn("CHANNEL", e.exception.code)
         self.assertEqual((self.root / "channels" / "kenh" / "channel.json").read_text(encoding="utf-8"), before)      # sai thì không ghi
         pv = self.svc.channel_preview("kenh", "Truyện Ma")
-        self.assertEqual((pv["youtube_title"], pv["sequence"], pv["thumbnail"]), ("[Tập 5] Truyện Ma", 5, {"channel_name": "Kênh Thử", "title": "Truyện Ma"}))
+        self.assertEqual((pv["youtube_title"], pv["sequence"], pv["thumbnail"]), ("[Tập 5] Truyện Ma", 5, {"channel_name": "[Kênh Thử số 5]", "title": "Truyện Ma"}))
         self.svc.create_channel("moi", "Kênh Mới", True, 9)
         self.assertEqual(self.svc.get_channel("moi")["channel"]["sequence"]["last_used"], 9)
         for bad_id in ("", "a b", "../x", "x" * 41):
@@ -836,7 +836,7 @@ class HttpTest(UiCase):
         wait_until(lambda: self.call("GET", f"/api/jobs/{r['job_id']}")[1]["status"] == "completed", timeout=60, what="job xong qua runner nền")
         d = self.call("GET", f"/api/jobs/{r['job_id']}")[1]
         self.assertEqual(d["title"], "Truyện Qua HTTP")
-        self.assertEqual(d["output"]["youtube_title"], "[Full Audio 5] | Truyện Qua HTTP")
+        self.assertEqual(d["output"]["youtube_title"], "[Full Audio][Kênh Thử số 5] | Truyện Qua HTTP")
         s, o, _ = self.call("POST", f"/api/jobs/{r['job_id']}/open-output", {})
         self.assertEqual((s, self.opened), (200, [o["opened"]]))
         lst = self.call("GET", "/api/jobs?status=completed")[1]

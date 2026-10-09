@@ -205,7 +205,7 @@ Mỗi kênh nhớ cấu hình của chính nó — chỉnh **một lần** ở t
 ```jsonc
 {
   "name": "Kênh Truyện A",
-  "title_template": "[Full Audio {sequence}] | {project_title}",
+  "title_template": "[Full Audio][{channel_name} số {sequence}] | {project_title}",
   "sequence": { "last_used": 26 },                  // tập kế tiếp: 27
   "watermark": "watermark.wav",                      // kiểu cũ vẫn chạy; watermark mới quản lý ở Kênh → Watermark (thư viện có bản, tạo bằng giọng đọc hoặc tải lên)
   "publishing": { "privacy": "private", "made_for_kids": false, "tags": ["truyen"] },

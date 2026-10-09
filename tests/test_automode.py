@@ -85,9 +85,8 @@ class AutoNamingTest(unittest.TestCase):
         self.assertEqual(clean_title("Hôm nay? Vui!"), "Hôm nay? Vui!")                              # dấu câu có nghĩa được giữ
         self.assertEqual(clean_title("Cô gái | Tập 1"), "Cô gái | Tập 1")                           # không đoán xóa phần sau dấu |
         self.assertEqual(clean_title(""), "untitled")
-        long = clean_title("Một tiêu đề rất rất dài " * 10)
-        self.assertLessEqual(len(long), 80)
-        self.assertTrue(set(long.split()) <= {"Một", "tiêu", "đề", "rất", "dài"})                      # cắt ở ranh giới từ, không cụt giữa chữ
+        long = "Một tiêu đề rất rất dài " * 10
+        self.assertEqual(clean_title(long), long.strip())                                              # không bao giờ tự cắt độ dài
 
     def test_source_default_title_is_cleaned_and_still_flagged(self):
         from contentfactory.contracts import project_of
@@ -469,7 +468,7 @@ class GoTest(RootCase):
         d = Path(res["output_dir"])
         self.assertTrue({"README.txt", "project.json", "story.txt", "youtube/video.mp4", "youtube/thumbnail.jpg", "youtube/title.txt", "tiktok/part_01.mp4"}
                         <= {p.relative_to(d).as_posix() for p in d.rglob("*") if p.is_file()})
-        self.assertTrue((d / "youtube" / "title.txt").read_text(encoding="utf-8").startswith("[Full Audio 5] |"))      # last_used 4 -> 5
+        self.assertTrue((d / "youtube" / "title.txt").read_text(encoding="utf-8").startswith("[Full Audio][Kênh Thử số 5] |"))      # last_used 4 -> 5
         self.assertTrue(res["youtube_url"].startswith("https://"))
         text = "\n".join(self.out)
         self.assertIn("XONG", text)
@@ -860,7 +859,7 @@ class AutoModeE2ETest(FakeCFCase):
         self.assertEqual(files - {"README.txt", "project.json", "story.txt", "youtube/video.mp4", "youtube/thumbnail.jpg", "youtube/title.txt", "youtube/description.txt"},
                          set(parts))                                                                       # không có gì ngoài layout
         title = (d / "youtube" / "title.txt").read_text(encoding="utf-8").strip()
-        self.assertEqual(title, "[Full Audio 27] | Chuyện ma ở nhà cũ")                                    # tên tự làm sạch từ video nguồn, số tập nối tiếp last_used
+        self.assertEqual(title, "[Full Audio][Kênh Truyện A số 27] | Chuyện ma ở nhà cũ")                                    # tên tự làm sạch từ video nguồn, số tập nối tiếp last_used
         pj = json.loads((d / "project.json").read_text(encoding="utf-8"))
         self.assertEqual((pj["project"]["title_source"], pj["project"]["channel_name"], pj["tiktok"]["count"]), ("source_default", "Kênh Truyện A", len(parts)))
         self.assertIn("project.title chưa được đặt", (d / "README.txt").read_text(encoding="utf-8"))          # cảnh báo vẫn còn: không đăng lặng lẽ tiêu đề của người khác

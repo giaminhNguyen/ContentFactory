@@ -111,9 +111,9 @@ STAGES: tuple[Stage, ...] = (
           params_deps=("audio.format", "audio.master", "audio.youtube", "audio.tiktok", "audio.qa", "watermark", "tiktok", "fake"),
           file_deps=("watermark",), optional=("audio_timeline",)),
     Stage("render_youtube", YOUTUBE_RENDER_READY, YOUTUBE_RENDERING, TIKTOK_RENDER_READY,
-          ("audio_youtube", "metadata"), ("video_youtube", "thumbnail", "youtube_render_report"), "render/youtube", ("render",), "gpu",
+          ("audio_youtube", "metadata"), ("video_youtube", "thumbnail", "youtube_render_report"), "render/youtube", ("render", "sequence"), "gpu",
           checkpoint="video, thumbnail (trạng thái từng output trong checkpoint)", params_deps=("render", "channel", "project", "templates.youtube", "templates.thumbnail", "thumbnail_source.sha256", "fake"),
-          config_deps=("render", "adapter_config", "channel_config", "publishing"), deliverable=True),
+          config_deps=("render", "adapter_config", "channel_config", "publishing"), deliverable=True, optional=("story_report",)),
     Stage("render_tiktok", TIKTOK_RENDER_READY, TIKTOK_RENDERING, OUTPUT_READY,
           ("audio_tiktok",), ("video_tiktok", "tiktok_render_report"), "render/tiktok", ("render",), "gpu",
           checkpoint="từng part TikTok (trạng thái từng part trong checkpoint)", params_deps=("render", "templates.tiktok", "fake"),
@@ -123,7 +123,7 @@ STAGES: tuple[Stage, ...] = (
           ("output_package", "publish_metadata"), "output", ("output", "sequence"),
           checkpoint="gói output (dựng rồi mới rename; gói đã có không bị ghi đè — phiên bản mới nằm bên cạnh)",
           params_deps=("language", "project", "channel", "fake"), config_deps=("output", "channel_config", "publishing"),
-          deliverable=True, optional=("story_text", "tiktok_render_report", "video_youtube", "thumbnail", "video_tiktok"),   # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
+          deliverable=True, optional=("story_text", "story_report", "tiktok_render_report", "video_youtube", "thumbnail", "video_tiktok"),   # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
           packages=(("render_youtube", ("video_youtube", "thumbnail")), ("render_tiktok", ("video_tiktok",))),
           derives=(("publish_metadata", ("metadata",)),)),
     Stage("publish", UPLOAD_READY, UPLOADING, PUBLISHED,

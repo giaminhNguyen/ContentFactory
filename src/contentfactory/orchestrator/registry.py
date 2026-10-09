@@ -22,6 +22,7 @@ from ..publish.yt_uploader import YtUploaderPublish
 from ..render.contentflow import ContentFlowRender
 from ..source.chain import ProviderChain
 from ..tts.planner import RuleSegmentPlanner
+from ..story.naming import make_titler
 from ..story_remix.adapter import StoryRemixAdapter
 from ..universe import Universe, UniverseDB
 from ..source.providers import LocalSubtitleProvider, PlainTextProvider, SubtitleSupperVipProvider, YtDlpProvider
@@ -81,7 +82,7 @@ def _factories(cfg: Config) -> dict:
         ("source", "fake"): fake.FakeSource,
         ("source", "provider_chain"): lambda: _source_chain(cfg),
         ("story", "fake"): lambda: StoryModeRouter(fake.FakeStory(), lambda: _remix(cfg)),
-        ("story", "story_branch"): lambda: StoryModeRouter(StoryBranchAdapter(sb, oh_root), lambda: _remix(cfg)),
+        ("story", "story_branch"): lambda: StoryModeRouter(StoryBranchAdapter(sb, oh_root), lambda: _remix(cfg), make_titler(ClaudeCliLLM(sb))),
         ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("render", "contentflow"): lambda: _contentflow(cfg),

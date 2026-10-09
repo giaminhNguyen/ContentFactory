@@ -249,6 +249,11 @@ class StoryBranchAdapter:
             "outline": lambda: self._nonempty(book / "大纲" / "大纲.md") and any(book.rglob("细纲_第*.md")),
         }
 
+    def outline_of(self, bundle, profile: dict, out_dir: Path) -> str | None:
+        """Đại cương (大纲.md) đã thiết kế của sách — dùng để đặt tên truyện. Cùng cách tính thư mục sách với generate()."""
+        f = out_dir / "oh-story" / _safe_name(profile.get("book_name") or f"{_safe_name(bundle['title'])}-branch") / "大纲" / "大纲.md"
+        return f.read_text(encoding="utf-8") if self._nonempty(f) else None
+
     # -- điều khiển ----------------------------------------------------------------------------------
     def generate(self, bundle: SourceBundle, profile: dict, out_dir: Path, ctx: StageContext) -> StoryResult:
         ws = out_dir / "oh-story"

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..contracts import ErrorClass, StageError, clean_title
+from ..contracts import ErrorClass, StageError, clean_title, thumb_channel_line
 from ..fsutil import atomic_write_json
 from ..jobs import pipeline as P
 from ..jobs.plan import plan_spec, spec_for_mode
@@ -446,19 +446,33 @@ class Service:
 
     # ================================================================================== danh sách / chi tiết job
     def title_of(self, j: dict) -> str:
-        t = ((j["params"].get("project") or {}).get("title") or "").strip()
-        if t:
+        p = j["params"].get("project") or {}
+        t = (p.get("title") or "").strip()
+        if t and p.get("title_source") != "auto":
             return t
         cached = self._titles.get(j["id"])
         if cached:
             return cached
-        for a in self.orc.store.artifacts(j["id"]):
+        arts = self.orc.store.artifacts(j["id"])
+        for a in arts:                                                              # tên AI tự nghĩ (cùng quy tắc với project_of)
+            if a["kind"] == "story_report":
+                try:
+                    st = str(json.loads((job_dir(self.cfg.path("workspace"), j["id"]) / a["path"]).read_text(encoding="utf-8")).get("story_title") or "").strip()
+                except (OSError, ValueError):
+                    st = ""
+                if st:
+                    self._titles[j["id"]] = st
+                    return st
+        if t:
+            return t
+        for a in arts:
             if a["kind"] == "metadata":
                 try:
                     md = json.loads((job_dir(self.cfg.path("workspace"), j["id"]) / a["path"]).read_text(encoding="utf-8"))
                     t = clean_title(str(md.get("title") or ""))
                     if t:
-                        self._titles[j["id"]] = t
+                        if j["state"] in P.TERMINAL:                                 # job còn chạy: tên AI có thể xuất hiện sau bước story, đừng ghim tên nguồn
+                            self._titles[j["id"]] = t
                         return t
                 except (OSError, ValueError):
                     pass
@@ -1327,7 +1341,7 @@ class Service:
         project = {"id": "preview", "title": (title or "Tên truyện mẫu").strip() or "Tên truyện mẫu", "title_source": "user", "channel_id": channel_id,
                    "channel_name": ch["name"], "language": "vi"}
         pm = MD.build(project, ch, seq)
-        return {"youtube_title": pm["youtube_title"], "description": pm["description"], "sequence": seq, "thumbnail": {"channel_name": ch["name"], "title": project["title"]},
+        return {"youtube_title": pm["youtube_title"], "description": pm["description"], "sequence": seq, "thumbnail": {"channel_name": thumb_channel_line(ch["name"], seq), "title": project["title"]},
                 "privacy": (ch.get("publishing") or {}).get("privacy") or "private"}
 
     def save_channel_asset(self, channel_id: str, name: str, data: bytes) -> dict:

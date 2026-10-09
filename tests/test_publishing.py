@@ -102,7 +102,7 @@ class MetadataBuilderTest(unittest.TestCase):
 
     def test_default_title_and_description_follow_the_templates(self):
         m = MD.build(self.P, self.channel(), 27)
-        self.assertEqual(m["youtube_title"], "[Full Audio 27] | Tôi Trùng Sinh")
+        self.assertEqual(m["youtube_title"], "[Full Audio][Kênh Truyện số 27] | Tôi Trùng Sinh")
         self.assertEqual(m["description"], "Tôi Trùng Sinh\n\nKênh Truyện")
         self.assertEqual((m["sequence"], m["warnings"]), (27, []))
         m2 = MD.build(self.P, self.channel(description_template="Nghe full: {project_title} (tập {sequence}) - {channel_name} {{ok}}"), 3)
@@ -123,7 +123,7 @@ class MetadataBuilderTest(unittest.TestCase):
             MD.build(long_title, self.channel(), 1)
         self.assertEqual((e.exception.error_class, e.exception.code), (ErrorClass.POLICY, "TITLE_TOO_LONG"))
         self.assertEqual(long_title["title"], "T" * 120)                                               # project.title không bị đổi
-        edge = {**self.P, "title": "T" * (100 - len("[Full Audio 1] | "))}
+        edge = {**self.P, "title": "T" * (100 - len("[Full Audio][Kênh Truyện số 1] | "))}
         self.assertEqual(len(MD.build(edge, self.channel(), 1)["youtube_title"]), 100)                 # đúng 100: hợp lệ
         with self.assertRaises(StageError) as e:
             MD.build(self.P, self.channel(description_template="é" * 2600), 1)                         # 2600 ký tự = 5200 byte
@@ -577,7 +577,7 @@ class PublishingPipelineTest(RootCase):
         self.assertEqual(j["state"], P.PUBLISHED, j["last_error"])
         d = self.pkg()
         title = (d / "youtube" / "title.txt").read_text(encoding="utf-8").strip()
-        self.assertEqual(title, f"[Full Audio 27] | {PROJECT['title']}")                                 # last_used 26 => 27
+        self.assertEqual(title, f"[Full Audio][Kênh Truyện A số 27] | {PROJECT['title']}")                                 # last_used 26 => 27
         [post] = self.posts()
         self.assertEqual((post["title"], post["description"].strip()), (title, (d / "youtube" / "description.txt").read_text(encoding="utf-8").strip()))
         self.assertEqual((post["privacy"], post["tags"], post["made_for_kids"]), ("unlisted", ["truyen", "audio"], False))   # mặc định đăng từ Channel Config
@@ -738,7 +738,7 @@ class PublishingPipelineTest(RootCase):
         orc.store.release_hold(jid)
         orc.run()
         self.assertEqual(len(self.posts()), 1)
-        self.assertEqual((orc.sequence.get(jid), t1), (27, f"[Full Audio 27] | {PROJECT['title']}"))
+        self.assertEqual((orc.sequence.get(jid), t1), (27, f"[Full Audio][Kênh Truyện A số 27] | {PROJECT['title']}"))
 
     def test_source_default_title_warns_but_still_works(self):
         orc = self.orc()
@@ -771,7 +771,7 @@ class PublishingPipelineTest(RootCase):
         jid = self.submit(orc)
         self.channel("kenh_a", {"name": "TÊN MỚI", "title_template": "MỚI {sequence} {project_title}", "sequence": {"last_used": 500}})   # sửa SAU khi tạo job
         orc.run()
-        self.assertEqual(self.posts()[0]["title"], f"[Full Audio 27] | {PROJECT['title']}")                  # job giữ nguyên cấu hình lúc bắt đầu
+        self.assertEqual(self.posts()[0]["title"], f"[Full Audio][Kênh Truyện A số 27] | {PROJECT['title']}")                  # job giữ nguyên cấu hình lúc bắt đầu
         j2 = orc.submit(params(channel="kenh_a", project={"title": "Truyện Mới"}, tiktok=TIKTOK), auto_resume=False)
         orc.run()
         self.assertEqual(orc.sequence.get(j2), 501)
@@ -793,8 +793,28 @@ class PublishingPipelineTest(RootCase):
         jid = self.submit(orc)
         orc.run()
         thumb = (self.job_dir(jid) / "render" / "youtube" / "thumbnail.jpg").read_text(encoding="utf-8")
-        self.assertIn("Kênh Truyện A", thumb)                                                                # tên kênh, không phải id "kenh_a"
+        self.assertIn("[Kênh Truyện A số 27]", thumb)                                                        # [tên kênh số tập], không phải id "kenh_a"
         self.assertIn(PROJECT["title"], thumb)
+
+    def test_blank_title_uses_the_ai_story_title_never_the_source_title(self):
+        orc = self.orc()
+        seen = []
+        orc.adapters["story"]._titler = lambda text, bundle, ctx, prefix, budget: seen.append((bundle["title"], prefix, budget)) or "Đêm Mưa Ở Làng"
+        jid = orc.submit(params(channel="kenh_a", tiktok=TIKTOK), auto_resume=False)                       # không đặt tên truyện
+        orc.run()
+        self.assertEqual(orc.store.get_job(jid)["state"], P.PUBLISHED, orc.store.get_job(jid)["last_error"])
+        self.assertEqual(len(seen), 1)                                                                      # một lượt đặt tên, nhận tên gốc để tránh trùng
+        self.assertEqual(seen[0][1:], ("[Full Audio][Kênh Truyện A số 999] | ", 100 - len("[Full Audio][Kênh Truyện A số 999] | ")))   # ngân sách theo mẫu kênh, dư 1 chữ số
+        self.assertEqual(self.posts()[0]["title"], "[Full Audio][Kênh Truyện A số 27] | Đêm Mưa Ở Làng")
+        thumb = (self.job_dir(jid) / "render" / "youtube" / "thumbnail.jpg").read_text(encoding="utf-8")
+        self.assertIn("Đêm Mưa Ở Làng", thumb)
+        pm = json.loads((self.pkg() / "project.json").read_text(encoding="utf-8"))
+        self.assertEqual(pm["project"]["title_source"], "story")
+        orc2 = self.orc()
+        orc2.adapters["story"]._titler = lambda *a: self.fail("đã đặt tên thì không gọi AI")
+        j2 = orc2.submit(params(channel="kenh_a", project=PROJECT, tiktok=TIKTOK), auto_resume=False)
+        orc2.run()
+        self.assertTrue(self.posts()[-1]["title"].endswith(PROJECT["title"]))                             # tên người dùng đặt luôn thắng
 
     def test_status_cli_lists_upload_link(self):
         from contentfactory.orchestrator.cli import _print_links, _print_status

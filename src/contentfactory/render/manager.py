@@ -18,7 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from ..contracts import ArtifactRef, ErrorClass, StageContext, StageError, StageResult, project_of
+from ..contracts import ArtifactRef, ErrorClass, StageContext, StageError, StageResult, project_of, thumb_channel_line
 from ..fsutil import atomic_write_json
 from ..media import image_pool as IP
 from . import profile as PF
@@ -96,7 +96,7 @@ class RenderManager:
         raise AssertionError("unreachable")
 
     # ------------------------------------------------------------------------------------------ YouTube
-    def youtube(self, ctx: StageContext) -> StageResult:
+    def youtube(self, ctx: StageContext, sequence) -> StageResult:
         prof = self._profile(ctx, "youtube")
         meta = ctx.read_json("metadata")
         aref = ctx.inputs["audio_youtube"][0]
@@ -126,19 +126,21 @@ class RenderManager:
         note()
         th = prof.get("thumbnail") or {}
         proj = project_of(ctx, meta)                                  # thumbnail = channel.name + project.title (D-44); không dùng id kênh / tiêu đề nguồn
+        seq = sequence.reserve(proj["channel_id"], ctx.job_id, int(((ctx.config.get("channel_config") or {}).get("sequence") or {}).get("last_used", 0)))   # cùng số mà bước output dùng (reserve idempotent)
+        chan_line = thumb_channel_line(proj["channel_name"], seq)
         tsnap = self._snap(ctx, "thumbnail")
         if tsnap:
             th = {**th, "config_overrides": {}}                       # template quyết định bố cục thumbnail; override kiểu cũ không còn tác dụng
         tsrc = ctx.params.get("thumbnail_source")                                                    # ảnh đã chốt từ Image Pool (bản sao trong workspace, kiểm sha256)
         timg = IP.resolve_source(ctx.workspace, tsrc) if tsrc else None
-        tkey = _h("thumb", proj["title"], proj["channel_name"], th, ver, PF.template_ref(tsnap), tsrc["sha256"] if tsrc else None)
+        tkey = _h("thumb", proj["title"], chan_line, th, ver, PF.template_ref(tsnap), tsrc["sha256"] if tsrc else None)
         if self._valid(thumb, tkey):
             states["thumbnail"] = {"state": "reused", "attempts": 0}
         else:
             self._invalidate(thumb)
             states["thumbnail"]["state"] = "rendering"
             note()
-            treq = {"title": proj["title"], "channel_name": proj["channel_name"], "output": thumb, "image": str(timg) if timg else th.get("image"),
+            treq = {"title": proj["title"], "channel_name": chan_line, "output": thumb, "image": str(timg) if timg else th.get("image"),
                     "highlight": th.get("highlight", "auto"), "highlight_text": th.get("highlight_text", ""),
                     "config_overrides": th.get("config_overrides") or {}, "template": tsnap, "key": tkey}
             _, n, errs = self._attempt(ctx, "thumbnail", prof["retry"], lambda: self.render.render_thumbnail(treq, ctx))

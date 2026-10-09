@@ -6,8 +6,8 @@ from ..contracts import RenderAdapter, StageContext, StageResult
 from .manager import RenderManager
 
 
-def run_youtube(ctx: StageContext, render: RenderAdapter) -> StageResult:
-    return RenderManager(render).youtube(ctx)
+def run_youtube(ctx: StageContext, render: RenderAdapter, sequence) -> StageResult:
+    return RenderManager(render).youtube(ctx, sequence)
 
 
 def run_tiktok(ctx: StageContext, render: RenderAdapter) -> StageResult:

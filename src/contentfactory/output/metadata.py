@@ -15,7 +15,7 @@ from ..contracts import ErrorClass, StageError
 TITLE_MAX_CHARS = 100
 DESCRIPTION_MAX_BYTES = 5000
 ALLOWED_FIELDS = ("channel_name", "project_title", "sequence")
-DEFAULT_TITLE_TEMPLATE = "[Full Audio {sequence}] | {project_title}"
+DEFAULT_TITLE_TEMPLATE = "[Full Audio][{channel_name} số {sequence}] | {project_title}"
 DEFAULT_DESCRIPTION_TEMPLATE = "{project_title}\n\n{channel_name}"
 PUBLISHING_KEYS = {"privacy": str, "tags": list, "category": (str, type(None)), "playlists": list, "account_id": (str, type(None)),
                    "made_for_kids": (bool, type(None))}

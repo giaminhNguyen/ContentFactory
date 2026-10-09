@@ -280,7 +280,7 @@ Mỗi project có **đúng một** field tiêu đề chính: `project.title` (v�
 Template cố định:
 
 ```text
-[Full Audio {sequence}] | {project_title}
+[Full Audio][{channel_name} số {sequence}] | {project_title}
 ```
 
 Ví dụ: `[Full Audio 27] | Tôi Trùng Sinh Quyết Tâm Làm Hại Nữ Chính`, với `project_title` = `project.title` và `sequence` = số thứ tự Full Audio của channel. **Uploader không tự nghĩ title**: nó nhận title đã dựng. Title dựng ra dài hơn giới hạn của YouTube (100 ký tự) thì báo lỗi, không cắt âm thầm.
@@ -1273,7 +1273,7 @@ Version từng repo/module phải pin theo commit/version để máy mới repro
 26. Mỗi job snapshot config ngữ nghĩa lúc bắt đầu; đổi config của job đang chạy chỉ qua hành động explicit (§15C).
 27. Mỗi project có đúng một `project.title`; mọi tiêu đề khác (thumbnail, YouTube, thư mục, README) chỉ là derive từ nó, không có bản độc lập (§4B).
 28. Thumbnail dùng `channel.name` + `project.title`, không có AI sinh thumbnail title riêng; title dài xử lý bằng layout/wrap/font sizing, không đổi hay cắt title.
-29. YouTube title và description dựng bằng template (title: `[Full Audio {sequence}] | {project_title}`; description: template trong Channel Config); uploader không tự nghĩ title.
+29. YouTube title và description dựng bằng template (title: `[Full Audio][{channel_name} số {sequence}] | {project_title}`; description: template trong Channel Config); uploader không tự nghĩ title.
 30. Sequence/Full Audio STT là theo channel, reserve một lần cho project và lưu cố định; retry upload/rerender không đổi sequence.
 31. TTS và Audio không phụ thuộc publishing metadata ngoài identifier thật sự cần.
 

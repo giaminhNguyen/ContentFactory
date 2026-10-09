@@ -400,8 +400,9 @@ class OutputPublisher(Protocol):
 
 
 # ---- project / channel (D-43…D-47) -----------------------------------------------------------
-def clean_title(raw: str, max_chars: int = 80) -> str:
-    """Auto Naming: làm sạch tiêu đề video NGUỒN thành project.title tạm (bỏ URL, emoji/ký hiệu, hashtag, gạch dưới, dấu trang trí ở hai đầu, cắt ở ranh giới từ).
+def clean_title(raw: str) -> str:
+    """Auto Naming: làm sạch tiêu đề video NGUỒN thành project.title tạm (bỏ URL, emoji/ký hiệu, hashtag, gạch dưới, dấu trang trí ở hai đầu).
+    KHÔNG BAO GIỜ cắt độ dài: tiêu đề quá dài thì Metadata Builder báo TITLE_TOO_LONG để người dùng tự sửa.
     Chỉ làm sạch hình thức, KHÔNG diễn giải lại nội dung; title_source vẫn là source_default (cảnh báo còn nguyên)."""
     import re
     import unicodedata
@@ -410,19 +411,25 @@ def clean_title(raw: str, max_chars: int = 80) -> str:
     s = "".join(c for c in s if unicodedata.category(c) not in ("So", "Sk", "Cs", "Cc", "Cf"))
     s = re.sub(r"(^|\s)#\w+", " ", s).replace("_", " ")
     s = re.sub(r"\s+", " ", s).strip(" -–—|:;,.·•~*+/\\\"'`")
-    if len(s) > max_chars:
-        cut = s[:max_chars]
-        s = cut.rsplit(" ", 1)[0] if " " in cut[max_chars // 2:] else cut
-        s = s.strip(" -–—|:;,.")
     return s or (raw or "").strip() or "untitled"
+
+
+def thumb_channel_line(channel_name: str, sequence: int) -> str:
+    """Dòng trên cùng của thumbnail: [{tên kênh} số {sequence}]; dòng dưới là project.title."""
+    return f"[{channel_name} số {sequence}]"
 
 
 def project_of(ctx: StageContext, meta: dict) -> dict:
     """Thông tin project cho stage render (thumbnail), output, publish. `project.title` là field chính duy nhất: lấy từ
-    params.project.title (title_source user|story); chưa đặt thì dùng tiêu đề của video NGUỒN (source_default = placeholder, có cảnh báo ở Metadata Builder)."""
+    params.project.title (title_source user|story); để trống (hoặc tên tự lấy từ tên file) thì dùng tên AI tự nghĩ trong story_report (title_source story);
+    không có thì dùng tiêu đề của video NGUỒN (source_default = placeholder, có cảnh báo ở Metadata Builder)."""
     p = ctx.params.get("project") or {}
     title = str(p.get("title") or "").strip()
     src = str(p.get("title_source") or "user") if title else "source_default"
+    if src in ("source_default", "auto") and ctx.inputs.get("story_report"):              # người dùng để trống: dùng tên AI tự nghĩ cho truyện đã viết
+        story_title = str(ctx.read_json("story_report").get("story_title") or "").strip()
+        if story_title:
+            title, src = story_title, "story"
     if not title:
         title = clean_title(str(meta.get("title") or "")) or "untitled"       # Auto Naming (placeholder: vẫn có cảnh báo source_default)
     ch = ctx.config.get("channel_config") or {}
