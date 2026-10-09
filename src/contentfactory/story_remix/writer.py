@@ -104,15 +104,29 @@ def _strs(v, what: str) -> list[str]:
     return [str(x).strip() for x in v if str(x).strip()]
 
 
-def check_update(upd: dict, cast_ids: set[str]) -> dict:
+def _cast_id(v, cast_ids: set[str], names: dict[str, str]) -> str | None:
+    """Sửa an toàn bằng code: LLM hay ghi tên ("Đặng Yến", "Yến") hoặc "ch_x (Tên)" thay vì đúng id. Khớp duy nhất mới nhận."""
+    v = str(v or "").strip()
+    if v in cast_ids:
+        return v
+    m = re.search(r"ch_[0-9a-f]{12}", v)
+    if m and m.group(0) in cast_ids:
+        return m.group(0)
+    w = " ".join(SIM.words(v))
+    hits = {cid for nm, cid in names.items() if w and (nm == w or nm.endswith(" " + w))}
+    return hits.pop() if len(hits) == 1 else None
+
+
+def check_update(upd: dict, cast_ids: set[str], names: dict[str, str] | None = None) -> dict:
+    """`names`: {tên hiển thị đã chuẩn hoá: character_id}. Trạng thái của người ngoài dàn bị bỏ qua (bộ nhớ chỉ theo dõi dàn); khóa danh tính cốt lõi bị bỏ (bất biến)."""
     out = {"new_facts": _strs(upd.get("new_facts"), "new_facts"), "opened": _strs(upd.get("opened"), "opened"), "resolved": _strs(upd.get("resolved"), "resolved"), "state_changes": [], "new_named_persons": []}
     for s in upd.get("state_changes") or []:
-        if not isinstance(s, dict) or s.get("character_id") not in cast_ids:
-            raise Invalid(f"state_changes: character_id phải thuộc dàn đã chốt ({', '.join(sorted(cast_ids))}).")
-        bad = set(s) - {"character_id", *STATE_KEYS}
-        if bad:
-            raise Invalid(f"state_changes: không được đổi {', '.join(sorted(bad))} (danh tính cốt lõi là bất biến; chỉ {', '.join(STATE_KEYS)}).")
-        out["state_changes"].append({k: str(s[k]) for k in s if isinstance(s[k], str) or k == "character_id"})
+        if not isinstance(s, dict):
+            raise Invalid("state_changes: mỗi mục phải là object {character_id, status, location, notes}.")
+        cid = _cast_id(s.get("character_id"), cast_ids, names or {})
+        if cid is None:
+            continue
+        out["state_changes"].append({"character_id": cid, **{k: str(s[k]) for k in STATE_KEYS if isinstance(s.get(k), (str, int, float)) and str(s[k]).strip()}})
     for p in upd.get("new_named_persons") or []:
         if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not p["name"].strip():
             raise Invalid("new_named_persons: mỗi mục cần {name, minor}.")
@@ -197,6 +211,7 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
     mem_dir.mkdir(parents=True, exist_ok=True)
     members = cast["members"]
     ids = {m["character_id"] for m in members}
+    names = {" ".join(SIM.words(m["display_name"])): m["character_id"] for m in members}
     total = len(outline["chapters"])
     mem = empty_memory()
     bible_fp, cast_fp = fingerprint(b=bible), fingerprint(c=[m["character_id"] for m in members])
@@ -243,7 +258,7 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
             if len(text) < 120:
                 raise Invalid("lời kể quá ngắn (< 120 ký tự).")
             try:
-                return text, check_update(upd, ids)
+                return text, check_update(upd, ids, names)
             except Invalid as e:
                 raise MemoryInvalid(str(e), text) from None
 
@@ -252,7 +267,7 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
             upd = extract_json(mem_raw)
             if not isinstance(upd, dict):
                 raise Invalid("bộ nhớ phải là object JSON.")
-            return text, check_update(upd, ids)
+            return text, check_update(upd, ids, names)
 
         mem_prompt = lambda text, err: MEMORY_PROMPT.format(n=n, err=err, mark=MARK, cast=_cast_lines(members, profiles), text=text)   # noqa: E731
         text, upd = _ask(llm, ledger, f"chapter_{n}", prompt, parse, ctx, parse_memory, mem_prompt)

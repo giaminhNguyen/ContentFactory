@@ -297,6 +297,17 @@ class SchemaTest(unittest.TestCase):
         self.assertIn("pov: phải là văn bản", llm.prompts[1])
         self.assertLess(len(llm.prompts[1]), len(llm.prompts[0]) / 5)
 
+    def test_memory_cast_ids_given_as_names_are_mapped_and_identity_keys_dropped(self):
+        # Lỗi thật (job 000016): LLM ghi tên thay vì character_id ⇒ code cũ viết lại cả chương 3 lần rồi hỏng job.
+        from contentfactory.story_remix.writer import check_update
+        ids = {"ch_aaaaaaaaaaaa", "ch_bbbbbbbbbbbb"}
+        names = {"đặng yến": "ch_aaaaaaaaaaaa", "bùi thảo": "ch_bbbbbbbbbbbb"}
+        upd = check_update({"state_changes": [{"character_id": "Đặng Yến", "status": "giận"}, {"character_id": "Thảo", "location": "nhà"},
+                                              {"character_id": "ch_bbbbbbbbbbbb (Bùi Thảo)", "notes": "x", "personality": "đổi tính"},
+                                              {"character_id": "Ông Lão Bán Hàng", "status": "đi"}]}, ids, names)
+        self.assertEqual(upd["state_changes"], [{"character_id": "ch_aaaaaaaaaaaa", "status": "giận"}, {"character_id": "ch_bbbbbbbbbbbb", "location": "nhà"},
+                                                {"character_id": "ch_bbbbbbbbbbbb", "notes": "x"}])           # người ngoài dàn bỏ qua; khoá danh tính bị bỏ
+
     def test_integrity_and_quality_constraints_are_kept(self):
         p = premise("P1")
         for bad in ({**p, "slots": [{**p["slots"][0], "role_code": "vua"}, *p["slots"][1:]]},                  # vai không thuộc danh mục

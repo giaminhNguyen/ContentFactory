@@ -123,9 +123,9 @@ class E2E(RootCase):
 
         def bad_memory_once(attempt, names, target):
             calls.append(attempt)
-            if len(calls) == 1:                                                                                  # lời kể tốt, bộ nhớ sai (id ngoài dàn)
+            if len(calls) == 1:                                                                                  # lời kể tốt, bộ nhớ sai định dạng
                 text = " ".join(f"{names[0]} kể với {names[1]} về bí mật thứ {i} của gia tộc." for i in range(80))
-                return text, {"new_facts": ["x"], "state_changes": [{"character_id": "ch_000000000000", "status": "mất tích"}], "opened": [], "resolved": [], "new_named_persons": []}
+                return text, {"new_facts": ["x"], "state_changes": ["không phải object"], "opened": [], "resolved": [], "new_named_persons": []}
             return None
         llm = FakeRemixLLM(chapter_behavior={2: bad_memory_once})
         self.install(llm)
