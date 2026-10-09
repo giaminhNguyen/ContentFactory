@@ -118,6 +118,25 @@ class E2E(RootCase):
         self.assertIn("CHAPTER_QA_FAILED", json.dumps(self.stage(bad), default=str))
         self.assertTrue((self.sdir(bad) / "remix" / "chapters" / "ch_001.md").is_file())                       # chương trước được giữ
 
+    def test_bad_memory_keeps_the_good_chapter_and_only_asks_memory_again(self):
+        calls = []
+
+        def bad_memory_once(attempt, names, target):
+            calls.append(attempt)
+            if len(calls) == 1:                                                                                  # lời kể tốt, bộ nhớ sai (id ngoài dàn)
+                text = " ".join(f"{names[0]} kể với {names[1]} về bí mật thứ {i} của gia tộc." for i in range(80))
+                return text, {"new_facts": ["x"], "state_changes": [{"character_id": "ch_000000000000", "status": "mất tích"}], "opened": [], "resolved": [], "new_named_persons": []}
+            return None
+        llm = FakeRemixLLM(chapter_behavior={2: bad_memory_once})
+        self.install(llm)
+        jid = self.run_job()
+        self.assertEqual(self.orc_.store.get_job(jid)["state"], "STORY_READY")
+        ch2 = [c for c in llm.calls if c["step"] == "chapter_2"]
+        self.assertEqual(len(ch2), 2)
+        self.assertIn("ĐÃ ĐẠT, KHÔNG viết lại", ch2[1]["prompt"])                                                  # lượt 2 chỉ hỏi lại bộ nhớ
+        self.assertNotIn("STORY BIBLE", ch2[1]["prompt"])
+        self.assertIn("bí mật thứ 79 của gia tộc", ch2[1]["prompt"])                                               # lượt 2 mang theo lời kể lượt 1, không viết lại
+
     def test_unapproved_main_character_in_chapter_is_blocked_and_repaired(self):
         def sneaky(attempt, names, target):
             if attempt == 0:

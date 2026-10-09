@@ -132,7 +132,8 @@ class FakeRemixLLM:
         n = int(re.search(r"chapter_(\d+)", step).group(1))
         members = re.findall(r"^- (ch_[0-9a-f]{12}) \| ([^|]+)\| vai (\w+)", prompt, re.M)
         names = [m[1].strip() for m in members]
-        target = int(re.search(r"≈ (\d+) ký tự", prompt).group(1))
+        m = re.search(r"≈ (\d+) ký tự", prompt)
+        target = int(m.group(1)) if m else 3000                       # prompt chỉ hỏi lại bộ nhớ không có độ dài mục tiêu
         beh = self.chapter_behavior.get(n)
         if beh:
             r = beh(1 if repair else 0, names, target)

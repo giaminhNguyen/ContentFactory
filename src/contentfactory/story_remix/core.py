@@ -84,19 +84,37 @@ def extract_json(text: str):
     raise Invalid("Phản hồi không chứa JSON hợp lệ.")
 
 
+REPAIR_JSON_PROMPT = """JSON bạn vừa trả cho bước "{step}" bị từ chối vì: {err}
+Sửa ĐÚNG phần lỗi trên; GIỮ NGUYÊN mọi phần khác (không viết lại, không rút gọn). Trả lại TOÀN BỘ JSON đã sửa, không giải thích.
+
+JSON HIỆN TẠI:
+{data}"""
+
+
 def ask_json(llm: TextLLM, ledger: Ledger, step: str, system: str, prompt: str, validate, ctx=None, retries: int = 2):
-    """Gọi LLM → JSON → validate(data) (ném Invalid để thử lại kèm lý do). Quá số lần ⇒ StageError REMIX_LLM_INVALID. Mọi lượt đều vào sổ chi phí."""
-    err = ""
+    """Gọi LLM → JSON → validate(data) (ném Invalid để thử lại kèm lý do). Quá số lần ⇒ StageError REMIX_LLM_INVALID. Mọi lượt đều vào sổ chi phí.
+    Thử lại TIẾT KIỆM: JSON đọc được nhưng sai vài trường ⇒ chỉ gửi JSON đó + lỗi cụ thể (không gửi lại transcript/ngữ cảnh lớn), giữ phần hợp lệ;
+    chỉ khi phản hồi không có JSON mới gửi lại prompt đầy đủ."""
+    err, last = "", None
     for attempt in range(1, retries + 2):
         if ctx is not None:
             ctx.cancel.check()
         ledger.guard()
-        res = llm.complete(prompt + (f"\n\nLẦN TRƯỚC BỊ TỪ CHỐI: {err}\nTrả lại JSON hợp lệ, sửa đúng lỗi trên." if err else ""), system=system, step=step, ctx=ctx)
+        if last is not None:
+            p = REPAIR_JSON_PROMPT.format(step=step, err=err, data=json.dumps(last, ensure_ascii=False, indent=1))
+        else:
+            p = prompt + (f"\n\nLẦN TRƯỚC BỊ TỪ CHỐI: {err}\nTrả lại JSON hợp lệ, sửa đúng lỗi trên." if err else "")
+        res = llm.complete(p, system=system, step=step, ctx=ctx)
         ledger.record(step, res, attempt)
         try:
-            return validate(extract_json(res.get("text", "")))
+            data = extract_json(res.get("text", ""))
         except Invalid as e:
-            err = str(e)[:500]
+            err = str(e)[:500]                                           # không có JSON: lượt sau dùng prompt đầy đủ (hoặc tiếp tục sửa JSON cũ nếu đã có)
+            continue
+        try:
+            return validate(data)
+        except Invalid as e:
+            err, last = str(e)[:500], data
     raise fail("REMIX_LLM_INVALID", f"Bước {step}: LLM không trả dữ liệu hợp lệ sau {retries + 1} lần ({err}).", {"hint": "Chạy lại; nếu lặp lại, đổi mô hình hoặc rút gọn tuỳ chọn.", "step": step})
 
 

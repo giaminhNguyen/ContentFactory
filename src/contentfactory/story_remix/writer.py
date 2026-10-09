@@ -53,6 +53,27 @@ BẢN HIỆN TẠI:
 Trả lại toàn bộ chương đã sửa, rồi dòng {mark} và JSON bộ nhớ như cũ ({{"new_facts": [...], "state_changes": [...], "opened": [...], "resolved": [...], "new_named_persons": [...]}})."""
 
 
+MEMORY_PROMPT = """Chương {n} dưới đây ĐÃ ĐẠT, KHÔNG viết lại. Phần bộ nhớ đi kèm bị từ chối vì: {err}
+Chỉ trả về dòng {mark} rồi MỘT JSON bộ nhớ đúng định dạng:
+{{"new_facts": [sự kiện then chốt mới xảy ra], "state_changes": [{{"character_id": "ch_...", "status": "...", "location": "...", "notes": "..."}}], "opened": [mạch mới mở], "resolved": [mạch đã giải quyết], "new_named_persons": [{{"name": "...", "minor": true}}]}}
+character_id chỉ dùng các id trong dàn; state_changes chỉ gồm character_id, status, location, notes.
+
+DÀN NHÂN VẬT:
+{cast}
+
+CHƯƠNG {n}:
+<<<
+{text}
+>>>"""
+
+
+class MemoryInvalid(Invalid):
+    """Lời kể đạt nhưng phần bộ nhớ sai: giữ lời kể, chỉ hỏi lại bộ nhớ (rẻ hơn nhiều so với viết lại cả chương)."""
+    def __init__(self, msg: str, text: str) -> None:
+        super().__init__(msg)
+        self.text = text
+
+
 def empty_memory() -> dict:
     return {"version": 1, "facts": [], "character_state": {}, "unresolved": [], "timeline": [], "minor_persons": [], "progress": {"last_chapter": 0}}
 
@@ -211,17 +232,34 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
         state: dict = {}
 
         def parse(raw: str) -> tuple[str, dict]:
-            text, upd = split_output(raw)
-            upd = check_update(upd, ids)
+            try:
+                text, upd = split_output(raw)
+            except Invalid as e:
+                text = re.sub(r"^\s*```[a-z]*\s*|\s*```\s*$", "", raw.split(MARK, 1)[0].strip()).strip()
+                if len(text) >= 120:
+                    raise MemoryInvalid(str(e), text) from None
+                raise
             if len(text) < 120:
                 raise Invalid("lời kể quá ngắn (< 120 ký tự).")
-            return text, upd
-        text, upd = _ask(llm, ledger, f"chapter_{n}", prompt, parse, ctx)
+            try:
+                return text, check_update(upd, ids)
+            except Invalid as e:
+                raise MemoryInvalid(str(e), text) from None
+
+        def parse_memory(text: str, raw: str) -> tuple[str, dict]:
+            mem_raw = raw.split(MARK, 1)[1] if MARK in raw else raw
+            upd = extract_json(mem_raw)
+            if not isinstance(upd, dict):
+                raise Invalid("bộ nhớ phải là object JSON.")
+            return text, check_update(upd, ids)
+
+        mem_prompt = lambda text, err: MEMORY_PROMPT.format(n=n, err=err, mark=MARK, cast=_cast_lines(members, profiles), text=text)   # noqa: E731
+        text, upd = _ask(llm, ledger, f"chapter_{n}", prompt, parse, ctx, parse_memory, mem_prompt)
         repairs, issues = 0, qa_chapter(text, ch, members, upd, mem, target_chars, readability)
         while issues and repairs < repair_passes and any(i["severity"] in ("block", "warn") for i in issues):
             repairs += 1
             rp = REPAIR_PROMPT.format(n=n, target=target_chars, issues="\n".join(f"- {i['message']}" for i in issues), cast=_cast_lines(members, profiles), text=text, mark=MARK)
-            text, upd = _ask(llm, ledger, f"chapter_{n}_repair", rp, parse, ctx)
+            text, upd = _ask(llm, ledger, f"chapter_{n}_repair", rp, parse, ctx, parse_memory, mem_prompt)
             issues = qa_chapter(text, ch, members, upd, mem, target_chars, readability)
         blocking = [i for i in issues if i["severity"] == "block"]
         if blocking:
@@ -242,16 +280,22 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
     return {"sections": sections, "memory": mem, "chapters": report, "ran": ran, "skipped": skipped}
 
 
-def _ask(llm, ledger: Ledger, step: str, prompt: str, parse, ctx):
-    err = ""
+def _ask(llm, ledger: Ledger, step: str, prompt: str, parse, ctx, parse_memory=None, mem_prompt=None):
+    """Tối đa 3 lượt. Lời kể đạt mà bộ nhớ sai (MemoryInvalid) ⇒ giữ lời kể, các lượt sau chỉ hỏi lại bộ nhớ."""
+    err, kept = "", None
     for attempt in range(1, 4):
         if ctx is not None:
             ctx.cancel.check()
         ledger.guard()
-        res = llm.complete(prompt + (f"\n\nLẦN TRƯỚC BỊ TỪ CHỐI: {err}\nTrả lại đúng định dạng." if err else ""), system=SYS.replace("MỘT đối tượng JSON hợp lệ", "văn bản theo đúng định dạng yêu cầu"), step=step, ctx=ctx)
+        p = mem_prompt(kept, err) if kept is not None else prompt + (f"\n\nLẦN TRƯỚC BỊ TỪ CHỐI: {err}\nTrả lại đúng định dạng." if err else "")
+        res = llm.complete(p, system=SYS.replace("MỘT đối tượng JSON hợp lệ", "văn bản theo đúng định dạng yêu cầu"), step=step, ctx=ctx)
         ledger.record(step, res, attempt)
         try:
-            return parse(res.get("text", ""))
+            return parse_memory(kept, res.get("text", "")) if kept is not None else parse(res.get("text", ""))
+        except MemoryInvalid as e:
+            err = str(e)[:400]
+            if parse_memory is not None:
+                kept = e.text
         except Invalid as e:
             err = str(e)[:400]
     raise fail("REMIX_LLM_INVALID", f"Bước {step}: LLM không trả đúng định dạng sau 3 lần ({err}).", {"hint": "Chạy lại; các chương đã xong được giữ.", "step": step})

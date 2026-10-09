@@ -278,6 +278,24 @@ class SchemaTest(unittest.TestCase):
         rv = GT._review({"verdict": "Similar", "overlaps": [{"aspect": "tình tiết", "severity": "HIGH", "evidence": long}]})
         self.assertEqual((rv["verdict"], rv["overlaps"][0]["severity"], rv["overlaps"][0]["evidence"]), ("similar", "high", long))   # bằng chứng không bị cắt
 
+    def test_retry_repairs_only_the_bad_json_without_resending_the_source(self):
+        class LLM:
+            def __init__(self):
+                self.prompts = []
+
+            def complete(self, prompt, *, system, step, ctx=None):
+                self.prompts.append(prompt)
+                bad = {**DNA, "pov": {"x": 1}} if len(self.prompts) == 1 else DNA                              # lượt 1 sai đúng MỘT trường
+                return {"text": json.dumps(bad, ensure_ascii=False), "cost_usd": 0.1}
+        llm, src = LLM(), SOURCE * 20
+        led = Ledger(Path(tempfile.mkdtemp()) / "c.json")
+        self.assertEqual(ST.analyze_dna(llm, led, src, "vi")["genre"], DNA["genre"])
+        self.assertEqual(len(llm.prompts), 2)
+        self.assertIn(SOURCE[:200], llm.prompts[0])
+        self.assertNotIn(SOURCE[:200], llm.prompts[1])                                                           # lượt sửa không gửi lại transcript
+        self.assertIn("pov: phải là văn bản", llm.prompts[1])
+        self.assertLess(len(llm.prompts[1]), len(llm.prompts[0]) / 5)
+
     def test_integrity_and_quality_constraints_are_kept(self):
         p = premise("P1")
         for bad in ({**p, "slots": [{**p["slots"][0], "role_code": "vua"}, *p["slots"][1:]]},                  # vai không thuộc danh mục
