@@ -153,17 +153,19 @@ class ClaudeCliRunnerTest(unittest.TestCase):
         return ClaudeCliRunner({"claude_cmd": self.stub, "env": env, **cfg})
 
     def test_command_line_isolates_the_session_and_limits_tools(self):
-        cmd = ClaudeCliRunner({"claude_cmd": ["claude"], "model": "m", "max_budget_usd_per_turn": 2}).command("SID")
+        cmd = ClaudeCliRunner({"claude_cmd": ["claude"], "model": "m", "effort": "high", "max_budget_usd_per_turn": 2}).command("SID")
         for flag in ("-p", "--strict-mcp-config", "--verbose"):
             self.assertIn(flag, cmd)
         self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "project,local")     # không nạp CLAUDE.md/plugin/hook của người dùng
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
         self.assertEqual(cmd[cmd.index("--resume") + 1], "SID")
         self.assertEqual(cmd[cmd.index("--max-budget-usd") + 1], "2")
+        self.assertEqual((cmd[cmd.index("--model") + 1], cmd[cmd.index("--effort") + 1]), ("m", "high"))
         self.assertIn("--allowedTools", cmd)
         self.assertLess(cmd.index("--model"), cmd.index("--allowedTools"))             # variadic nằm cuối
         bypass = ClaudeCliRunner({"claude_cmd": ["claude"], "permission_mode": "bypassPermissions"}).command(None)
         self.assertNotIn("--allowedTools", bypass)
+        self.assertNotIn("--effort", bypass)                                             # không cấu hình: không truyền
         self.assertNotIn("--resume", bypass)
 
     def test_parses_result_and_strips_nested_session_env(self):

@@ -70,6 +70,7 @@ class ClaudeCliRunner:
         self.permission_mode = cfg.get("permission_mode", "acceptEdits")
         self.allowed = cfg.get("allowed_tools", DEFAULT_ALLOWED)
         self.model, self.max_budget = cfg.get("model"), cfg.get("max_budget_usd_per_turn")
+        self.effort = cfg.get("effort")                                           # low|medium|high|xhigh|max (claude --effort)
         self.idle_s, self.hard_s = float(cfg.get("idle_timeout_s", 1800)), float(cfg.get("turn_timeout_s", 4 * 3600))
         self.grace_s = float(cfg.get("background_grace_s", 60))
         self.env_extra = cfg.get("env", {})
@@ -79,6 +80,8 @@ class ClaudeCliRunner:
                "--permission-mode", self.permission_mode, "--setting-sources", "project,local", "--strict-mcp-config"]
         if self.model:
             cmd += ["--model", self.model]
+        if self.effort:
+            cmd += ["--effort", self.effort]
         if self.max_budget:
             cmd += ["--max-budget-usd", str(self.max_budget)]
         if session:

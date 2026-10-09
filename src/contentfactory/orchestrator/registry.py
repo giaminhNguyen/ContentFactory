@@ -82,7 +82,7 @@ def _factories(cfg: Config) -> dict:
         ("source", "fake"): fake.FakeSource,
         ("source", "provider_chain"): lambda: _source_chain(cfg),
         ("story", "fake"): lambda: StoryModeRouter(fake.FakeStory(), lambda: _remix(cfg)),
-        ("story", "story_branch"): lambda: StoryModeRouter(StoryBranchAdapter(sb, oh_root), lambda: _remix(cfg), make_titler(ClaudeCliLLM(sb))),
+        ("story", "story_branch"): lambda: StoryModeRouter(StoryBranchAdapter(sb, oh_root), lambda: _remix(cfg), make_titler(ClaudeCliLLM({**sb, **(cfg.data.get("story_remix") or {})}))),
         ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("render", "contentflow"): lambda: _contentflow(cfg),
