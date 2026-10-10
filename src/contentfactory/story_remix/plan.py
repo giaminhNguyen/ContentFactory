@@ -49,18 +49,21 @@ def plan_story(llm, universe: UniverseLike, source_text: str, title: str, lang: 
     dna = steps.run("dna", fingerprint(src=src_fp, lang=lang, v=STEP_VERSION), "source_dna.json", lambda: ST.analyze_dna(llm, ledger, source_text, lang, ctx), SC.source_dna)
     dna_fp = fingerprint(dna=dna)
     result["dna"] = dna
-    feedback = ""
+    feedback, prior = "", None
     for attempt in range(MAX_ATTEMPTS):
         suffix = "" if attempt == 0 else f"_{attempt + 1}"
         cands = steps.run(f"premises{suffix}", fingerprint(dna=dna_fp, opts=opts_key, fb=feedback, a=attempt, v=STEP_VERSION), f"premise_candidates{suffix}.json",
-                          lambda: ST.generate_premises(llm, ledger, dna, st, lang, ctx, feedback), lambda d: SC.premise_candidates(d, 6))
+                          lambda: ST.generate_premises(llm, ledger, dna, st, lang, ctx, feedback, prior), lambda d: SC.premise_candidates(d, 6))
         sel = ST.select_premise(cands, dna, source_text, lambda p: universe.continuity(p, p["setting"]), cu["reuse_strategy"])
         atomic_write_json(out_dir / "selection_report.json", {**sel, "attempt": attempt + 1})
         if sel["selected"] is None:
             feedback = ST.weakness_feedback(sel)
+            weak = ST.weak_criteria(sel)
+            prior = next(p for p in cands["candidates"] if p["id"] == sel["best_candidate"])      # lần sau SỬA ý tưởng tốt nhất đúng tiêu chí yếu thay vì sinh lại từ đầu
             if attempt + 1 >= MAX_ATTEMPTS:
-                raise fail("PREMISE_TOO_WEAK", f"Mọi ý tưởng đều dưới ngưỡng chất lượng ({ST.MIN_SELECT}) sau {MAX_ATTEMPTS} lần lập; dừng trước khi viết dài (tiết kiệm chi phí).",
-                           {"hint": "Xem selection_report.json; thử đổi thể loại/giọng hoặc chạy lại.", "scores": {k: v["total"] for k, v in sel["scores"].items()}})
+                raise fail("PREMISE_TOO_WEAK", f"Mọi ý tưởng đều dưới ngưỡng chất lượng ({ST.MIN_SELECT}) sau {MAX_ATTEMPTS} lần lập; tiêu chí yếu: " + feedback[:300] + ". Dừng trước khi viết dài (tiết kiệm chi phí).",
+                           {"hint": "Xem selection_report.json; thử đổi thể loại/giọng hoặc chạy lại.", "scores": {k: v["total"] for k, v in sel["scores"].items()}, "weak_criteria": weak,
+                            "best_parts": sel["scores"][sel["best_candidate"]]["parts"]})
             continue
         premise = next(p for p in cands["candidates"] if p["id"] == sel["selected"])
         result.update(premise=premise, selection=sel)
@@ -78,15 +81,34 @@ def plan_story(llm, universe: UniverseLike, source_text: str, title: str, lang: 
         ids = {m["character_id"] for m in cast["members"]}
         prot = next(m["character_id"] for m in cast["members"] if m["role_code"] == "protagonist")
         lo, hi = max(3, n_chapters - 2), n_chapters + 2
-        outline = steps.run(f"outline{suffix}", outline_fp, "outline.json", lambda: ST.make_outline(llm, ledger, bible, cast, profiles, dna, n_chapters, lang, ctx),
+        outline = steps.run(f"outline{suffix}", outline_fp, "outline.json", lambda: ST.make_outline(llm, ledger, bible, cast, profiles, dna, n_chapters, lang, ctx, readability=st["audio_readability"]),
                             lambda d: SC.outline(d, ids, prot, lo, hi))
         # ---- cổng originality (luôn chạy: an toàn/pháp lý, không tắt được)
         og = steps.run(f"originality{suffix}", fingerprint(o=outline_fp, src=src_fp, rights=st["source_rights"], v=STEP_VERSION), "originality_report.json",
                        lambda: GT.originality_gate(premise, bible, outline, cast, source_text, st["source_rights"], llm, ledger, ctx))
+        if og["decision"] == "block" and og.get("repair_scope") in ("outline", "bible"):
+            # Sửa ĐÚNG phần vi phạm (đại cương, hoặc bible+đại cương) và chấm lại; ý tưởng + dàn nhân vật được giữ. Chưa hết vi phạm mới lập lại cả kế hoạch ở lượt sau.
+            atomic_write_json(out_dir / f"originality_report.blocked_{attempt + 1}.json", og)
+            fb = "; ".join(f"{e['condition']}: {e['evidence']}" for e in og["failed_conditions"])[:700] + ". Viết lại các phần nêu, đổi hẳn tên riêng/diễn biến; giữ nguyên ý tưởng và dàn nhân vật."
+            if og["repair_scope"] == "bible":
+                bible = ST.make_bible(llm, ledger, premise, cast, profiles, dna, lang, ctx, fb)
+                atomic_write_json(out_dir / "story_bible.json", bible)
+                outline = ST.make_outline(llm, ledger, bible, cast, profiles, dna, n_chapters, lang, ctx, readability=st["audio_readability"])
+            else:
+                outline = ST.make_outline(llm, ledger, bible, cast, profiles, dna, n_chapters, lang, ctx, fb, st["audio_readability"], outline)
+            SC.outline(outline, ids, prot, lo, hi)
+            atomic_write_json(out_dir / "outline.json", outline)
+            outline_fp = fingerprint(bible=fingerprint(bible=bible), n=n_chapters, read=st["audio_readability"], v=STEP_VERSION, fix=fingerprint(o=outline))
+            steps.state[f"outline{suffix}"] = {"fp": outline_fp, "file": "outline.json"}
+            atomic_write_json(steps.path, steps.state)
+            og = steps.run(f"originality{suffix}", fingerprint(o=outline_fp, src=src_fp, rights=st["source_rights"], v=STEP_VERSION), "originality_report.json",
+                           lambda: GT.originality_gate(premise, bible, outline, cast, source_text, st["source_rights"], llm, ledger, ctx))
         if og["decision"] == "block":
             feedback = "Bản trước quá giống nguồn — " + "; ".join(e["evidence"] for e in og["evidence"])[:600] + ". Hãy đổi hẳn nhân vật, quan hệ, chuỗi sự kiện và bối cảnh."
+            prior = None
             if attempt + 1 >= MAX_ATTEMPTS:
-                raise fail("ORIGINALITY_BLOCKED", "Kế hoạch vẫn quá giống nguồn sau khi lập lại; dừng trước khi viết dài.", {"hint": "Xem originality_report.json; thử nguồn/tuỳ chọn khác.", "level": og["level"]})
+                raise fail("ORIGINALITY_BLOCKED", "Kế hoạch vẫn quá giống nguồn sau khi lập lại; điều kiện gây chặn: " + "; ".join(f"{c['condition']} (giá trị {c['value']}, ngưỡng {c['threshold']}) ở {', '.join(c['locations']) or 'toàn kế hoạch'}" for c in og["failed_conditions"])[:500],
+                           {"hint": "Xem originality_report.json; thử nguồn/tuỳ chọn khác.", "level": og["level"], "conditions": og["failed_conditions"], "repair_scope": og["repair_scope"]})
             continue
         if og["decision"] == "review" and not st.get("review_accepted"):
             raise fail("ORIGINALITY_REVIEW_REQUIRED", "Kế hoạch có điểm giống nguồn ở mức trung bình và quyền sử dụng nguồn chưa rõ: cần bạn xem báo cáo trước khi viết dài.",
@@ -107,7 +129,8 @@ def plan_story(llm, universe: UniverseLike, source_text: str, title: str, lang: 
                                {"hint": "Tăng ‘Số lượt sửa lỗi tối đa’ hoặc chạy lại.", "issues": dg["issues"]})
                 repairs += 1
                 fb = "; ".join(i["message"] for i in dg["issues"])
-                outline = ST.make_outline(llm, ledger, bible, cast, profiles, dna, n_chapters, lang, ctx, fb)
+                outline = ST.make_outline(llm, ledger, bible, cast, profiles, dna, n_chapters, lang, ctx, fb, st["audio_readability"], outline)
+                SC.outline(outline, ids, prot, lo, hi)
                 atomic_write_json(out_dir / "outline.json", outline)
                 steps.state[f"outline{suffix}"] = {"fp": outline_fp, "file": "outline.json"}
                 atomic_write_json(steps.path, steps.state)

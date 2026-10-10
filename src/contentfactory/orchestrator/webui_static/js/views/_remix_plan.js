@@ -5,8 +5,10 @@ import { h, clear } from "../dom.js";
 import { badge, btn, busy, disclosure, alertBox, field, input, toast, toastError } from "../components.js";
 import { decisionView, costLine, universeLine, premiseRows, qualityIssues, stopActions, writeProgress, budgetValid } from "../remix_logic.js";
 import { roleLabel } from "../universe_logic.js";
+import { sceneRemixCard } from "./_scene_remix.js";
 
 export function remixPlanCard(jobId, d, { after } = {}) {
+  if (d.story_mode?.mode === "story_scene_remix") return sceneRemixCard(jobId, d, { after });
   if (d.story_mode?.mode !== "story_remix") return null;
   const host = h("section", { class: "card stack", "aria-labelledby": "rp-h" }, h("h2", { id: "rp-h" }, "Kế hoạch Story Remix"), h("p", { class: "muted small" }, "Đang tải kế hoạch…"));
   let timer = null;

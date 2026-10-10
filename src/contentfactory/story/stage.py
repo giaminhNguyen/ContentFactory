@@ -44,7 +44,7 @@ def run(ctx: StageContext, story: StoryAdapter) -> StageResult:
     sig = hashlib.sha256(("|".join(sha256_file(Path(p)) for p in sections) + ASSEMBLER_VERSION).encode()).hexdigest()
     story_path, report_path = ctx.stage_dir / "story.txt", ctx.stage_dir / "assembly_report.json"
     prev = _read_json(report_path) or {}
-    reused = bool(story_path.is_file() and prev.get("sections_sha256") == sig
+    reused = bool(story_path.is_file() and story_path.stat().st_size > 0 and prev.get("sections_sha256") == sig
                   and prev.get("story_sha256") == sha256_file(story_path))
     if reused:
         ctx.log("story_assembly_reused", sections=len(sections))
@@ -54,10 +54,19 @@ def run(ctx: StageContext, story: StoryAdapter) -> StageResult:
                                 float(profile.get("max_removed_ratio", 0.35)))
         issues = validate_story_text(text)
         report["issues"], report["sections_sha256"] = issues, sig
+        emptied = [x["section"] for x in report.get("by_section", []) if x["chars_in"] and not x["chars_out"]]
+        if emptied:
+            ctx.log("story_sections_emptied", "warning", sections=emptied)
         if issues:
             atomic_write_json(report_path, report)               # giữ để debug; story.txt KHÔNG được ghi
+            story_path.unlink(missing_ok=True)                   # không để story.txt cũ/rỗng lọt sang TTS
+            if issues == ["EMPTY"]:                              # rỗng: nói rõ section nào mất nội dung (stage nguồn) thay vì lỗi chung
+                raise StageError(ErrorClass.POLICY, "EMPTY_STORY", f"story rỗng sau khi ghép: {len(sections)} section, {report.get('chars_in', 0)} ký tự vào, 0 ký tự ra",
+                                 {"by_section": report.get("by_section", []), "issues": issues, "hint": "Xem story/assembly_report.json: section nào mất hết nội dung (chỉ có tiêu đề/marker/đoạn lặp); sửa ở stage sinh section đó rồi chạy lại từ checkpoint hợp lệ."})
             raise StageError(ErrorClass.POLICY, "STORY_INVALID", ",".join(issues), {"issues": issues})
         atomic_write_text(story_path, text)
+        if story_path.stat().st_size == 0:                        # kiểm lại file thật sau khi ghi (ổ đĩa đầy/ghi hỏng): không cho file rỗng sang TTS
+            raise StageError(ErrorClass.POLICY, "EMPTY_STORY", "story.txt ghi ra rỗng", {"hint": "Kiểm tra dung lượng đĩa rồi chạy lại stage story."})
         report["story_sha256"] = sha256_file(story_path)
         atomic_write_json(report_path, report)
 

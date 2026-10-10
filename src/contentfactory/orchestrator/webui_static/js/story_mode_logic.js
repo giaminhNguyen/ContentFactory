@@ -2,7 +2,18 @@
 // Server vẫn là nơi kiểm lại và quyết định cấu hình hiệu lực; ở đây chỉ để báo lỗi sớm và không gửi gì thừa.
 export const LEGACY = "story_branch";
 export const REMIX = "story_remix";
+export const SCENE = "story_scene_remix";
 export const SECTIONS = [["story", "Story Remix"], ["character_universe", "Kho nhân vật"]];
+const SCENE_SECTIONS = [["story", "Remix bám sự việc"]];
+export const isRemix = (mode) => mode === REMIX || mode === SCENE;
+/** Các phần form của một mode (Remix bám sự việc chỉ có một phần, không Kho nhân vật). */
+export const sectionsOf = (mode) => (mode === SCENE ? SCENE_SECTIONS : SECTIONS);
+/** Schema các trường của một mode: mode mới dùng `by_mode`, client/server cũ không có thì rơi về schema Story Remix. */
+export const schemaOf = (info, mode) => info.by_mode?.[mode]?.schema || info.schema;
+export const defaultsOf = (info, mode) => info.by_mode?.[mode]?.defaults || info.defaults;
+/** Giá trị đang sửa của một phần form: Remix bám sự việc giữ riêng ở `state.scene` để chuyển qua lại không mất cấu hình. */
+export const bagOf = (state, mode, sec) => (mode === SCENE ? state.scene : state[sec]);
+export const RIGHTS_OK = ["own", "licensed", "permitted"];
 
 export const OPTION_LABELS = {
   ending: { auto: "Tự động", happy: "Có hậu", bittersweet: "Buồn ngọt", open: "Kết mở", tragic: "Bi kịch" },
@@ -16,7 +27,8 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 
 /** Trạng thái ban đầu của form: mode mặc định + giá trị mặc định hệ thống. */
 export function initialState(info) {
-  return { mode: info.default_mode || LEGACY, story: clone(info.defaults.story), character_universe: clone(info.defaults.character_universe) };
+  const sc = info.by_mode?.[SCENE]?.defaults?.story;
+  return { mode: info.default_mode || LEGACY, story: clone(info.defaults.story), character_universe: clone(info.defaults.character_universe), ...(sc ? { scene: clone(sc) } : {}) };
 }
 
 export const listFromText = (t) => [...new Set(String(t ?? "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean))];
@@ -39,16 +51,20 @@ export function validateField(f, v) {
 /** {"story.tone": "..."}: mọi lỗi của form; rỗng = hợp lệ. Mode cũ không cần kiểm (cấu hình Remix bị bỏ qua). */
 export function validateAll(info, state) {
   const errs = {};
-  if (state.mode !== REMIX) return errs;
-  for (const [sec] of SECTIONS) for (const f of info.schema[sec]) {
-    const m = validateField(f, state[sec][f.key]);
+  if (!isRemix(state.mode)) return errs;
+  const schema = schemaOf(info, state.mode);
+  for (const [sec] of sectionsOf(state.mode)) for (const f of schema[sec]) {
+    const m = validateField(f, bagOf(state, state.mode, sec)[f.key]);
     if (m) errs[`${sec}.${f.key}`] = m;
   }
+  if (state.mode === SCENE && !errs["story.source_rights"] && !RIGHTS_OK.includes(state.scene.source_rights)) errs["story.source_rights"] = "Chọn Của tôi / Có giấy phép / Được phép (Không rõ bị chặn).";
+  if (state.mode === SCENE && !errs["story.rights_ack"] && state.scene.rights_ack !== true) errs["story.rights_ack"] = "Cần tích xác nhận bạn có quyền chuyển thể nguồn này.";
   return errs;
 }
 
 /** Payload tạo job: Story hiện có = không gửi gì (backend dùng mặc định, job y như trước). Remix = đủ cấu hình. */
 export function createPayload(info, state) {
+  if (state.mode === SCENE) return { mode: SCENE, story: clone(state.scene) };
   return state.mode === REMIX ? { mode: REMIX, story: clone(state.story), character_universe: clone(state.character_universe) } : null;
 }
 
@@ -57,7 +73,8 @@ export const modeLabel = (info, id) => info.modes.find((m) => m.id === id)?.labe
 /** Số mục khác mặc định (để tóm tắt "đã tuỳ chỉnh N mục"). */
 export function changedCount(info, state) {
   let n = 0;
-  for (const [sec] of SECTIONS) for (const f of info.schema[sec]) if (JSON.stringify(state[sec][f.key]) !== JSON.stringify(f.default)) n++;
+  const mode = state.mode === SCENE ? SCENE : REMIX;
+  for (const [sec] of sectionsOf(mode)) for (const f of schemaOf(info, mode)[sec]) if (JSON.stringify(bagOf(state, mode, sec)[f.key]) !== JSON.stringify(f.default)) n++;
   return n;
 }
 
@@ -90,7 +107,8 @@ export function formatValue(field, v) {
 
 /** Các dòng ước tính (đã nói rõ giả định) + cảnh báo khi trần USD ước tính vượt ngân sách. */
 export function estimateLines(est, budget) {
-  const lines = [`Khoảng ${est.calls.min}–${est.calls.max} lượt gọi AI, ~${Math.round(est.input_tokens.min / 1000)}k–${Math.round(est.input_tokens.max / 1000)}k token vào, ~${Math.round(est.output_tokens.min / 1000)}k–${Math.round(est.output_tokens.max / 1000)}k token ra (${est.chapters} chương).`];
+  const unit = est.scenes ? `${est.scenes} cảnh` : `${est.chapters} chương`;
+  const lines = [`Khoảng ${est.calls.min}–${est.calls.max} lượt gọi AI, ~${Math.round(est.input_tokens.min / 1000)}k–${Math.round(est.input_tokens.max / 1000)}k token vào, ~${Math.round(est.output_tokens.min / 1000)}k–${Math.round(est.output_tokens.max / 1000)}k token ra (${unit}).`];
   lines.push(est.usd ? `Chi phí ước tính: $${est.usd.min.toFixed(2)}–$${est.usd.max.toFixed(2)}.` : "Chi phí USD: không rõ (chưa cấu hình giá/triệu token).");
   if (budget != null && est.usd && est.usd.max > budget) lines.push(`⚠ Trần ước tính ($${est.usd.max.toFixed(2)}) cao hơn ngân sách ($${Number(budget).toFixed(2)}): job có thể dừng giữa chừng và tiếp tục được sau khi nâng ngân sách.`);
   if (budget != null && !est.usd) lines.push("Ngân sách chỉ chặn được theo chi phí mà nhà cung cấp báo trong lúc chạy.");

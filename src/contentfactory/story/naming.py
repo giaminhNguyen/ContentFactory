@@ -7,13 +7,14 @@ from __future__ import annotations
 import re
 
 from ..contracts import clean_title
+from ..storyprose import brand_marks  # noqa: F401
 
 SYSTEM = "Bạn là biên tập viên kênh truyện audio YouTube. Chỉ trả về MỘT dòng duy nhất là tiêu đề, không giải thích, không ngoặc kép."
 MAX_ATTEMPTS = 3
 # Prompt do người dùng cung cấp (2026-10-10). Ngân sách ký tự do CODE tính từ mẫu tiêu đề kênh (LLM đếm ký tự không tin được) và code kiểm lại.
 PROMPT = """Dựa trên dàn ý truyện, hãy tạo MỘT tiêu đề hấp dẫn theo phong cách truyện drama viral trên YouTube.
 
-**Ngân sách độ dài (bắt buộc):** tiêu đề video = tiền tố "{prefix}" + tiêu đề của bạn, tổng tối đa 100 ký tự (tính cả khoảng trắng và dấu câu).
+**Ngân sách độ dài (bắt buộc):** tiêu đề video = tiền tố "{prefix}" + tiêu đề của bạn, tổng tối đa 90 ký tự (tính cả khoảng trắng và dấu câu).
 Tiền tố đã chiếm {prefix_len} ký tự ⇒ tiêu đề của bạn TỐI ĐA {budget} ký tự. Sáng tạo tiêu đề hoàn chỉnh vừa ngân sách ngay từ đầu;
 KHÔNG cắt chuỗi, xoá từ ở cuối hay rút gọn máy móc. Tận dụng hợp lý số ký tự cho phép nhưng không cố lấp đầy.
 
@@ -52,13 +53,6 @@ def parse_title(text: str) -> str | None:
         line = line.split(":", 1)[1]
     line = line.strip().strip("\"'“”‘’«»*")
     return clean_title(line) if line else None
-
-
-def brand_marks(source_title: str) -> list[str]:
-    """Dấu hiệu nhận diện kênh gốc trong tên nguồn: phần sau dấu "|" cuối (vd "Tinh Hà Audio") và chữ trong 【】/[] (vd "Truyện Audio")."""
-    t = source_title or ""
-    marks = re.findall(r"[【\[]([^】\]]+)[】\]]", t) + (t.rsplit("|", 1)[1:] if "|" in t else [])
-    return [m.strip() for m in marks if len(m.strip()) >= 3]
 
 
 def make_titler(llm):

@@ -38,6 +38,20 @@ def plan_text(premise: dict, bible: dict, outline: dict, cast: dict) -> str:
     return "\n".join(parts)
 
 
+def _components(premise: dict, bible: dict, outline: dict, cast: dict) -> dict[str, str]:
+    """Văn bản từng thành phần của kế hoạch, để chỉ ra CHÍNH XÁC phần nào vi phạm (khóa 'outline.chapters[3]' → nhóm 'outline')."""
+    out = {"premise": " ".join(premise[k] for k in ("logline", "setting", "central_conflict", "twist", "ending")),
+           "bible": " ".join(e["event"] + " " + e["cause"] + " " + e["effect"] for e in bible["causal_chain"]),
+           "cast": " ".join(m["display_name"] for m in cast["members"])}
+    for i, c in enumerate(outline["chapters"], 1):
+        out[f"outline.chapters[{c.get('n', i)}]"] = " ".join([c["goal"], *c["beats"]])
+    return out
+
+
+def _group(key: str) -> str:
+    return "outline" if key.startswith("outline") else key
+
+
 def _review(v) -> dict:
     """Không cắt bằng chứng; chỉ chuẩn hoá chữ hoa/thường của nhãn (sửa an toàn bằng code)."""
     verdict = str(v.get("verdict") or "").strip().lower() if isinstance(v, dict) else ""
@@ -62,28 +76,40 @@ def originality_gate(premise: dict, bible: dict, outline: dict, cast: dict, sour
     close = SIM.near_windows(beats, source_text)
     retell = len(close) / max(1, len(beats))
     evidence, level = [], "none"
+    comps = _components(premise, bible, outline, cast)
+    local = {k: SIM.containment(t, source_text, 4) for k, t in comps.items()}
+    name_hits = {k: SIM.reused_names(names, t) for k, t in comps.items()}
 
-    def bump(sev: str, text: str) -> None:
+    def bump(sev: str, text: str, condition: str, value=None, threshold=None, locations: list[str] | None = None) -> None:
         nonlocal level
-        evidence.append({"severity": sev, "evidence": text})
+        locations = locations or []
+        evidence.append({"severity": sev, "evidence": text, "condition": condition, "value": value, "threshold": threshold, "locations": locations,
+                         "components": sorted({_group(k) for k in locations}) or ["plan"]})
         if SEV[sev] > SEV[level]:
             level = sev
+    spots = [k for k, v in sorted(local.items(), key=lambda kv: -kv[1]) if v >= CONTAIN_MED][:6]
     if contain >= CONTAIN_HIGH:
-        bump("high", f"{contain:.0%} cụm 4 từ của kế hoạch trùng nguồn")
+        bump("high", f"{contain:.0%} cụm 4 từ của kế hoạch trùng nguồn (ngưỡng chặn {CONTAIN_HIGH:.0%}); nặng nhất ở: {', '.join(spots) or 'rải đều toàn kế hoạch'}", "PLAN_4GRAM_CONTAINMENT", round(contain, 4), CONTAIN_HIGH, spots)
     elif contain >= CONTAIN_MED:
-        bump("medium", f"{contain:.0%} cụm 4 từ của kế hoạch trùng nguồn")
+        bump("medium", f"{contain:.0%} cụm 4 từ của kế hoạch trùng nguồn", "PLAN_4GRAM_CONTAINMENT", round(contain, 4), CONTAIN_MED, spots)
     if reused:
-        bump("high" if set(SIM.reused_names(names, " ".join(cast_names))) or len(reused) >= 2 else "medium", "tên riêng của nguồn xuất hiện trong kế hoạch/nhân vật: " + ", ".join(reused[:6]))
+        where = [k for k, v in name_hits.items() if v]
+        bump("high" if set(SIM.reused_names(names, " ".join(cast_names))) or len(reused) >= 2 else "medium",
+             "tên riêng của nguồn xuất hiện trong kế hoạch/nhân vật: " + ", ".join(reused[:6]) + f" (ở: {', '.join(where)})", "SOURCE_NAMES_REUSED", reused[:6], 0, where)
     if close:
-        bump("high" if retell >= RETELL_HIGH else "medium", f"{len(close)}/{len(beats)} beat gần trùng một đoạn nguồn (Jaccard ≥ 0.5)")
+        locs = []
+        for i, c in enumerate(outline["chapters"], 1):
+            if SIM.near_windows(c["beats"], source_text):
+                locs.append(f"outline.chapters[{c.get('n', i)}]")
+        bump("high" if retell >= RETELL_HIGH else "medium", f"{len(close)}/{len(beats)} beat gần trùng một đoạn nguồn (Jaccard ≥ 0.5; ngưỡng chặn {RETELL_HIGH:.0%} số beat); ở: {', '.join(locs)}", "CLOSE_BEATS", round(retell, 3), RETELL_HIGH, locs)
     opinion = None
     if review:
         opinion = ask_json(llm, ledger, "originality_review", ST.SYS, REVIEW_PROMPT.format(plan=ptxt, source=ST.excerpt(source_text, 60_000)), _review, ctx)
         worst = max([SEV[o["severity"]] for o in opinion["overlaps"]] + [0])
         if opinion["verdict"] == "retell" or worst == 3:
-            bump("high", f"nhận xét mô hình: {opinion['verdict']}; " + "; ".join(o["evidence"] for o in opinion["overlaps"] if o["severity"] == "high")[:300])
+            bump("high", f"nhận xét mô hình: {opinion['verdict']}; " + "; ".join(o["evidence"] for o in opinion["overlaps"] if o["severity"] == "high")[:300], "MODEL_RETELL", opinion["verdict"], "retell|high")
         elif opinion["verdict"] == "similar" or worst == 2:
-            bump("medium", "nhận xét mô hình: có điểm đặc thù trùng — " + "; ".join(o["evidence"] for o in opinion["overlaps"] if o["severity"] in ("medium", "high"))[:300])
+            bump("medium", "nhận xét mô hình: có điểm đặc thù trùng — " + "; ".join(o["evidence"] for o in opinion["overlaps"] if o["severity"] in ("medium", "high"))[:300], "MODEL_SIMILAR", opinion["verdict"], "similar|medium")
     rights_ok = source_rights in OWN_RIGHTS
     if level == "high":
         decision = "block"
@@ -97,7 +123,11 @@ def originality_gate(premise: dict, bible: dict, outline: dict, cast: dict, sour
         uncertainty.append("Không có nhận xét mô hình (đã tắt) — chỉ dựa trên số đo từ vựng.")
     if source_rights == "unknown":
         uncertainty.append("Quyền sử dụng nguồn chưa rõ; kết quả ‘medium’ sẽ cần người xem lại.")
-    return {"version": 1, "decision": decision, "level": level, "source_rights": source_rights,
+    high = [e for e in evidence if e["severity"] == "high"]
+    groups = {g for e in high for g in e["components"]}
+    scope = "outline" if groups and groups <= {"outline"} else "bible" if groups and groups <= {"bible", "outline"} else "plan"        # phần NHỎ NHẤT cần lập lại để hết vi phạm
+    return {"version": 2, "decision": decision, "level": level, "source_rights": source_rights, "repair_scope": scope,
+            "failed_conditions": [{k: e[k] for k in ("condition", "value", "threshold", "locations", "evidence")} for e in high],
             "metrics": {"plan_4gram_containment": round(contain, 4), "source_names_reused": reused, "close_beats": close[:10], "close_beat_ratio": round(retell, 3), "beats_checked": len(beats)},
             "model_opinion": opinion, "evidence": evidence, "uncertainty": uncertainty, "legal_note": LEGAL_NOTE,
             "next_step": {"pass": "Tiếp tục viết.", "pass_with_note": "Tiếp tục; lưu vết có điểm giống ở mức trung bình nhưng bạn đã khai báo quyền sử dụng.",

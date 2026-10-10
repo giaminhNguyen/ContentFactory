@@ -43,11 +43,18 @@ def next_quota_reset(now: datetime | None = None) -> float:
     return t.timestamp()
 
 
+def _ambiguous(job: dict) -> bool:
+    return (job.get("last_error") or {}).get("code") == "AMBIGUOUS_UPLOAD" or job.get("error_class") == "AMBIGUOUS_PUBLISH"
+
+
 def map_job_error(job: dict) -> StageError:
     le = job.get("last_error") or {}
     code, msg = le.get("code"), le.get("message", "")
     detail = {"uploader_job": job.get("id"), "uploader_code": code, "uploader_class": job.get("error_class")}
     text = f"yt_uploader: {code}: {msg}"[:600]
+    if _ambiguous(job):                                          # kiểm TRƯỚC mọi mã khác: không để mã lỗi tạm (network...) che mất trạng thái "không rõ video đã lên chưa"
+        return StageError(ErrorClass.AMBIGUOUS, "AMBIGUOUS_UPLOAD", text + " — video có thể đã lên YouTube: kiểm tra kênh rồi `retry?force=true` nếu chưa có",
+                          detail)
     if code == "quota_exceeded":
         return StageError(ErrorClass.RESOURCE, "QUOTA_EXCEEDED", text, detail, resource="quota", resume_after=next_quota_reset())
     if code in ("auth_required", "auth_revoked"):
@@ -64,9 +71,6 @@ def map_job_error(job: dict) -> StageError:
         return StageError(ErrorClass.POLICY, "UPLOAD_FILE_CHANGED", text + " (file đổi sau khi bắt đầu upload; cần `retry?force=true` thủ công)", detail)
     if code == "database_error":
         return StageError(ErrorClass.RESOURCE, "UPLOADER_DATABASE_ERROR", text, detail, resource="runtime")
-    if code == "AMBIGUOUS_UPLOAD" or job.get("error_class") == "AMBIGUOUS_PUBLISH":
-        return StageError(ErrorClass.AMBIGUOUS, "AMBIGUOUS_UPLOAD", text + " — video có thể đã lên YouTube: kiểm tra kênh rồi `retry?force=true` nếu chưa có",
-                          detail)
     return StageError(ErrorClass.TRANSIENT, "UPLOAD_FAILED", text, detail)
 
 
@@ -206,14 +210,16 @@ class YtUploaderPublish:
         else:
             ctx.log("upload_job_found", uploader_job=job.get("id"), state=job.get("state"))
             code = (job.get("last_error") or {}).get("code")
-            if job.get("state") in ("failed", "paused", "cancelled") and code in RETRYABLE and code != "AMBIGUOUS_UPLOAD":
+            if job.get("state") in ("failed", "paused", "cancelled") and code in RETRYABLE and not _ambiguous(job):
                 job = self._retry(job)                       # lần chạy trước lỗi tạm thời: daemon probe session rồi RESUME (không upload từ đầu)
                 ctx.log("upload_job_retry", "warning", uploader_job=job.get("id"), previous_code=code)
         return self._to_result(self._wait(job, ctx))
 
     def _create(self, req: PublishRequest, thumb: Path | None, key: str) -> dict:
+        if not isinstance(req.get("made_for_kids"), bool):      # chốt chặn cuối: KHÔNG ép kiểu (bool("false") == True sẽ khai báo sai với YouTube)
+            raise StageError(ErrorClass.POLICY, "MISSING_MADE_FOR_KIDS", f"made_for_kids phải là boolean thật, nhận {req.get('made_for_kids')!r}")
         body = {"file_path": str(Path(req["video"]).resolve()), "title": req["title"], "description": req["description"], "tags": list(req.get("tags") or []),
-                "privacy": req.get("privacy", "private"), "made_for_kids": bool(req["made_for_kids"]), "idempotency_key": key}
+                "privacy": req.get("privacy", "private"), "made_for_kids": req["made_for_kids"], "idempotency_key": key}
         if thumb:
             body["thumbnail_path"] = str(Path(thumb).resolve())
         if req.get("category"):

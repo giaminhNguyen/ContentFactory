@@ -11,9 +11,11 @@ import copy
 import string
 
 from ..contracts import ErrorClass, StageError
+from ..ytlimits import (DESCRIPTION_MAX_BYTES, DESCRIPTION_TARGET_BYTES, PRIVACY_VALUES, PUBLISH_KEYS, TAGS_MAX_CHARS, TITLE_MAX_CHARS, TITLE_TARGET_CHARS,  # noqa: F401
+                        check_description, check_title, clean_publishing, pick_publishing, tags_cost, utf8_len)
 
-TITLE_MAX_CHARS = 100
-DESCRIPTION_MAX_BYTES = 5000
+# Nguồn các giới hạn: modules/yt_uploader/internal/upload/validate.go (daemon kiểm TRƯỚC khi gọi YouTube; mỗi số có tài liệu YouTube Data API phía sau).
+# Title: đếm ký tự Unicode (rune) = len(str) của Python. Description: BYTE UTF-8. Tags: tổng 500, daemon tính len(tag) theo BYTE + 2 nếu tag có dấu cách/phẩy.
 ALLOWED_FIELDS = ("channel_name", "project_title", "sequence")
 DEFAULT_TITLE_TEMPLATE = "[Full Audio][{channel_name} số {sequence}] | {project_title}"
 DEFAULT_DESCRIPTION_TEMPLATE = "{project_title}\n\n{channel_name}"
@@ -69,6 +71,11 @@ def normalize_channel(raw: dict | None, channel_id: str) -> dict:
             errs.append(f"publishing.{k} sai kiểu")
     if out["publishing"].get("privacy") not in (None, "private", "unlisted", "public"):
         errs.append("publishing.privacy phải là private | unlisted | public")
+    else:
+        try:                                                                            # tags/category/playlists sai kiểu bị chặn từ lúc nạp kênh (made_for_kids có thể thiếu: job tự khai)
+            clean_publishing(out["publishing"], require_kids=False)
+        except StageError as e:
+            errs.append("publishing: " + e.message)
     lu = out["sequence"].get("last_used", 0)
     if not isinstance(lu, int) or isinstance(lu, bool) or lu < 0:
         errs.append("sequence.last_used phải là số nguyên >= 0")
@@ -121,20 +128,24 @@ def render_template(tpl: str, values: dict, where: str = "template") -> str:
     return tpl.format(**{k: values[k] for k in ALLOWED_FIELDS})
 
 
+def precheck_user_title(channel: dict, title: str) -> None:
+    """TITLE_TOO_LONG ngay lúc tạo job (trước Story/TTS/render) khi tên truyện do NGƯỜI DÙNG đặt. Dùng số tập nhỏ nhất có thể (last_used+1, số tập chỉ tăng)
+    nên không bao giờ từ chối oan; kiểm chính xác vẫn ở build()."""
+    seq = int(channel["sequence"].get("last_used", 0)) + 1
+    check_title(render_template(channel["title_template"], {"channel_name": channel["name"], "project_title": title, "sequence": str(seq)}, "title_template"))
+
+
 def build(project: dict, channel: dict, sequence: int) -> dict:
     """PublishMetadata + cảnh báo. `project`: {id, title, title_source, channel_id, language}."""
     values = {"channel_name": channel["name"], "project_title": project["title"], "sequence": str(sequence)}
     title = render_template(channel["title_template"], values, "title_template").strip()
     desc = render_template(channel["description_template"], values, "description_template").strip()
-    if not title or "\n" in title:
-        raise StageError(ErrorClass.POLICY, "INVALID_TITLE", "tiêu đề YouTube rỗng hoặc có xuống dòng")
-    if len(title) > TITLE_MAX_CHARS:
-        raise StageError(ErrorClass.POLICY, "TITLE_TOO_LONG",
-                         f"tiêu đề YouTube dài {len(title)} ký tự (> {TITLE_MAX_CHARS}); rút gọn project.title hoặc title_template, KHÔNG tự cắt",
-                         {"title": title})
-    if len(desc.encode("utf-8")) > DESCRIPTION_MAX_BYTES:
-        raise StageError(ErrorClass.POLICY, "DESCRIPTION_TOO_LONG", f"mô tả dài {len(desc.encode('utf-8'))} byte (> {DESCRIPTION_MAX_BYTES})")
+    title, desc = check_title(title), check_description(desc)
     warnings = []
+    if len(title) > TITLE_TARGET_CHARS:
+        warnings.append(f"tiêu đề YouTube dài {len(title)} ký tự (mục tiêu ≤ {TITLE_TARGET_CHARS}, trần {TITLE_MAX_CHARS}).")
+    if utf8_len(desc) > DESCRIPTION_TARGET_BYTES:
+        warnings.append(f"mô tả dài {utf8_len(desc)} byte (mục tiêu ≤ {DESCRIPTION_TARGET_BYTES}, trần {DESCRIPTION_MAX_BYTES}).")
     if project["title_source"] == "source_default":
         warnings.append("project.title chưa được đặt: đang dùng TIÊU ĐỀ CỦA VIDEO NGUỒN (placeholder). Đặt params.project.title trước khi đăng.")
     return {"schema": 1, "youtube_title": title, "description": desc, "sequence": sequence, "project_title": project["title"],

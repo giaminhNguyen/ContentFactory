@@ -107,3 +107,55 @@ test("ước tính + định dạng giá trị hiệu lực, không bịa USD", 
   assert.equal(m.formatValue({ type: "number_or_null" }, null), "—");
   assert.equal(m.SOURCE_LABEL.preset, "từ mẫu");
 });
+
+// ---- Remix bám sự việc (mode thứ ba): form riêng, không Kho nhân vật, chặn quyền nguồn "Không rõ"
+const sceneInfo = {
+  ...info,
+  modes: [...info.modes, { id: "story_scene_remix", label: "Remix bám sự việc", available: true }],
+  by_mode: {
+    story_scene_remix: {
+      defaults: { story: { source_rights: "unknown", rights_ack: false, quality_repair_max_passes: 1, budget_usd: null } },
+      schema: { story: [{ key: "source_rights", type: "select", default: "unknown", rule: { options: ["unknown", "own", "licensed", "permitted"] } }, { key: "rights_ack", type: "bool", default: false, rule: {} },
+                        { key: "quality_repair_max_passes", type: "int", default: 1, rule: { min: 0, max: 2 } }, { key: "budget_usd", type: "number_or_null", default: null, rule: { min: 1, max: 5000 } }] },
+    },
+  },
+};
+
+test("Remix bám sự việc: payload chỉ có phần story riêng, không character_universe, không lẫn cấu hình Story Remix", async () => {
+  const m = await load("story_mode_logic.js");
+  const st = m.initialState(sceneInfo);
+  st.story.tone = "giữ nguyên bên Story Remix";
+  st.mode = m.SCENE;
+  st.scene.source_rights = "own";
+  st.scene.rights_ack = true;
+  const p = m.createPayload(sceneInfo, st);
+  assert.equal(p.mode, "story_scene_remix");
+  assert.deepEqual(Object.keys(p).sort(), ["mode", "story"]);
+  assert.equal(p.story.tone, undefined);
+  assert.equal(st.story.tone, "giữ nguyên bên Story Remix");           // chuyển qua lại không mất cấu hình Story Remix
+  assert.deepEqual(m.validateAll(sceneInfo, st), {});
+});
+
+test("Remix bám sự việc: quyền nguồn 'Không rõ' hoặc chưa xác nhận bị chặn ngay ở form", async () => {
+  const m = await load("story_mode_logic.js");
+  const st = m.initialState(sceneInfo);
+  st.mode = m.SCENE;
+  assert.deepEqual(Object.keys(m.validateAll(sceneInfo, st)).sort(), ["story.rights_ack", "story.source_rights"]);
+  st.scene.source_rights = "licensed";
+  assert.deepEqual(Object.keys(m.validateAll(sceneInfo, st)), ["story.rights_ack"]);
+  st.scene.rights_ack = true;
+  st.scene.quality_repair_max_passes = 3;                              // tối đa 2 ở mode này
+  assert.deepEqual(Object.keys(m.validateAll(sceneInfo, st)), ["story.quality_repair_max_passes"]);
+});
+
+test("Remix bám sự việc: server cũ không có by_mode thì mode cũ vẫn chạy; số mục tuỳ chỉnh đếm theo mode đang chọn", async () => {
+  const m = await load("story_mode_logic.js");
+  assert.equal(m.initialState(info).scene, undefined);
+  assert.deepEqual(m.sectionsOf(m.SCENE).map((x) => x[0]), ["story"]);
+  const st = m.initialState(sceneInfo);
+  st.mode = m.SCENE;
+  assert.equal(m.changedCount(sceneInfo, st), 0);
+  st.scene.rights_ack = true;
+  assert.equal(m.changedCount(sceneInfo, st), 1);
+  assert.match(m.estimateLines({ calls: { min: 3, max: 9 }, input_tokens: { min: 1000, max: 5000 }, output_tokens: { min: 100, max: 900 }, scenes: 14, usd: null }, null)[0], /14 cảnh/);
+});

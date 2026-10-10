@@ -11,13 +11,7 @@ import json
 
 from ..contracts import ErrorClass, PublishAdapter, StageContext, StageError, StageResult
 from ..fsutil import atomic_write_json
-
-
-def _pick(p: dict, ch: dict, d: dict, key: str, default=None):
-    for src in (p, ch, d):
-        if src.get(key) is not None:
-            return src[key]
-    return default
+from contentfactory import ytlimits as MD
 
 
 def run(ctx: StageContext, publish: PublishAdapter, sequence) -> StageResult:
@@ -25,15 +19,14 @@ def run(ctx: StageContext, publish: PublishAdapter, sequence) -> StageResult:
     pm = ctx.read_json("publish_metadata")
     chp = (ctx.config.get("channel_config") or {}).get("publishing") or {}
     dfl = (ctx.config.get("publishing") or {}).get("defaults") or {}
-    kids = _pick(p, chp, {}, "made_for_kids")
-    if not isinstance(kids, bool):                            # bắt buộc khai báo, không có default
-        raise StageError(ErrorClass.POLICY, "MISSING_MADE_FOR_KIDS", "cần made_for_kids = true/false (params.made_for_kids hoặc channel publishing.made_for_kids)")
+    # Kiểm lần cuối NGAY TRƯỚC khi chạm uploader/YouTube (metadata có thể do tay chỉnh/import): sai ⇒ POLICY, không gọi daemon; lỗi định dạng nhỏ tự sửa tất định.
+    title, description = MD.check_title(pm.get("youtube_title")), MD.check_description(pm.get("description"))
+    pub, fixes = MD.clean_publishing(MD.pick_publishing(p, chp, dfl))
+    for f in fixes:
+        ctx.log("publish_metadata_autofix", "warning", message=f)
     res = publish.publish({
         "platform": getattr(publish, "platform", "youtube"), "video": ctx.one("video_youtube"), "thumbnail": ctx.one("thumbnail"),
-        "title": pm["youtube_title"], "description": pm["description"],
-        "tags": _pick(p, chp, dfl, "tags", []), "privacy": _pick(p, chp, dfl, "privacy", "private"), "made_for_kids": kids,
-        "account_id": _pick(p, chp, dfl, "account_id"), "category": _pick(p, chp, dfl, "category"),
-        "playlists": _pick(p, chp, dfl, "playlists", []), "idempotency_key": ctx.stage_key}, ctx)
+        "title": title, "description": description, **pub, "idempotency_key": ctx.stage_key}, ctx)
     if res.get("state") != "completed":
         e = res.get("error")
         if e:

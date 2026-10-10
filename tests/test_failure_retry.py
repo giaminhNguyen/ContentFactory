@@ -92,16 +92,14 @@ class FailureRetryTest(RootCase):
         self.assertNotIn("story_text", {a["kind"] for a in orc.store.artifacts(jid)})
         self.assertFalse((self.job_dir(jid) / "story" / "story.txt").exists())
 
-    def test_publish_requires_explicit_made_for_kids_but_output_is_already_delivered(self):
+    def test_publish_requires_explicit_made_for_kids_rejected_at_job_creation(self):
         orc = self.orc()
         p = params()
         del p["made_for_kids"]
-        jid = orc.submit(p)
-        orc.run()
-        j = orc.store.get_job(jid)
-        self.assertEqual((j["state"], j["failed_stage"], j["last_error"]["code"]),
-                         (P.FAILED, "publish", "MISSING_MADE_FOR_KIDS"))
-        self.assertEqual(len(list((self.root / "output").iterdir())), 1)         # gói output đã xong trước upload
+        with self.assertRaises(StageError) as cm:                                # chặn lúc TẠO job: không tốn Story/TTS/render rồi mới biết thiếu khai báo COPPA
+            orc.submit(p)
+        self.assertEqual(cm.exception.code, "MISSING_MADE_FOR_KIDS")
+        self.assertEqual(orc.store.list_jobs(), [])
 
     def test_handler_cannot_emit_undeclared_artifact(self):
         res = StageResult([ArtifactDraft("story/story.txt", "video_youtube")])

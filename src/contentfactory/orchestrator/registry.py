@@ -24,6 +24,8 @@ from ..source.chain import ProviderChain
 from ..tts.planner import RuleSegmentPlanner
 from ..story.naming import make_titler
 from ..story_remix.adapter import StoryRemixAdapter
+from ..story_scene_remix.adapter import StorySceneRemixAdapter
+from ..story_scene_remix.fake_llm import FakeSceneRemixLLM
 from ..universe import Universe, UniverseDB
 from ..source.providers import LocalSubtitleProvider, PlainTextProvider, SubtitleSupperVipProvider, YtDlpProvider
 from .config import Config
@@ -60,6 +62,15 @@ def _remix(cfg: Config) -> StoryRemixAdapter:
     return StoryRemixAdapter(llm, universe, publisher=lambda ctx, cast, qa, text, mode: universe().publish(ctx, cast, qa, text, mode))
 
 
+def _scene_remix(cfg: Config) -> StorySceneRemixAdapter:
+    rc = cfg.data.get("story_remix") or {}
+    kind = rc.get("llm", "auto")
+    if kind == "auto":
+        kind = "fake" if cfg["adapters"]["story"] == "fake" else "claude_cli"
+    llm = FakeSceneRemixLLM() if kind == "fake" else ClaudeCliLLM({**(cfg.data.get("story_branch") or {}), **rc})
+    return StorySceneRemixAdapter(llm, rc.get("price_usd_per_mtok"))
+
+
 def _contentflow(cfg: Config) -> ContentFlowRender:
     t = cfg.data.get("tools", {})
     cf = t.get("contentflow", {})
@@ -81,8 +92,8 @@ def _factories(cfg: Config) -> dict:
     return {
         ("source", "fake"): fake.FakeSource,
         ("source", "provider_chain"): lambda: _source_chain(cfg),
-        ("story", "fake"): lambda: StoryModeRouter(fake.FakeStory(), lambda: _remix(cfg)),
-        ("story", "story_branch"): lambda: StoryModeRouter(StoryBranchAdapter(sb, oh_root), lambda: _remix(cfg), make_titler(ClaudeCliLLM({**sb, **(cfg.data.get("story_remix") or {})}))),
+        ("story", "fake"): lambda: StoryModeRouter(fake.FakeStory(), lambda: _remix(cfg), scene_remix_factory=lambda: _scene_remix(cfg)),
+        ("story", "story_branch"): lambda: StoryModeRouter(StoryBranchAdapter(sb, oh_root), lambda: _remix(cfg), make_titler(ClaudeCliLLM({**sb, **(cfg.data.get("story_remix") or {})})), scene_remix_factory=lambda: _scene_remix(cfg)),
         ("tts", "fake"): fake.FakeTTS, ("planner", "rule"): RuleSegmentPlanner, ("audio", "fake"): fake.FakeAudio, ("audio", "ffmpeg"): lambda: FfmpegAudio(cfg.data.get("tools", {})), ("render", "fake"): fake.FakeRender,
         ("publish", "fake"): fake.FakePublish,
         ("render", "contentflow"): lambda: _contentflow(cfg),

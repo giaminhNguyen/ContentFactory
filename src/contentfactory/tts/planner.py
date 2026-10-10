@@ -34,8 +34,64 @@ class SegmentPlanner(Protocol):
 
 
 # ---------------------------------------------------------------- tách đoạn / câu
+def has_speech(t: str) -> bool:
+    """Có ít nhất một chữ/số để đọc? (dấu câu, emoji, ký hiệu, `_` không tính)."""
+    return any(c.isalnum() for c in t)
+
+
 def paragraphs(text: str) -> list[str]:
-    return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    """Đoạn có chữ/số để đọc; đoạn chỉ dấu câu/ký hiệu (vd `…`, `— —`, `“”`, emoji) KHÔNG bao giờ thành segment."""
+    return [p.strip() for p in re.split(r"\n\s*\n", text) if has_speech(p)]
+
+
+def drop_unspeakable_paragraphs(text: str, keep: tuple[str, ...] = ()) -> tuple[str, int]:
+    """Bỏ các đoạn không có chữ/số để đọc (trừ dấu phân cảnh trong `keep`); trả (văn bản đã dọn, số đoạn đã bỏ). Chữ/số không bao giờ bị mất."""
+    kept, n = [], 0
+    for p in re.split(r"\n\s*\n", text):
+        if p.strip() and not has_speech(p) and p.strip() not in keep:
+            n += 1
+        elif p.strip():
+            kept.append(p.strip())
+    return "\n\n".join(kept), n
+
+
+def _shift(frag: str, donor: str, from_end: bool, max_chars: int) -> tuple[str, str] | None:
+    """Chuyển từ (hoặc ký tự nếu không có khoảng trắng) từ `donor` sang `frag` tới khi `frag` có chữ; None nếu không vừa max_chars."""
+    sep = " " if " " in donor else ""
+    toks = donor.split(sep) if sep else list(donor)
+    while len(toks) > 1 and not has_speech(frag):
+        t = toks.pop() if from_end else toks.pop(0)
+        frag = t + sep + frag if from_end else frag + sep + t
+    donor = sep.join(toks)
+    return (donor, frag) if has_speech(frag) and has_speech(donor) and len(frag) <= max_chars else None
+
+
+def absorb_unspeakable(items: list[dict], max_chars: int, joiner: str, rebuild: Callable[[dict, str, dict], dict]) -> list[dict]:
+    """Gộp mẩu chỉ dấu câu/ký hiệu (vd `…`, `?!`, `(…)`) vào mẩu liền kề (ưu tiên liền trước) để không mẩu nào thiếu chữ/số; không mất ký tự nào.
+    `rebuild(base, text, last)` tạo mẩu mới mang metadata của `base` và loại kết thúc của `last`. Không gộp được trong max_chars thì mượn từ của mẩu kề;
+    vẫn không được thì để nguyên (validator sẽ chặn, không nới)."""
+    out, k = list(items), 0
+    while k < len(out):
+        cur = out[k]
+        if has_speech(cur["text"]) or len(out) == 1:
+            k += 1
+            continue
+        prev, nxt = out[k - 1] if k else None, out[k + 1] if k + 1 < len(out) else None
+        if prev and len(prev["text"]) + len(joiner) + len(cur["text"]) <= max_chars:
+            out[k - 1] = rebuild(prev, prev["text"] + joiner + cur["text"], cur)
+            del out[k]
+        elif nxt and len(cur["text"]) + len(joiner) + len(nxt["text"]) <= max_chars:
+            out[k + 1] = rebuild(nxt, cur["text"] + joiner + nxt["text"], nxt)
+            del out[k]
+        elif prev and (r := _shift(cur["text"], prev["text"], True, max_chars)):
+            out[k - 1], out[k] = rebuild(prev, r[0], prev), rebuild(cur, r[1], cur)
+            k += 1
+        elif nxt and (r := _shift(cur["text"], nxt["text"], False, max_chars)):
+            out[k], out[k + 1] = rebuild(cur, r[1], cur), rebuild(nxt, r[0], nxt)
+            k += 1
+        else:
+            k += 1
+    return out
 
 
 def split_long(sentence: str, max_chars: int, joiner: str = " ") -> list[str]:
@@ -61,7 +117,7 @@ def sentences_of(paragraph: str, max_chars: int, joiner: str = " ") -> list[str]
     out: list[str] = []
     for s in (x.strip() for x in _SENT.split(paragraph) if x.strip()):
         out += split_long(s, max_chars, joiner)
-    return out
+    return [x["text"] for x in absorb_unspeakable([{"text": t} for t in out], max_chars, joiner, lambda base, text, last: {"text": text})]
 
 
 def _pause_for(para: str, flat: dict) -> int:
@@ -182,7 +238,7 @@ def validate_plan(segments: list[Segment], text: str, profile: dict) -> dict:
         t = s.get("text", "")
         if not t.strip():
             e("EMPTY_SEGMENT", i, "segment rỗng")
-        elif not re.search(r"\w", t):
+        elif not has_speech(t):
             e("NO_SPEECH", i, "segment không có chữ/số để đọc")
         if len(t) > mx:
             e("TOO_LONG", i, f"{len(t)} > max_chars={mx}")

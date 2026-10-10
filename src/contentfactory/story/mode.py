@@ -13,13 +13,14 @@ import json
 from ..contracts import ErrorClass, StageError
 from . import guidance as GD
 
-MODES = ("story_branch", "story_remix")
+MODES = ("story_branch", "story_remix", "story_scene_remix")
 DEFAULT_MODE = "story_branch"
-LABELS = {"story_branch": "Story hiện có", "story_remix": "Story Remix — Xào truyện theo mô-típ"}
+LABELS = {"story_branch": "Story hiện có", "story_remix": "Story Remix — Xào truyện theo mô-típ", "story_scene_remix": "Remix bám sự việc — Xào theo cảnh"}
 DESCRIPTIONS = {
     "story_branch": "Viết lại truyện từ transcript nguồn bằng quy trình hiện có (giữ nguyên cách chạy cũ).",
     "story_remix": "Học mô-típ, thể loại và cơ chế cảm xúc của nguồn rồi viết một truyện ORIGINAL: nhân vật, xung đột và diễn biến khác hẳn. "
                    "Tự chọn/tạo nhân vật từ Kho nhân vật và tự cập nhật kho sau khi truyện đạt QA.",
+    "story_scene_remix": "Bám nhịp nguồn và thay tình tiết tương đương có kiểm soát; ưu tiên sửa chi tiết, hạn chế thay cảnh. Chỉ dành cho nguồn có quyền chuyển thể.",
 }
 # Story Remix chạy được khi backend hoàn tất (adapter + router + QA). Cờ người dùng để tắt: Settings `story.remix_enabled`.
 BACKEND_READY = True
@@ -56,6 +57,19 @@ UNIVERSE_FIELDS = [
     ("pinned_character_ids", "list", [], {"max_items": 12, "max_len": 64}, "Nhân vật bắt buộc dùng", "Tuỳ chọn: ghim nhân vật vào truyện; không ghim thì AI tự chọn."),
 ]
 SECTIONS = {"story": STORY_FIELDS, "character_universe": UNIVERSE_FIELDS}
+# Remix bám sự việc: không premise/Kho nhân vật/outline ⇒ form riêng, nhỏ; chỉ những trường này (không trường nào của Story Remix) được lưu và vào khóa stage.
+SCENE = "story_scene_remix"
+SCENE_FIELDS = [
+    ("source_rights", "select", "unknown", {"options": RIGHTS}, "Quyền sử dụng nguồn", "Bắt buộc: Của tôi / Có giấy phép / Được phép. ‘Không rõ’ bị chặn ngay khi tạo job."),
+    ("rights_ack", "bool", False, {}, "Tôi xác nhận có quyền chuyển thể nguồn này", "Mode này giữ phần lớn câu chữ nguồn nên chỉ dùng khi bạn có quyền; hệ thống không tuyên bố ‘an toàn bản quyền’."),
+    ("source_provenance", "text", "", {"max_len": 300}, "Nguồn gốc / ghi chú bản quyền", "Ghi lại nguồn và quyền bạn có (chỉ để lưu vết)."),
+    ("audio_readability", "select", "standard", {"options": READABILITY}, "Độ dễ nghe", "Cao = câu ngắn, ít đại từ mơ hồ, hợp để đọc thành audio."),
+    ("quality_repair_max_passes", "int", 1, {"min": 0, "max": 2}, "Số lượt sửa mối nối tối đa", "Chỉ sửa đúng cảnh bị lỗi liên tục; hết lượt vẫn lỗi ⇒ dừng, giữ checkpoint."),
+    ("budget_usd", "number_or_null", None, {"min": 1, "max": 5000}, "Ngân sách tối đa (USD)", "Trống = không giới hạn. Dừng trước khi vượt (có kiểm tra ước tính trước khi chạy)."),
+    ("review_accepted", "bool", False, {}, "Đã xem báo cáo liên tục — tiếp tục", "Chỉ bật sau khi bạn đọc continuity_qa.json khi hệ thống dừng vì còn lỗi chưa sửa được."),
+]
+MODE_SECTIONS = {"story_remix": SECTIONS, SCENE: {"story": SCENE_FIELDS}}
+SCENE_NOT_IN_KEY = {"source_rights", "rights_ack", "source_provenance", "budget_usd", "review_accepted"}   # quyền/vết/ngân sách không đổi nội dung
 
 
 def _err(field: str, msg: str, hint: str = "") -> StageError:
@@ -95,17 +109,18 @@ def _check(sec: str, key: str, typ: str, rule: dict, v):
     return v
 
 
-def _section(sec: str, raw, base: dict) -> dict:
+def _section(sec: str, raw, base: dict, fields: list | None = None) -> dict:
     out = dict(base)
     if raw is None:
         return out
     if not isinstance(raw, dict):
         raise _err(sec, "phải là một object.")
-    known = {k for k, *_ in SECTIONS[sec]}
+    fields = fields or SECTIONS[sec]
+    known = {k for k, *_ in fields}
     unknown = sorted(set(raw) - known)
     if unknown:
         raise _err(sec, f"khóa không hỗ trợ: {', '.join(unknown)}.")
-    spec = {k: (t, r) for k, t, _, r, *_ in SECTIONS[sec]}
+    spec = {k: (t, r) for k, t, _, r, *_ in fields}
     for k, v in raw.items():
         out[k] = _check(sec, k, *spec[k], v)
     return out
@@ -132,6 +147,11 @@ def parse(raw, story_cfg: dict | None = None) -> dict:
     mode = raw.get("mode") or default_mode(story_cfg)
     if mode not in MODES:
         raise _err("mode", f"không hợp lệ ({mode!r}).", "Giá trị cho phép: " + ", ".join(MODES))
+    if mode == SCENE:
+        if raw.get("character_universe") is not None:
+            raise _err("character_universe", "Remix bám sự việc không dùng Kho nhân vật.")
+        base_s = {k: copy.deepcopy(d) for k, _, d, *_ in SCENE_FIELDS}
+        return {"mode": SCENE, "story": _section("story", raw.get("story"), base_s, SCENE_FIELDS)}
     base = system_defaults(story_cfg)
     story = _section("story", raw.get("story"), base["story"])               # luôn kiểm tra, kể cả khi mode cũ (UI giữ cấu hình khi chuyển qua lại)
     cu = _section("character_universe", raw.get("character_universe"), base["character_universe"])
@@ -160,18 +180,29 @@ def unavailable_reason(story_cfg: dict | None) -> str:
 def resolve_for_job(raw, story_cfg: dict | None) -> dict | None:
     """Gọi lúc tạo job. None = giữ job như cũ (không lưu field). Story Remix mà chưa khả dụng ⇒ từ chối rõ ràng, không bao giờ chạy nhầm sang Story cũ."""
     m = parse(raw, story_cfg)
-    if m["mode"] != "story_remix":
+    if m["mode"] == DEFAULT_MODE:
         return None
     if not enabled(story_cfg):
         raise StageError(ErrorClass.POLICY, "REMIX_UNAVAILABLE", unavailable_reason(story_cfg),
                          {"hint": "Chọn “Story hiện có” để chạy ngay."}, resource="input")
+    if m["mode"] == SCENE:
+        check_scene_rights(m)                           # chặn NGAY khi tạo job, không đợi tới bước viết
     return m
+
+
+def check_scene_rights(m: dict) -> None:
+    """Hard stop (nhóm C): xào bám nguồn cần quyền chuyển thể được chủ job khai báo VÀ xác nhận; không đoán, không auto-fix."""
+    st = m.get("story") or {}
+    if st.get("source_rights") not in ("own", "licensed", "permitted") or st.get("rights_ack") is not True:
+        raise StageError(ErrorClass.POLICY, "SOURCE_RIGHTS_REQUIRED",
+                         "Remix bám sự việc giữ nhiều câu chữ nguồn nên chỉ dùng cho nguồn bạn sở hữu hoặc có quyền chuyển thể (khai báo quyền + tích xác nhận).",
+                         {"hint": "Chọn Của tôi/Có giấy phép/Được phép và tích xác nhận, hoặc dùng Story Remix (viết truyện original).", "field": "story.source_rights"}, resource="input")
 
 
 def of_job(params: dict) -> dict:
     """Chế độ đã chốt của job (job cũ = story_branch). Không ném lỗi: dữ liệu đã được kiểm lúc ghi."""
     raw = (params or {}).get("story_mode")
-    if isinstance(raw, dict) and raw.get("mode") == "story_remix":
+    if isinstance(raw, dict) and raw.get("mode") in ("story_remix", "story_scene_remix"):
         return raw
     return {"mode": DEFAULT_MODE}
 
@@ -181,6 +212,8 @@ _NOT_IN_KEY = {"story": {"rights_ack", "source_provenance", "budget_usd", "revie
 
 
 def _key(m: dict) -> dict:
+    if m["mode"] == SCENE:
+        return {"story_mode": {"mode": m["mode"], "story": {k: v for k, v in m["story"].items() if k not in SCENE_NOT_IN_KEY}}}
     return {"story_mode": {"mode": m["mode"], **{s: {k: v for k, v in m[s].items() if k not in _NOT_IN_KEY[s]} for s in SECTIONS}}}
 
 
@@ -189,7 +222,7 @@ def stage_key_extra(extra: dict | None) -> dict | None:
     extra = extra or {}
     out = dict(GD.key_extra(extra.get("story_guidance")) or {})
     m = extra.get("story_mode")
-    if isinstance(m, dict) and m.get("mode") == "story_remix":
+    if isinstance(m, dict) and m.get("mode") in ("story_remix", "story_scene_remix"):
         out.update(_key(m))
     return out or None
 
@@ -213,10 +246,15 @@ def describe(story_cfg: dict | None) -> dict:
     """Mô tả cho UI: danh sách mode (kèm khả dụng), schema từng trường, mặc định hệ thống."""
     why = unavailable_reason(story_cfg)
     modes = [{"id": m, "label": LABELS[m], "description": DESCRIPTIONS[m], "available": m == DEFAULT_MODE or not why, "reason": "" if (m == DEFAULT_MODE or not why) else why} for m in MODES]
-    schema = {sec: [{"key": k, "type": t, "default": d, "rule": {a: list(b) if isinstance(b, tuple) else b for a, b in r.items()}, "label": lab, "hint": hint}
-                    for k, t, d, r, lab, hint in fields] for sec, fields in SECTIONS.items()}
+    def sch(secs):
+        return {sec: [{"key": k, "type": t, "default": d, "rule": {a: list(b) if isinstance(b, tuple) else b for a, b in r.items()}, "label": lab, "hint": hint}
+                      for k, t, d, r, lab, hint in fields] for sec, fields in secs.items()}
+    schema = sch(SECTIONS)
+    # `schema`/`defaults` = Story Remix (giữ nguyên cho client cũ); `by_mode` = form riêng từng mode có cấu hình
+    by_mode = {m: {"schema": sch(secs), "defaults": system_defaults(story_cfg) if m == "story_remix" else {sec: {k: copy.deepcopy(d) for k, _, d, *_ in f} for sec, f in secs.items()}}
+               for m, secs in MODE_SECTIONS.items()}
     return {"modes": modes, "default_mode": default_mode(story_cfg), "available": not why, "reason": why,
-            "schema": schema, "defaults": system_defaults(story_cfg)}
+            "schema": schema, "defaults": system_defaults(story_cfg), "by_mode": by_mode}
 
 
 def effective(raw, story_cfg: dict | None, preset: dict | None = None) -> dict:
@@ -227,8 +265,13 @@ def effective(raw, story_cfg: dict | None, preset: dict | None = None) -> dict:
     given = raw if isinstance(raw, dict) else {}
     ok = parsed["mode"] == DEFAULT_MODE or enabled(story_cfg)
     out = {"mode": parsed["mode"], "label": LABELS[parsed["mode"]], "available": ok, "reason": "" if ok else unavailable_reason(story_cfg)}
-    for sec in SECTIONS:
-        lower = _section(sec, pre.get(sec), base[sec])
-        top = _section(sec, given.get(sec), lower)
+    if parsed["mode"] == SCENE:
+        base, secs = {"story": {k: copy.deepcopy(d) for k, _, d, *_ in SCENE_FIELDS}}, MODE_SECTIONS[SCENE]
+        pre = {}
+    else:
+        secs = SECTIONS
+    for sec in secs:
+        lower = _section(sec, pre.get(sec), base[sec], secs[sec])
+        top = _section(sec, given.get(sec), lower, secs[sec])
         out[sec] = {k: {"value": v, "source": "job" if k in (given.get(sec) or {}) and v != lower[k] else "preset" if k in (pre.get(sec) or {}) and pre[sec][k] != base[sec][k] else "system"} for k, v in top.items()}
     return out

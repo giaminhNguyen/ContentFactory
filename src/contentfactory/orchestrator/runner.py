@@ -37,6 +37,7 @@ from .log import EventLog
 from .monitor import DiskProbe, NetworkProbe, ResourceMonitor
 from ..jobs.sequences import SequenceManager
 from ..media import image_pool as IP
+from ..output import metadata as MD
 from ..story import guidance as GD
 from ..story import mode as SM
 from ..story import presets as SP
@@ -195,6 +196,11 @@ class Orchestrator:
         plan = self._plan(merged, {i["kind"] for i in items}, mode, start_stage, target_stage, pipeline)
         if plan.errors:
             raise _spec_error("; ".join(plan.errors), errors=plan.errors)
+        proj = merged.get("project") or {}
+        if "output" in plan.run and proj.get("title") and (proj.get("title_source") or "user") == "user":
+            MD.precheck_user_title(channel, str(proj["title"]))                        # TITLE_TOO_LONG/'<>' lúc TẠO job, không đợi tới bước output sau khi đã tốn Story/TTS/render
+        if "publish" in plan.run:                                                       # made_for_kids (bool thật, không đoán) + tags/privacy/category hợp lệ: chặn lúc tạo job
+            MD.clean_publishing(MD.pick_publishing(merged, channel.get("publishing") or {}, (self.cfg.data.get("publishing") or {}).get("defaults") or {}))
         spec = self._stored_pipeline(pipeline, plan)
         tkinds = self._template_kinds(plan, spec)
         if tkinds is None or tkinds:                                                    # Template: chốt version cụ thể + snapshot lúc tạo job (D-92)

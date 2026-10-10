@@ -33,6 +33,8 @@ class StoryRemixAdapter:
         ctx.log("story_remix_plan_start", chapters=chapters_for(profile))
         plan = plan_story(self.llm, self.universe_factory(), source, bundle["title"], lang, mode, profile, rdir, ctx.job_id, ctx, ledger)
         target = int(profile.get("chapter_chars", 3000))
+        left = len(plan["outline"]["chapters"]) - len(list((rdir / "chapters").glob("ch_*.md")))
+        ledger.preflight(left, "viết chương")                       # ngân sách không đủ cho phần việc còn lại ⇒ dừng SỚM, giữ kế hoạch + chương đã xong
         try:
             meta = ctx.read_json("metadata")
         except (KeyError, OSError, ValueError):

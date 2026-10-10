@@ -3,7 +3,7 @@
 import { api } from "../api.js";
 import { h, uid, clear } from "../dom.js";
 import { btn, busy, field, input, select, switchCtl, textarea, alertBox, disclosure, badge, toast, toastError, openDialog, confirmDialog } from "../components.js";
-import { REMIX, OPTION_LABELS, initialState, validateField, validateAll, createPayload, listFromText, textFromList, changedCount, modeLabel,
+import { REMIX, SCENE, isRemix, sectionsOf, schemaOf, bagOf, OPTION_LABELS, initialState, validateField, validateAll, createPayload, listFromText, textFromList, changedCount, modeLabel,
          SOURCE_LABEL, SYSTEM_PRESET, stateFromPreset, presetByName, resetToDefaults, formatValue, estimateLines, validPresetName } from "../story_mode_logic.js";
 
 /** {el, ready, get(), payload(), validate()}: el là fieldset. `onChange` gọi mỗi lần đổi. */
@@ -25,9 +25,10 @@ export function storyModeEditor({ onChange } = {}) {
   function changed() { paintSummary(); scheduleEstimate(); onChange?.(); }
 
   function control(sec, f) {
-    const v = st[sec][f.key], id = uid("smf");
+    const bag = () => bagOf(st, st.mode, sec);
+    const v = bag()[f.key], id = uid("smf");
     if (f.type === "bool") {
-      const sw = switchCtl({ label: f.label, checked: v, id, onChange: (x) => { st[sec][f.key] = x; changed(); } });
+      const sw = switchCtl({ label: f.label, checked: v, id, onChange: (x) => { bag()[f.key] = x; changed(); } });
       sw.input.disabled = readOnly;
       return { node: h("div", { class: "field" }, sw, f.hint ? h("p", { class: "muted small" }, f.hint) : null), setErr() {} };
     }
@@ -46,16 +47,17 @@ export function storyModeEditor({ onChange } = {}) {
       read = () => ctl.value;
     }
     const fld = field({ label: f.label, control: ctl, hint: f.hint });
-    ctl.addEventListener(f.type === "select" ? "change" : "input", () => { const nv = read(); st[sec][f.key] = nv; fld.setError(validateField(f, nv)); changed(); });
+    ctl.addEventListener(f.type === "select" ? "change" : "input", () => { const nv = read(); bag()[f.key] = nv; fld.setError(validateField(f, nv)); changed(); });
     return { node: fld, setErr: (m) => fld.setError(m) };
   }
 
   function paintForm() {
     clear(formBox);
     for (const k in fields) delete fields[k];
-    for (const [sec, title] of [["story", "Story Remix"], ["character_universe", "Kho nhân vật"]]) {
+    const mode = st.mode === SCENE ? SCENE : REMIX;
+    for (const [sec, title] of sectionsOf(mode)) {
       const body = h("div", { class: "stack" });
-      for (const f of info.schema[sec]) { const c = control(sec, f); fields[`${sec}.${f.key}`] = c; body.append(c.node); }
+      for (const f of schemaOf(info, mode)[sec]) { const c = control(sec, f); fields[`${sec}.${f.key}`] = c; body.append(c.node); }
       formBox.append(h("h3", { class: "small" }, title), body);
     }
   }
@@ -68,6 +70,7 @@ export function storyModeEditor({ onChange } = {}) {
   // ---------------------------------------------------------------- mẫu cấu hình
   function paintPresets() {
     clear(presetBox);
+    if (st.mode === SCENE) return;                                           // Remix bám sự việc: cấu hình nhỏ, không có mẫu
     const sel = select({ options: [[SYSTEM_PRESET, "Mặc định hệ thống"], ...(info.presets || []).map((p) => [p.name, p.name + (info.default_preset === p.name ? " (mặc định cho job mới)" : "")])], value: preset });
     sel.setAttribute("aria-label", "Mẫu cấu hình Story Remix");
     sel.addEventListener("change", () => {
@@ -115,21 +118,23 @@ export function storyModeEditor({ onChange } = {}) {
   function scheduleEstimate() { clearTimeout(timer); timer = setTimeout(refreshEstimate, 350); }
 
   async function refreshEstimate() {
-    if (!info || st.mode !== REMIX || Object.keys(validateAll(info, st)).length) { clear(estBox); return; }
+    if (!info || !isRemix(st.mode) || Object.keys(validateAll(info, st)).length) { clear(estBox); return; }
     try {
-      const est = await api.post("/api/story-mode/estimate", { story_mode: { story: st.story, character_universe: st.character_universe } });
+      const scene = st.mode === SCENE;
+      const est = await api.post("/api/story-mode/estimate", { story_mode: scene ? { mode: SCENE, story: st.scene } : { story: st.story, character_universe: st.character_universe } });
       clear(estBox);
-      estBox.append(h("strong", null, "Ước tính trước khi chạy"), ...estimateLines(est, st.story.budget_usd).map((l) => h("div", null, l)), h("div", { class: "muted" }, est.note));
+      estBox.append(h("strong", null, "Ước tính trước khi chạy"), ...estimateLines(est, (scene ? st.scene : st.story).budget_usd).map((l) => h("div", null, l)), h("div", { class: "muted" }, est.note));
     } catch { clear(estBox); }
   }
 
   async function refreshEffective() {
     clear(effBox);
     try {
-      const eff = await api.post("/api/story-mode/effective", { preset: preset || null, story_mode: createPayload(info, { ...st, mode: REMIX }) });
+      const mode = st.mode === SCENE ? SCENE : REMIX;
+      const eff = await api.post("/api/story-mode/effective", { preset: mode === SCENE ? null : preset || null, story_mode: createPayload(info, { ...st, mode }) });
       const rows = [];
-      for (const [sec, title] of [["story", "Story Remix"], ["character_universe", "Kho nhân vật"]]) {
-        for (const f of info.schema[sec]) { const c = eff[sec][f.key]; rows.push(h("tr", null, h("td", null, f.label), h("td", null, formatValue(f, c.value)), h("td", null, badge({ tone: c.source === "job" ? "running" : c.source === "preset" ? "done" : "off", icon: c.source === "job" ? "settings" : c.source === "preset" ? "layers" : "home", label: SOURCE_LABEL[c.source] })))); }
+      for (const [sec] of sectionsOf(mode)) {
+        for (const f of schemaOf(info, mode)[sec]) { const c = eff[sec][f.key]; rows.push(h("tr", null, h("td", null, f.label), h("td", null, formatValue(f, c.value)), h("td", null, badge({ tone: c.source === "job" ? "running" : c.source === "preset" ? "done" : "off", icon: c.source === "job" ? "settings" : c.source === "preset" ? "layers" : "home", label: SOURCE_LABEL[c.source] })))); }
       }
       effBox.append(h("p", { class: "muted" }, "Giá trị sẽ dùng khi chạy, và nó đến từ đâu (mặc định hệ thống → mẫu → riêng của job)."), h("div", { class: "table-wrap" }, h("table", { class: "table" }, h("thead", null, h("tr", null, ...["Mục", "Giá trị", "Nguồn"].map((t) => h("th", null, t)))), h("tbody", null, ...rows))));
     } catch (e) { effBox.append(alertBox({ tone: "wait", title: "Chưa xem được cấu hình hiệu lực", body: e.message })); }
@@ -149,14 +154,17 @@ export function storyModeEditor({ onChange } = {}) {
   function paintDetail() {
     clear(reasonBox);
     clear(detailBox);
-    const remix = info.modes.find((m) => m.id === REMIX);
-    if (!remix.available) reasonBox.append(alertBox({ tone: "info", title: "Story Remix chưa khả dụng", body: remix.reason }));
-    readOnly = st.mode !== REMIX;
+    const cur = st.mode === SCENE ? SCENE : REMIX;
+    const remix = info.modes.find((m) => m.id === cur) || info.modes.find((m) => m.id === REMIX);
+    const name_ = cur === SCENE ? "Remix bám sự việc" : "Story Remix";
+    if (!remix.available) reasonBox.append(alertBox({ tone: "info", title: `${name_} chưa khả dụng`, body: remix.reason }));
+    if (cur === SCENE) reasonBox.append(alertBox({ tone: "info", title: "Chỉ dùng cho nguồn bạn có quyền chuyển thể", body: "Chế độ này giữ phần lớn câu chữ của nguồn và chỉ thay chi tiết/cảnh cần thiết. Chọn quyền sử dụng và tích xác nhận ở form bên dưới; ‘Không rõ’ bị chặn ngay khi tạo job." }));
+    readOnly = !isRemix(st.mode);
     paintPresets();
     paintForm();
     paintSummary();
     const eff = disclosure({ label: "Xem cấu hình hiệu lực (mặc định → mẫu → job)", content: effBox, onToggle: (open) => { if (open) refreshEffective(); } });
-    detailBox.append(disclosure({ label: remix.available ? "Cấu hình Story Remix" : "Xem cấu hình mặc định của Story Remix (chỉ xem)", open: st.mode === REMIX && remix.available,
+    detailBox.append(disclosure({ label: remix.available ? `Cấu hình ${name_}` : `Xem cấu hình mặc định của ${name_} (chỉ xem)`, open: isRemix(st.mode) && remix.available,
                                   content: h("div", { class: "stack", style: "padding-top: var(--s-2)" }, presetBox, sumBox, formBox, estBox, eff) }));
     scheduleEstimate();
   }
@@ -175,7 +183,7 @@ export function storyModeEditor({ onChange } = {}) {
     get: () => st,
     payload: () => (info && st ? createPayload(info, st) : null),
     validate() {
-      if (!info || st.mode !== REMIX) return true;
+      if (!info || !isRemix(st.mode)) return true;
       const errs = validateAll(info, st);
       for (const [k, c] of Object.entries(fields)) c.setErr?.(errs[k] || null);
       const first = Object.keys(errs)[0];

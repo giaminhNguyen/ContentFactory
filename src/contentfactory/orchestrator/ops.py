@@ -73,6 +73,8 @@ def go(orc, value: str, channel: str | None = None, title: str | None = None, ki
         params["project"] = {"title": title}
     ch = CH.load_channel(cfg, cid)
     if kids is not None:
+        if not isinstance(kids, bool):
+            raise StageError(ErrorClass.POLICY, "MISSING_MADE_FOR_KIDS", f"made_for_kids phải là boolean thật, nhận {kids!r}", resource="input")
         params["made_for_kids"] = kids
     elif not isinstance((ch.get("publishing") or {}).get("made_for_kids"), bool):
         raise StageError(ErrorClass.POLICY, "MISSING_MADE_FOR_KIDS",
@@ -192,7 +194,9 @@ def channel_init(cfg: Config, cid: str, name: str | None = None, kids: bool = Fa
         raise StageError(ErrorClass.POLICY, "CHANNEL_EXISTS", f"{f} đã có (dùng --force để ghi đè)")
     body = json.loads(json.dumps(CHANNEL_TEMPLATE))
     body["name"] = name or cid
-    body["publishing"]["made_for_kids"] = bool(kids)
+    if not isinstance(kids, bool):                          # không ép kiểu: "false"/0 -> True sẽ khai báo COPPA sai
+        raise StageError(ErrorClass.POLICY, "MISSING_MADE_FOR_KIDS", f"made_for_kids phải là boolean thật, nhận {kids!r}", resource="input")
+    body["publishing"]["made_for_kids"] = kids
     body["sequence"]["last_used"] = int(last_used)
     CH.MD.normalize_channel(body, cid)                       # tự kiểm: template sinh ra phải hợp lệ
     d.mkdir(parents=True, exist_ok=True)

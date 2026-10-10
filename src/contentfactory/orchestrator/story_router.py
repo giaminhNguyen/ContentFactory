@@ -9,10 +9,12 @@ from ..story import mode as SM
 
 
 class StoryModeRouter:
-    def __init__(self, default, remix_factory, titler=None) -> None:
+    def __init__(self, default, remix_factory, titler=None, scene_remix_factory=None) -> None:
         self.default = default
         self._factory = remix_factory
         self._remix = None
+        self._scene_factory = scene_remix_factory
+        self._scene_remix = None
         self._titler = titler                          # callable(story_text, bundle, ctx) -> tên | None: đặt tên cho truyện của adapter mặc định
 
     @property
@@ -21,8 +23,19 @@ class StoryModeRouter:
             self._remix = self._factory()
         return self._remix
 
+    @property
+    def scene_remix(self):
+        if self._scene_factory is None:
+            raise RuntimeError("Story Scene Remix chưa có factory")
+        if self._scene_remix is None:
+            self._scene_remix = self._scene_factory()
+        return self._scene_remix
+
     def _pick(self, ctx):
-        return self.remix if SM.of_job(getattr(ctx, "params", None) or {})["mode"] == "story_remix" else self.default
+        mode = SM.of_job(getattr(ctx, "params", None) or {})["mode"]
+        if mode == "story_scene_remix":
+            return self.scene_remix
+        return self.remix if mode == "story_remix" else self.default
 
     def generate(self, bundle, profile, out_dir, ctx):
         return self._pick(ctx).generate(bundle, profile, out_dir, ctx)
@@ -46,7 +59,7 @@ class StoryModeRouter:
         return self.default.health()
 
     def __getattr__(self, name):                       # thuộc tính khác (vd test kiểm adapter cũ) đi thẳng tới adapter mặc định
-        if name.startswith("__") or name in ("default", "_factory", "_remix"):
+        if name.startswith("__") or name in ("default", "_factory", "_remix", "_scene_factory", "_scene_remix"):
             raise AttributeError(name)
         return getattr(self.default, name)
 
@@ -57,4 +70,4 @@ def title_budget(channel_cfg: dict | None, channel_id: str) -> tuple[str, int]:
     # shortcut: số tập chỉ được cấp ở bước render, sau bước đặt tên ⇒ ước số tập kế tiếp và dư 1 chữ số cho an toàn (job song song có thể nhận số lớn hơn)
     seq = "9" * (len(str(int(ch["sequence"].get("last_used", 0)) + 1)) + 1)
     prefix = MD.render_template(ch["title_template"], {"channel_name": ch["name"], "project_title": "", "sequence": seq}, "title_template").lstrip()
-    return prefix, MD.TITLE_MAX_CHARS - len(prefix)
+    return prefix, max(MD.TITLE_TARGET_CHARS - len(prefix), 1)         # nhắm ≤ 90 (đệm), trần cứng 100 vẫn do Metadata Builder kiểm

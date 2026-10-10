@@ -51,7 +51,7 @@ SETTINGS: list[tuple[str, str, str, str, str, dict]] = [
      {"max_len": 8000, "advanced": True, "placeholder": "Ví dụ: Viết theo hướng bí ẩn và căng thẳng hơn. Không tiết lộ ngay nguyên nhân cái chết. Kết thúc mở."}),
     ("story.default_mode", "story", "Chế độ truyện mặc định", "select",
      "Chế độ dùng khi tạo job mà không chọn riêng. Story hiện có = quy trình cũ; Story Remix = viết truyện ORIGINAL theo mô-típ nguồn + Kho nhân vật (chỉ chọn được khi đã khả dụng).",
-     {"options": [["story_branch", "Story hiện có"], ["story_remix", "Story Remix — Xào truyện theo mô-típ"]]}),
+     {"options": [["story_branch", "Story hiện có"], ["story_remix", "Story Remix — Xào truyện theo mô-típ"], ["story_scene_remix", "Remix bám sự việc — Xào theo cảnh"]]}),
     ("story.remix_enabled", "story", "Cho phép Story Remix", "bool", "Tắt = ẩn/khóa Story Remix cho mọi job mới (job đã tạo giữ nguyên).", {"advanced": True}),
     ("story.character_universe.auto_cast", "story", "Kho nhân vật: tự chọn nhân vật", "bool", "Mặc định cho job Story Remix mới.", {"advanced": True}),
     ("story.character_universe.reuse_strategy", "story", "Kho nhân vật: chiến lược dùng lại", "select",

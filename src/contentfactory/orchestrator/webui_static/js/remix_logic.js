@@ -28,6 +28,11 @@ export function stopActions(stop, story = {}) {
   if (!stop) return [];
   if (stop.code === "ORIGINALITY_REVIEW_REQUIRED") return [{ id: "accept", label: "Tôi đã xem báo cáo — tiếp tục", patch: { review_accepted: true } }];
   if (stop.code === "BUDGET_EXCEEDED") return [{ id: "budget", label: "Nâng ngân sách và tiếp tục", needs: "budget_usd" }];
+  if (stop.code === "SCENE_CONTINUITY_REVIEW") {
+    const cur = Number.isInteger(story.quality_repair_max_passes) ? story.quality_repair_max_passes : 1;
+    return [{ id: "accept", label: "Tôi đã xem báo cáo liên tục — tiếp tục", patch: { review_accepted: true } },
+            ...(cur >= 2 ? [] : [{ id: "repair", label: `Cho thêm 1 lượt sửa mối nối (hiện ${cur}) và tiếp tục`, patch: { quality_repair_max_passes: cur + 1 } }])];
+  }
   if (["CHAPTER_QA_FAILED", "OUTLINE_GATE_FAILED"].includes(stop.code)) {
     const cur = Number.isInteger(story.quality_repair_max_passes) ? story.quality_repair_max_passes : 1;
     return cur >= 3 ? [] : [{ id: "repair", label: `Cho thêm 1 lượt sửa (hiện ${cur}) và tiếp tục`, patch: { quality_repair_max_passes: cur + 1 } }];

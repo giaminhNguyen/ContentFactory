@@ -384,7 +384,7 @@ class Api:
 
     @route("POST", "/api/channels")
     def channel_create(app, m, q, b):
-        return app.service.create_channel(str(b.get("id") or ""), b.get("name"), bool(b.get("kids")), int(b.get("last_used") or 0))
+        return app.service.create_channel(str(b.get("id") or ""), b.get("name"), b.get("kids"), int(b.get("last_used") or 0))
 
     @route("GET", r"/api/channels/(?P<id>[\w\-]+)")
     def channel_get(app, m, q, b):

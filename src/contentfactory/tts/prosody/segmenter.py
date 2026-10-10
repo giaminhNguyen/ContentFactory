@@ -51,7 +51,8 @@ def paragraphs(text: str) -> list[dict]:
             if out:
                 out[-1]["scene_after"] = True
             continue
-        out.append({"text": p, "dialogue": bool(_DIALOGUE_START.match(p)), "scene_after": False})
+        if any(c.isalnum() for c in p):                                # đoạn chỉ dấu câu/ký hiệu/emoji không bao giờ thành câu để đọc
+            out.append({"text": p, "dialogue": bool(_DIALOGUE_START.match(p)), "scene_after": False})
     return out
 
 

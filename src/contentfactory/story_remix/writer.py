@@ -13,6 +13,7 @@ from ..fsutil import atomic_write_json, atomic_write_text
 from . import schemas as SC
 from . import similarity as SIM
 from ..contracts import ErrorClass, StageError
+from ..storyprose import assemble, brand_marks, sanitize_prose, validate_story_text
 from .core import Invalid, Ledger, extract_json, fail, fingerprint
 from .stages import SYS
 
@@ -22,7 +23,9 @@ MINOR_NAMED_ALLOWANCE = 3                          # tối đa số nhân vật 
 STATE_KEYS = ("status", "location", "notes")
 
 CHAPTER_PROMPT = """Viết CHƯƠNG {n}/{total} của truyện audio tiếng Việt (ngôn ngữ nội dung: {lang}).
-Độ dài mục tiêu ≈ {target} ký tự (trong khoảng {lo}–{hi}). Chỉ viết lời kể + thoại, KHÔNG tiêu đề chương, KHÔNG đánh số, KHÔNG chú thích kỹ thuật hay lời dẫn của người viết.
+Độ dài mục tiêu ≈ {target} ký tự (trong khoảng {lo}–{hi}; không độn chữ để đủ số).
+HỢP ĐỒNG ĐẦU RA (kiểm bằng code ngay sau khi viết): chỉ lời kể + thoại; KHÔNG tiêu đề/đánh số chương, KHÔNG markdown (#, **), KHÔNG <!--, [[ ]], {{{{ }}}}, TODO hay placeholder, KHÔNG chú thích/lời dẫn của người viết,
+KHÔNG tóm tắt hay nhắc lại chương trước, KHÔNG lặp đoạn, KHÔNG tên kênh/nguồn video/watermark. Người phụ thoáng qua gọi bằng chức danh (“bà hàng xóm”), đừng đặt tên.
 Văn phong audio: câu ngắn-vừa, nêu rõ ai đang nói, tránh đại từ mơ hồ, mỗi đoạn một ý.{readability}
 
 DÀN NHÂN VẬT (dùng ĐÚNG các tên này; không tự thêm nhân vật chính hay đổi tên):
@@ -152,7 +155,6 @@ def _sentences(text: str) -> list[str]:
 
 def source_brand_marks(title: str, channel: str = "") -> list[str]:
     """Dấu hiệu nhận diện KÊNH GỐC cần loại khỏi truyện mới: tên kênh, phần đầu tên video trước "Số/-/|" (vd "Anh Ben Travel"), chữ trong 【】/[] và sau "|" cuối."""
-    from ..story.naming import brand_marks
     head = re.split(r"\s+(?:Số|số|-|–|\|)\s*", (title or "").strip(), 1)[0].strip()
     marks = [channel.strip(), head, *brand_marks(title)]
     out = []
@@ -169,9 +171,26 @@ def brand_hit(text: str, marks: list[str]) -> str | None:
     return next((m for m in marks if re.sub(r"\s+", "", m).lower() in flat), None)
 
 
-def qa_chapter(text: str, chapter: dict, members: list[dict], upd: dict, mem_before: dict, target: int, readability: str, marks: list[str] | None = None) -> list[dict]:
+def contract_issues(text: str, prev: str = "") -> list[dict]:
+    """Hợp đồng story.txt kiểm NGAY trên chương (cùng luật với Validator/Assembler): marker, tiêu đề chương còn sót, đoạn lặp, chép lại đuôi chương trước, và phần Assembler sẽ xoá."""
+    out = []
+    bad = validate_story_text(text)
+    if bad:
+        out.append({"code": "STORY_CONTRACT", "severity": "block", "message": "Vi phạm hợp đồng story.txt: " + ", ".join(bad) + " (không tiêu đề chương, markdown, marker, đoạn lặp)."})
+    try:
+        _, rep = assemble(([prev[-1500:]] if prev else []) + [text], 1.0)
+    except StageError:
+        return out
+    if prev and rep["overlaps_trimmed"]:
+        out.append({"code": "OVERLAPS_PREVIOUS", "severity": "block", "message": "Mở đầu chép lại đuôi chương trước; hãy nối tiếp, không nhắc lại."})
+    if rep["recaps_removed"] or rep["duplicates_removed"]:
+        out.append({"code": "RECAP_OR_DUPLICATE", "severity": "block", "message": "Có đoạn tóm tắt/nhắc lại chương trước hoặc câu/đoạn lặp: " + "; ".join(x.get("line") or x.get("text", "") for x in (rep["recaps_removed"] + rep["duplicates_removed"])[:2])[:160]})
+    return out
+
+
+def qa_chapter(text: str, chapter: dict, members: list[dict], upd: dict, mem_before: dict, target: int, readability: str, marks: list[str] | None = None, prev: str = "") -> list[dict]:
     """Lỗi tất định của một chương: [{code, severity: block|warn, message}]. Không dùng LLM (rẻ, lặp lại được)."""
-    issues = []
+    issues = contract_issues(text, prev)
     n = len(text)
     if n < 0.4 * target:
         issues.append({"code": "TOO_SHORT", "severity": "block", "message": f"Chương chỉ {n} ký tự, quá ngắn so với mục tiêu ≈ {target}."})
@@ -265,9 +284,11 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
                 text, upd = split_output(raw)
             except Invalid as e:
                 text = re.sub(r"^\s*```[a-z]*\s*|\s*```\s*$", "", raw.split(MARK, 1)[0].strip()).strip()
+                text = sanitize_prose(text)[0]
                 if len(text) >= 120:
                     raise MemoryInvalid(str(e), text) from None
                 raise
+            text = sanitize_prose(text)[0]                              # gỡ heading/marker/ghi chú ngay khi sinh (an toàn, chỉ xoá dòng không phải lời kể)
             if len(text) < 120:
                 raise Invalid("lời kể quá ngắn (< 120 ký tự).")
             try:
@@ -284,12 +305,12 @@ def write_chapters(llm, ledger: Ledger, out_dir: Path, bible: dict, outline: dic
 
         mem_prompt = lambda text, err: MEMORY_PROMPT.format(n=n, err=err, mark=MARK, cast=_cast_lines(members, profiles), text=text)   # noqa: E731
         text, upd = _ask(llm, ledger, f"chapter_{n}", prompt, parse, ctx, parse_memory, mem_prompt)
-        repairs, issues = 0, qa_chapter(text, ch, members, upd, mem, target_chars, readability, marks)
+        repairs, issues = 0, qa_chapter(text, ch, members, upd, mem, target_chars, readability, marks, tail)
         while issues and repairs < repair_passes and any(i["severity"] in ("block", "warn") for i in issues):
             repairs += 1
             rp = REPAIR_PROMPT.format(n=n, target=target_chars, issues="\n".join(f"- {i['message']}" for i in issues), cast=_cast_lines(members, profiles), text=text, mark=MARK)
             text, upd = _ask(llm, ledger, f"chapter_{n}_repair", rp, parse, ctx, parse_memory, mem_prompt)
-            issues = qa_chapter(text, ch, members, upd, mem, target_chars, readability, marks)
+            issues = qa_chapter(text, ch, members, upd, mem, target_chars, readability, marks, tail)
         blocking = [i for i in issues if i["severity"] == "block"]
         if blocking:
             atomic_write_text(text_f.with_suffix(".rejected.md"), text)

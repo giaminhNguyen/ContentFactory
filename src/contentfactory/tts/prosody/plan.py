@@ -14,9 +14,11 @@ from __future__ import annotations
 import hashlib
 import json
 
+from ...contracts import ErrorClass, StageError
+from contentfactory.tts.planner import absorb_unspeakable, has_speech
 from .profiles import MAX_PAUSE_MS, RULES_VERSION
 from .qc import analyze_plan
-from .segmenter import paragraphs, split_long, split_sentences, strip_marks
+from .segmenter import _micro, paragraphs, split_long, split_sentences, strip_marks
 
 SCHEMA = 1
 SEMANTIC_LABELS = ("dramatic_reveal", "scene_transition", "emphasis", "hesitation", "speaker_turn")
@@ -43,6 +45,10 @@ def plan_key(text: str, prosody: dict, seg: dict, joiner: str, caps: dict, seman
 
 
 # ---------------------------------------------------------------- bước 1: câu + loại ranh giới
+def _rebuild(base: dict, text: str, last: dict) -> dict:
+    return {**base, "text": text, "end": last["end"], "micro": [] if base["split_of"] else _micro(text)}
+
+
 def _units(text: str, max_chars: int) -> list[dict]:
     """Danh sách câu (đã cắt các câu quá dài theo ranh giới ngôn ngữ) kèm thông tin đoạn/thoại/cảnh."""
     units: list[dict] = []
@@ -56,6 +62,7 @@ def _units(text: str, max_chars: int) -> list[dict]:
                 last = k == len(parts) - 1
                 pieces.append({"text": part["text"], "end": s["end"] if last else f"split:{part['cut']}", "micro": s["micro"] if len(parts) == 1 else [],
                                "split_of": s["text"] if len(parts) > 1 else None, "hard_cut": part["cut"] == "hard"})
+        pieces = absorb_unspeakable(pieces, max_chars, " ", _rebuild)          # mẩu chỉ dấu câu (`…`, `?!`, `(…)`) gộp vào câu kề, không thành câu riêng
         for k, p in enumerate(pieces):
             p.update(para=pi, dialogue=par["dialogue"], last_in_para=k == len(pieces) - 1, scene_after=par["scene_after"] and k == len(pieces) - 1,
                      next_dialogue=bool(pi < len(pars) and pars[pi]["dialogue"]))
@@ -192,8 +199,39 @@ def build_speech_plan(text: str, flat: dict, caps: dict, prosody: dict, semantic
             "text_sha256": _sha(strip_marks(text)), "semantic": ({"source": (semantic or {}).get("source"), "labels": len(labels)} if semantic else None),
             "segments": flat_segs, "groups": out_groups, "split_sentences": [{"chars": len(x), "text": x[:120]} for x in split_sentences_],
             "warnings": warnings}
+    errs = check_integrity(plan, joiner)
+    if errs:
+        raise StageError(ErrorClass.POLICY, "SPEECH_PLAN_INVALID", "speech plan không qua kiểm tra nhất quán: " + "; ".join(errs[:3]), {"errors": errs[:10]})
     plan["qc"] = analyze_plan(plan, prosody["qc"])
     return plan
+
+
+def check_integrity(plan: dict, joiner: str) -> list[str]:
+    """Kiểm tra ngay khi tạo plan: không rỗng; mọi nhóm có chữ/số; nhóm phủ đúng thứ tự, không lặp/mất segment; id liên tục; text nhóm = ghép text segment;
+    offset `breaks` tăng dần, nằm trong nhóm, đúng ranh giới segment."""
+    errs: list[str] = []
+    segs = {s["id"]: s for s in plan["segments"]}
+    if not plan["groups"]:
+        return ["EMPTY_PLAN: không có nhóm tổng hợp nào"]
+    if [i for g in plan["groups"] for i in g["segments"]] != [s["id"] for s in plan["segments"]] or len(segs) != len(plan["segments"]):
+        errs.append("groups không phủ đúng thứ tự, không lặp, không mất segment")
+        return errs
+    for n, g in enumerate(plan["groups"], 1):
+        texts = [segs[i]["text"] for i in g["segments"]]
+        if g["id"] != f"g{n:04d}":
+            errs.append(f"id nhóm không liên tục ở vị trí {n}: {g['id']}")
+        if not has_speech(g["text"]):
+            errs.append(f"nhóm {g['id']} không có chữ/số để đọc")
+        if g["text"] != joiner.join(texts):
+            errs.append(f"text nhóm {g['id']} không bằng phần ghép các segment")
+        prev, upto = 0, 0
+        for b in g.get("breaks", []):
+            upto += 1
+            want = len(joiner.join(texts[:upto]))
+            if b["after_char"] != want or not prev < b["after_char"] < len(g["text"]):
+                errs.append(f"break của nhóm {g['id']} sai offset: {b['after_char']} (cần {want}, nhóm dài {len(g['text'])})")
+            prev = b["after_char"]
+    return errs
 
 
 def sentence_texts(text: str, max_chars: int) -> list[str]:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 
@@ -50,6 +51,17 @@ class Ledger:
             raise fail("BUDGET_EXCEEDED", f"Đã dùng ${self.known_cost():.2f} (≥ ngân sách ${self.budget:.2f}); dừng an toàn, các bước đã xong được giữ.",
                        {"hint": "Nâng ngân sách của job rồi chạy lại để tiếp tục từ bước đang dở.", "known_cost_usd": self.known_cost(), "budget_usd": self.budget})
 
+    def preflight(self, calls_left: int, what: str) -> None:
+        """Dừng SỚM (giữ checkpoint) nếu chi phí đã biết + (số lượt còn lại × chi phí trung bình mỗi lượt đã biết) vượt ngân sách. Chỉ là ƯỚC TÍNH: chưa có lượt nào báo
+        chi phí ⇒ không ước được, `guard()` vẫn chặn theo chi phí thật ở mỗi lượt."""
+        known = [c["cost_usd"] for c in self.calls if c["cost_usd"] is not None]
+        if self.budget is None or calls_left <= 0 or not known:
+            return
+        proj = self.known_cost() + calls_left * (sum(known) / len(known))
+        if proj > self.budget:
+            raise fail("BUDGET_EXCEEDED", f"Ngân sách ${self.budget:.2f} không đủ cho phần còn lại ({what}: ~{calls_left} lượt, ước tính tổng ~${proj:.2f}); dừng sớm, các bước đã xong được giữ.",
+                       {"hint": "Nâng ngân sách của job rồi chạy lại để tiếp tục từ bước đang dở.", "known_cost_usd": self.known_cost(), "budget_usd": self.budget, "projected_usd": round(proj, 2), "estimate": True})
+
     def report(self) -> dict:
         by: dict[str, dict] = {}
         for c in self.calls:
@@ -71,17 +83,22 @@ class Ledger:
 
 
 # ---------------------------------------------------------------------------------------------- JSON
+_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
+
+
 def extract_json(text: str):
-    """Lấy object/array JSON đầu tiên trong phản hồi (chấp nhận bọc ```json ... ```)."""
+    """Lấy object/array JSON đầu tiên trong phản hồi (chấp nhận bọc ```json ... ```). Sửa BẰNG CODE hai lỗi vô hại hay gặp: ký tự điều khiển (xuống dòng thô) trong chuỗi
+    và dấu phẩy thừa trước } hoặc ] — không đoán/bù dữ liệu thiếu."""
     t = (text or "").strip()
-    dec = json.JSONDecoder()
+    strict, lenient = json.JSONDecoder(), json.JSONDecoder(strict=False)
     for i, ch in enumerate(t):
         if ch in "{[":
-            try:
-                return dec.raw_decode(t[i:])[0]
-            except ValueError:
-                continue
-    raise Invalid("Phản hồi không chứa JSON hợp lệ.")
+            for dec, src in ((strict, t[i:]), (lenient, t[i:]), (lenient, _TRAILING_COMMA.sub(r"\1", t[i:]))):
+                try:
+                    return dec.raw_decode(src)[0]
+                except ValueError:
+                    continue
+    raise Invalid("Phản hồi không chứa JSON hợp lệ (không có object/array đọc được).")
 
 
 REPAIR_JSON_PROMPT = """JSON bạn vừa trả cho bước "{step}" bị từ chối vì: {err}
@@ -95,7 +112,7 @@ def ask_json(llm: TextLLM, ledger: Ledger, step: str, system: str, prompt: str, 
     """Gọi LLM → JSON → validate(data) (ném Invalid để thử lại kèm lý do). Quá số lần ⇒ StageError REMIX_LLM_INVALID. Mọi lượt đều vào sổ chi phí.
     Thử lại TIẾT KIỆM: JSON đọc được nhưng sai vài trường ⇒ chỉ gửi JSON đó + lỗi cụ thể (không gửi lại transcript/ngữ cảnh lớn), giữ phần hợp lệ;
     chỉ khi phản hồi không có JSON mới gửi lại prompt đầy đủ."""
-    err, last = "", None
+    err, last, kind = "", None, "format"
     for attempt in range(1, retries + 2):
         if ctx is not None:
             ctx.cancel.check()
@@ -109,13 +126,13 @@ def ask_json(llm: TextLLM, ledger: Ledger, step: str, system: str, prompt: str, 
         try:
             data = extract_json(res.get("text", ""))
         except Invalid as e:
-            err = str(e)[:500]                                           # không có JSON: lượt sau dùng prompt đầy đủ (hoặc tiếp tục sửa JSON cũ nếu đã có)
+            err, kind = str(e)[:500], "format"                           # không có JSON: lượt sau dùng prompt đầy đủ (hoặc tiếp tục sửa JSON cũ nếu đã có)
             continue
         try:
             return validate(data)
         except Invalid as e:
-            err, last = str(e)[:500], data
-    raise StageError(ErrorClass.TRANSIENT, "REMIX_LLM_INVALID", f"Bước {step}: LLM không trả dữ liệu hợp lệ sau {retries + 1} lần ({err}).", {"hint": "Chạy lại; nếu lặp lại, đổi mô hình hoặc rút gọn tuỳ chọn.", "step": step})
+            err, last, kind = str(e)[:500], data, "content"
+    raise StageError(ErrorClass.TRANSIENT, "REMIX_LLM_INVALID", f"Bước {step}: LLM không trả dữ liệu hợp lệ sau {retries + 1} lần ({err}).", {"hint": "Chạy lại; nếu lặp lại, đổi mô hình hoặc rút gọn tuỳ chọn.", "step": step, "reason": err, "kind": kind})
 
 
 # ---------------------------------------------------------------------------------------------- checkpoint theo bước

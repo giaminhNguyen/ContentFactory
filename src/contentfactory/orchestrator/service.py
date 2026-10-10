@@ -28,6 +28,7 @@ from ..story import guidance as GD
 from ..story import mode as SM
 from ..story import presets as SP
 from ..story_remix import estimate as EST
+from ..story_scene_remix import logic as SCENE_L
 from ..output import metadata as MD
 from ..tts import prosody as PRO
 from . import auto as AU
@@ -224,7 +225,9 @@ class Service:
         if inputs:
             kw["inputs"] = inputs
         if kids is not None:
-            params["made_for_kids"] = bool(kids)
+            if not isinstance(kids, bool):                                                          # "false"/0/1 KHÔNG được ép kiểu (bool("false") == True): khai báo COPPA phải rõ ràng
+                raise _err("MISSING_MADE_FOR_KIDS", "made_for_kids phải là true/false (boolean thật).", "Chọn Có/Không rồi chạy lại.")
+            params["made_for_kids"] = kids
         if auto_resume is not None:
             kw["auto_resume"] = bool(auto_resume)
         kw["_extend"] = spec.get("extend")
@@ -242,7 +245,7 @@ class Service:
 
     @staticmethod
     def _require_kids(ch: dict, params: dict, reaches_publish: bool) -> None:
-        if reaches_publish and not isinstance((ch.get("publishing") or {}).get("made_for_kids"), bool) and "made_for_kids" not in params:
+        if reaches_publish and not isinstance((ch.get("publishing") or {}).get("made_for_kids"), bool) and not isinstance(params.get("made_for_kids"), bool):
             raise _err("MISSING_MADE_FOR_KIDS", "Kênh chưa khai báo video có dành cho trẻ em hay không.", "Chọn Có/Không rồi chạy lại.")
 
     def _target_reaches(self, run: str) -> int:
@@ -373,8 +376,8 @@ class Service:
             job_id = self.orc.submit(params, **kw)
             if extend:
                 self.orc.set_target(job_id, extend)
-            if payload.get("remember_kids") and "made_for_kids" in params:
-                self._save_kids(channel_id, bool(params["made_for_kids"]))
+            if payload.get("remember_kids") and isinstance(params.get("made_for_kids"), bool):
+                self._save_kids(channel_id, params["made_for_kids"])
             if rid:
                 self._remember(rid, job_id)
             return {"job_id": job_id, "deduped": False}
@@ -1123,6 +1126,8 @@ class Service:
         """Kế hoạch Story Remix của job (đọc artifact do bước lập kế hoạch ghi): ý tưởng đã chọn + lý do loại, dàn nhân vật, cổng originality/nhịp thưởng, chi phí, đại cương."""
         j = self._job_or_error(job_id)
         mode = SM.of_job(j["params"])
+        if mode["mode"] == SM.SCENE:
+            return self._scene_remix_view(j, mode)
         if mode["mode"] != "story_remix":
             return {"active": False}
         d = job_dir(self.cfg.path("workspace"), job_id) / "story" / "remix"
@@ -1162,19 +1167,46 @@ class Service:
                 "writer": writer and [{"n": c["n"], "chars": c["chars"], "repairs": c["repairs"], "issues": [i["message"] for i in c["issues"]]} for c in writer["chapters"]],
                 "final_qa": rd("final_qa.json"), "stop": stop}
 
+    def _scene_remix_view(self, j: dict, mode: dict) -> dict:
+        """Remix bám sự việc của job: bản đồ cảnh, kế hoạch (cấp 1/2), cảnh đã viết lại, QA liên tục, chi phí, lý do dừng (đọc artifact do adapter ghi)."""
+        d = job_dir(self.cfg.path("workspace"), j["id"]) / "story" / "scene_remix"
+
+        def rd(name: str):
+            try:
+                return json.loads((d / name).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+        plan, gmap, qa, cost, aff, rep, est = rd("remix_plan.json"), rd("scene_map.json"), rd("continuity_qa.json"), rd("cost_report.json"), rd("affected_scenes.json"), rd("scene_remix_report.json"), rd("estimate.json")
+        stop = None
+        for r in reversed(self.orc.store.stage_runs(j["id"])):
+            if r["stage"] == "story":
+                if r["status"] == "failed" and r.get("error"):
+                    try:
+                        e = json.loads(r["error"])
+                        stop = {"code": e.get("code"), "message": e.get("message"), "hint": (e.get("detail") or {}).get("hint", ""), "reason": (e.get("detail") or {}).get("reason", "")}
+                    except ValueError:
+                        stop = None
+                break
+        return {"active": True, "kind": "scene", "mode": mode, "estimate": est, "ready": bool(plan),
+                "map": gmap and {k: gmap[k] for k in ("scene_count", "pov", "hook_scene", "ending_scenes", "recurring_objects", "characters")},
+                "plan": plan and {"changes": plan["changes"], "warnings": plan.get("warnings", []), "global_rules": plan.get("global_rules", [])},
+                "affected": aff and aff["ids"], "scenes_done": len(list((d / "scenes").glob("s*.json"))) if (d / "scenes").is_dir() else 0,
+                "qa": qa and {k: qa[k] for k in ("issues", "repair_passes", "passes_max")}, "cost": cost and {k: v for k, v in cost.items() if k != "call_log"},
+                "scene_warnings": rep and rep.get("scene_warnings"), "stop": stop}
+
     _STORY_MODE_EDITABLE = {"review_accepted", "budget_usd", "quality_repair_max_passes"}
 
     def update_story_mode(self, job_id: str, body: dict) -> dict:
         """Cho phép sửa vài tuỳ chọn KHÔNG đổi nội dung của job Story Remix đang dừng (xem báo cáo/nâng ngân sách/thêm lượt sửa) rồi chạy tiếp từ bước dở: các bước đã xong giữ nguyên."""
         j = self._job_or_error(job_id)
         cur = SM.of_job(j["params"])
-        if cur["mode"] != "story_remix":
-            raise _err("NOT_REMIX_JOB", "Job không ở chế độ Story Remix.")
+        if cur["mode"] not in ("story_remix", SM.SCENE):
+            raise _err("NOT_REMIX_JOB", "Job không ở chế độ Story Remix / Remix bám sự việc.")
         patch = body.get("story") or {}
         bad = sorted(set(patch) - self._STORY_MODE_EDITABLE)
         if not isinstance(patch, dict) or bad:
             raise _err("INVALID_STORY_MODE", f"Chỉ sửa được: {', '.join(sorted(self._STORY_MODE_EDITABLE))}.", "Các tuỳ chọn khác thay đổi nội dung truyện: tạo job mới.")
-        new = SM.parse({"mode": "story_remix", "story": {**cur["story"], **patch}, "character_universe": cur["character_universe"]}, self.cfg.data.get("story"))
+        new = SM.parse({"mode": cur["mode"], "story": {**cur["story"], **patch}, **({"character_universe": cur["character_universe"]} if cur["mode"] == "story_remix" else {})}, self.cfg.data.get("story"))
         self.orc.store.update_params(job_id, lambda p: {**p, "story_mode": new}, "story mode: " + ", ".join(sorted(patch)))
         out = {"story_mode": new}
         if body.get("retry", True) and self.orc.store.get_job(job_id)["state"] == P.FAILED:
@@ -1219,13 +1251,17 @@ class Service:
 
     def story_mode_estimate(self, payload: dict) -> dict:
         """Ước tính trước (thô, công khai giả định) số lượt gọi/token/USD của một job Story Remix với cấu hình hiện tại của form."""
+        sm = (payload or {}).get("story_mode") or {}
+        is_scene = sm.get("mode") == SM.SCENE
         try:
-            m = SM.parse({"mode": "story_remix", **{k: v for k, v in ((payload or {}).get("story_mode") or {}).items() if k != "mode"}}, self.cfg.data.get("story"))
+            m = SM.parse({"mode": SM.SCENE if is_scene else "story_remix", **{k: v for k, v in sm.items() if k != "mode"}}, self.cfg.data.get("story"))
         except StageError as e:
             raise _err(e.code, e.message, (e.detail or {}).get("hint", "")) from None
         chars = (payload or {}).get("source_chars")
         if chars is not None and (isinstance(chars, bool) or not isinstance(chars, int) or not 1000 <= chars <= 5_000_000):
             raise _err("INVALID_ESTIMATE", "source_chars phải là số nguyên 1000–5000000.")
+        if is_scene:
+            return SCENE_L.estimate(chars or 60_000, m["story"]["quality_repair_max_passes"], (self.cfg.data.get("story_remix") or {}).get("price_usd_per_mtok"))
         return EST.estimate(m["story"], (payload or {}).get("story_profile") or {}, chars or 60_000, (self.cfg.data.get("story_remix") or {}).get("price_usd_per_mtok"))
 
     def story_mode_effective(self, payload: dict) -> dict:
@@ -1330,6 +1366,8 @@ class Service:
         return {"saved": True, "id": channel_id}
 
     def create_channel(self, channel_id: str, name: str | None, kids: bool, last_used: int = 0) -> dict:
+        if not isinstance(kids, bool):                                                              # chủ kênh phải khai rõ Có/Không; thiếu/chuỗi KHÔNG bị đoán thành false
+            raise _err("MISSING_MADE_FOR_KIDS", "Phải khai báo video của kênh có dành cho trẻ em hay không (true/false).", "Chọn Có hoặc Không.")
         if not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", channel_id or ""):
             raise _err("INVALID_CHANNEL_ID", "Mã kênh chỉ gồm chữ không dấu, số, _ và -, tối đa 40 ký tự.", "Ví dụ: kenh_a")
         f = ops.channel_init(self.cfg, channel_id, name or channel_id, kids=kids, last_used=last_used)

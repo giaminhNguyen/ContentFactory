@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "contentfactory"
-SHARED = {"contracts", "fsutil", "media"}                   # media: tiện ích file thuần (Image Pool), chỉ phụ thuộc contracts
+SHARED = {"contracts", "fsutil", "media", "storyprose", "ytlimits"}                   # media: tiện ích file thuần (Image Pool), chỉ phụ thuộc contracts; storyprose/ytlimits: luật văn bản story + giới hạn YouTube dùng chung, chỉ phụ thuộc contracts
 ISOLATED = {"source", "story", "tts", "audio", "render", "publish", "output", "adapters", "jobs", "universe", "story_remix"}
 
 

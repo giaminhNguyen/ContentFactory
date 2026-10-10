@@ -90,7 +90,7 @@ class AutoNamingTest(unittest.TestCase):
 
     def test_source_default_title_is_cleaned_and_still_flagged(self):
         from contentfactory.contracts import project_of
-        ctx = type("C", (), {"params": {}, "config": {}, "job_id": "j"})()
+        ctx = type("C", (), {"params": {}, "config": {}, "job_id": "j", "inputs": {}})()
         p = project_of(ctx, {"title": "🔥 Truyện Hay #hot"})
         self.assertEqual((p["title"], p["title_source"]), ("Truyện Hay", "source_default"))
 
@@ -856,7 +856,7 @@ class AutoModeE2ETest(FakeCFCase):
         self.assertEqual(parts, [f"tiktok/part_{i:02d}.mp4" for i in range(1, len(parts) + 1)])
         self.assertTrue({"README.txt", "project.json", "story.txt", "youtube/video.mp4", "youtube/thumbnail.jpg", "youtube/title.txt", "youtube/description.txt"} <= files)
         self.assertEqual(len(files), 7 + len(parts) - 0 if False else len(files))
-        self.assertEqual(files - {"README.txt", "project.json", "story.txt", "youtube/video.mp4", "youtube/thumbnail.jpg", "youtube/title.txt", "youtube/description.txt"},
+        self.assertEqual(files - {"README.txt", "project.json", "story.txt", "youtube/video.mp4", "youtube/thumbnail.jpg", "youtube/title.txt", "youtube/description.txt", "story_source.txt"},
                          set(parts))                                                                       # không có gì ngoài layout
         title = (d / "youtube" / "title.txt").read_text(encoding="utf-8").strip()
         self.assertEqual(title, "[Full Audio][Kênh Truyện A số 27] | Chuyện ma ở nhà cũ")                                    # tên tự làm sạch từ video nguồn, số tập nối tiếp last_used

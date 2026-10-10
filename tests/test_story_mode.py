@@ -54,7 +54,7 @@ class SchemaTest(unittest.TestCase):
 
     def test_describe_is_the_single_schema_for_ui(self):
         d = SM.describe({})
-        self.assertEqual([m["id"] for m in d["modes"]], ["story_branch", "story_remix"])
+        self.assertEqual([m["id"] for m in d["modes"]], ["story_branch", "story_remix", "story_scene_remix"])
         self.assertTrue(d["modes"][0]["available"])
         self.assertEqual(d["default_mode"], "story_branch")
         self.assertEqual({f["key"] for f in d["schema"]["character_universe"]}, {k for k in SM.defaults()["character_universe"]})

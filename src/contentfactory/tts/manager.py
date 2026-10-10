@@ -23,7 +23,7 @@ from ..fsutil import atomic_write, atomic_write_json, sha256_file
 from . import qa as chunk_qa
 from . import prosody as PRO
 from .normalize import normalize_text
-from .planner import RuleSegmentPlanner, SegmentPlanner, validate_plan
+from .planner import RuleSegmentPlanner, SegmentPlanner, drop_unspeakable_paragraphs, has_speech, validate_plan
 from .schema import cache_identity, normalize_capabilities, resolve, segment_key, stable_hash
 
 _TERMINAL = re.compile(r"[.!?…][\"”’)\]]*\s*$")
@@ -214,6 +214,12 @@ class TTSManager:
         text, nrep = normalize_text(PRO.mark_scenes(text) if prosody else text, flat["normalize"])
         if not (PRO.strip_marks(text) if prosody else text):
             raise StageError(ErrorClass.POLICY, "EMPTY_STORY", "story.txt không có nội dung sau chuẩn hóa")
+        text, n_dropped = drop_unspeakable_paragraphs(text, keep=(PRO.SCENE_MARK,))        # đoạn chỉ dấu câu/ký hiệu (`…`, `— —`, `“”`, emoji) không có gì để đọc
+        if n_dropped:
+            ctx.log("tts_unspeakable_dropped", "warning", paragraphs=n_dropped)
+        if not has_speech(text):                                                           # hard stop TRƯỚC khi lập plan/gọi TTS
+            raise StageError(ErrorClass.POLICY, "NO_SPEECH_CONTENT", "story.txt không có chữ/số nào để đọc (chỉ dấu câu/ký hiệu) — không tạo plan rỗng",
+                             {"dropped_paragraphs": n_dropped})
         if prosody:
             splan, plan_report = self.speech_plan(ctx, text, flat, caps, prosody)
             segments = PRO.segments_of(splan)

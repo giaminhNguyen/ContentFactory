@@ -163,7 +163,7 @@ class RerunService:
             probs.append({"code": "NO_SOURCE_INPUT", "message": "Job này không có nguồn (link/phụ đề) để lấy lại phụ đề.", "hint": "Dùng job khởi tạo từ link hoặc file phụ đề.", "needs": [], "hard": True})
         if name == "publish":
             chp = ((job.get("config_snapshot") or {}).get("semantic", {}).get("channel_config") or {}).get("publishing") or {}
-            if not isinstance(p.get("made_for_kids", chp.get("made_for_kids")), bool):
+            if not isinstance(p.get("made_for_kids") if p.get("made_for_kids") is not None else chp.get("made_for_kids"), bool):     # cùng quy tắc chọn với stage publish (None = chưa khai)
                 probs.append({"code": "MISSING_MADE_FOR_KIDS", "message": "Chưa khai báo video có dành cho trẻ em hay không.", "hint": "Đặt made_for_kids cho job hoặc kênh.", "needs": [], "hard": True})
         arts = self.store.artifacts(job["id"])
         jd = job_dir(self.orc.cfg.path("workspace"), job["id"])

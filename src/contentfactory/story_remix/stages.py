@@ -62,6 +62,7 @@ nhưng có nhân vật, bối cảnh, xung đột, chuỗi nhân-quả, twist v�
 Mỗi ý tưởng: id (P1, P2…), logline, setting, central_conflict, stakes, twist, ending, hook, slots[], payoff_plan[].
 slots: 3–6 vai {{slot_id (a-z0-9_), role_code ∈ {roles}, importance 1-3, traits[] (đặc điểm tính cách/kỹ năng cần có), goal, relationships[{{with, type}}]}}; bắt buộc có protagonist.
 payoff_plan: ≥ {pp} điểm thưởng {{beat, at_pct 1-100, type}}, điểm thưởng đầu tiên trước mốc {first}% truyện, bám các loại thưởng của DNA.
+{rubric}
 Giọng/tuỳ chọn người dùng: {opts}
 Ngôn ngữ nội dung: {lang}.{feedback}
 
@@ -69,6 +70,18 @@ DNA:
 {dna}
 
 Trả JSON: {{"candidates": [ ... ]}}"""
+
+
+def rubric_text(dna: dict) -> str:
+    """Rubric chấm ý tưởng (đúng các tiêu chí `score_premise` chấm bằng code) đưa vào prompt TRƯỚC khi sinh, để ý tưởng đạt ngay từ đầu thay vì bị loại sau."""
+    pc = dna["payoff_cadence"]
+    pp = max(3, math.ceil(pc["payoffs_per_10pct"] * 10 * 0.5))
+    return (f"TIÊU CHÍ CHẤM (code chấm tất định; ý tưởng tổng điểm dưới {MIN_SELECT:.2f}/1 bị loại — hãy viết sao cho đạt ngay):\n"
+            f"- Chất lượng ({WEIGHTS['quality']:.0%}): central_conflict, stakes, twist, ending, hook mỗi trường ≥ 60 ký tự, cụ thể (ai làm gì, mất gì), không sơ sài.\n"
+            f"- Thưởng cảm xúc ({WEIGHTS['payoff']:.0%}): payoff_plan ≥ {pp} điểm; điểm đầu tiên at_pct ≤ {pc['first_payoff_by_pct']}; trường type/beat phải nêu rõ các loại thưởng của DNA: {'; '.join(dna['reward_types'])}.\n"
+            f"- Nguyên bản ({WEIGHTS['novelty']:.0%}): tên riêng, cụm từ, diễn biến hoàn toàn mới (bạn không thấy nguồn, đừng đoán tên của nó).\n"
+            f"- Khác biệt ({WEIGHTS['distinct']:.0%}): các ý tưởng khác nhau rõ về logline và xung đột.\n"
+            f"- Gọn ({WEIGHTS['cost']:.0%}): 3–4 vai tốt hơn 6–8 vai.")
 
 
 def _opts_text(o: dict) -> str:
@@ -86,7 +99,7 @@ def _opts_text(o: dict) -> str:
     return "; ".join(bits) or "không có yêu cầu thêm"
 
 
-def generate_premises(llm, ledger: Ledger, dna: dict, opts: dict, lang: str, ctx=None, feedback: str = "") -> dict:
+def generate_premises(llm, ledger: Ledger, dna: dict, opts: dict, lang: str, ctx=None, feedback: str = "", prior: dict | None = None) -> dict:
     n = int(opts.get("premise_candidates", 3))
 
     def validate(d):
@@ -99,7 +112,9 @@ def generate_premises(llm, ledger: Ledger, dna: dict, opts: dict, lang: str, ctx
 
     pp = max(3, math.ceil(dna["payoff_cadence"]["payoffs_per_10pct"] * 10 * 0.5))
     prompt = PREMISE_PROMPT.format(n=n, roles=", ".join(sorted(SC.ROLES)), pp=pp, first=dna["payoff_cadence"]["first_payoff_by_pct"], opts=_opts_text(opts), lang=lang,
-                                   feedback=("\nPHẢN HỒI TỪ LẦN TRƯỚC (hãy khắc phục): " + feedback) if feedback else "", dna=json.dumps(dna, ensure_ascii=False, indent=1))
+                                   rubric=rubric_text(dna), dna=json.dumps(dna, ensure_ascii=False, indent=1),
+                                   feedback=(("\nPHẢN HỒI TỪ LẦN TRƯỚC — chỉ sửa đúng các tiêu chí yếu, giữ nguyên phần đạt: " + feedback) if feedback else "")
+                                   + (("\nÝ TƯỞNG TỐT NHẤT LẦN TRƯỚC (làm ý P1 bằng cách SỬA nó, các ý còn lại mới): " + json.dumps(prior, ensure_ascii=False)) if prior else ""))
     return ask_json(llm, ledger, "premises", SYS, prompt, validate, ctx)
 
 
@@ -149,12 +164,18 @@ def select_premise(cands: dict, dna: dict, source_text: str, continuity_fn, stra
             "note": "Điểm chỉ để xếp hạng nội bộ, không phải đánh giá pháp lý/chất lượng tuyệt đối."}
 
 
-def weakness_feedback(report: dict) -> str:
+CRITERIA_MSG = {"quality": "xung đột/stakes/twist/kết thúc/hook còn sơ sài (mỗi trường cần ≥ 60 ký tự, cụ thể)", "payoff": "thiếu điểm thưởng cảm xúc đúng loại và đúng nhịp của DNA (đủ số điểm, điểm đầu đủ sớm, nêu rõ loại thưởng)",
+                "novelty": "còn giống nguồn (tên/diễn biến); đổi hẳn nhân vật và chuỗi nhân-quả", "distinct": "các ý tưởng quá giống nhau", "continuity": "", "cost": "quá nhiều nhân vật (nên 3–4 vai)"}
+
+
+def weak_criteria(report: dict) -> list[dict]:
+    """Tiêu chí nào khiến ý tưởng TỐT NHẤT bị loại: [{criterion, score, message}] (điểm thành phần < 0.6), yếu nhất trước."""
     sc = report["scores"][report["best_candidate"]]
-    bad = [k for k, v in sc["parts"].items() if v < 0.6]
-    msg = {"quality": "xung đột/stakes/twist/kết thúc còn sơ sài, hãy cụ thể hơn", "payoff": "thiếu điểm thưởng cảm xúc đúng loại và đúng nhịp của DNA", "novelty": "còn giống nguồn (tên/diễn biến); đổi hẳn nhân vật và chuỗi nhân-quả",
-           "distinct": "các ý tưởng quá giống nhau", "continuity": "", "cost": "quá nhiều nhân vật"}
-    return "; ".join(msg[k] for k in bad if msg[k]) or "nâng chất lượng tổng thể"
+    return [{"criterion": k, "score": v, "message": CRITERIA_MSG[k]} for k, v in sorted(sc["parts"].items(), key=lambda kv: kv[1]) if v < 0.6 and CRITERIA_MSG[k]]
+
+
+def weakness_feedback(report: dict) -> str:
+    return "; ".join(f"{c['criterion']} ({c['score']:.2f}): {c['message']}" for c in weak_criteria(report)) or "nâng chất lượng tổng thể"
 
 
 # ---------------------------------------------------------------------------------------------- 4. bible + outline
@@ -178,10 +199,10 @@ def cast_brief(cast: dict, profiles: dict[str, dict]) -> str:
     return "\n".join(rows)
 
 
-def make_bible(llm, ledger: Ledger, premise: dict, cast: dict, profiles: dict, dna: dict, lang: str, ctx=None) -> dict:
+def make_bible(llm, ledger: Ledger, premise: dict, cast: dict, profiles: dict, dna: dict, lang: str, ctx=None, feedback: str = "") -> dict:
     ids = {m["character_id"] for m in cast["members"]}
-    prompt = BIBLE_PROMPT.format(cast=cast_brief(cast, profiles), premise=json.dumps(premise, ensure_ascii=False, indent=1), dna=json.dumps({k: dna[k] for k in ("reward_types", "emotional_promise", "payoff_cadence", "escalation_pattern", "tone")}, ensure_ascii=False), lang=lang)
-    return ask_json(llm, ledger, "story_bible", SYS, prompt, lambda d: SC.story_bible(d, ids, SC.cast_names(cast["members"])), ctx)
+    prompt = ("SỬA CÁC ĐIỂM SAU của bản trước (giữ phần còn lại): " + feedback + "\n\n" if feedback else "") + BIBLE_PROMPT.format(cast=cast_brief(cast, profiles), premise=json.dumps(premise, ensure_ascii=False, indent=1), dna=json.dumps({k: dna[k] for k in ("reward_types", "emotional_promise", "payoff_cadence", "escalation_pattern", "tone")}, ensure_ascii=False), lang=lang)
+    return ask_json(llm, ledger, "story_bible" if not feedback else "story_bible_repair", SYS, prompt, lambda d: SC.story_bible(d, ids, SC.cast_names(cast["members"])), ctx)
 
 
 OUTLINE_PROMPT = """Lập ĐẠI CƯƠNG {lo}–{hi} chương cho truyện audio ORIGINAL dưới đây.
@@ -190,7 +211,12 @@ Dàn nhân vật (cast của chương CHỈ dùng các character_id này):
 
 Story Bible: {bible}
 Cơ chế thưởng cần giữ (DNA): {dna}
-Yêu cầu: chương 1 mở bằng hook mạnh; có điểm thưởng cảm xúc (payoff) đều đặn: điểm đầu trước chương {first_ch}, không cách quá {gap} chương giữa hai điểm thưởng; leo thang dần; phần ba cuối có payoff lớn; mỗi chương kết bằng hook/cliffhanger.
+RÀNG BUỘC (code kiểm tất định trước khi viết chương; outline vi phạm bị chặn — thoả ngay từ đầu):
+- Mọi chương có "hook" không rỗng (chương 1 là hook mở đầu mạnh) và kết bằng hook/cliffhanger.
+- Điểm thưởng cảm xúc (payoff ≠ null) đầu tiên ở chương ≤ {first_ch}; không có quá {gap} chương liên tiếp thiếu payoff; leo thang dần.
+- Phần ba cuối (từ chương {late_from}) có ít nhất một payoff lớn.
+- Các payoff phải thể hiện ít nhất một nửa loại thưởng của DNA ({rewards}); ghi rõ loại trong payoff.type/description.
+- Số nhân vật mỗi chương (cast): {voices}
 {extra}Trả JSON: {{"chapters":[{{n, title, goal, beats[] (3–6 sự kiện nhân-quả), cast[character_id], hook, payoff{{type, description}}|null, cliffhanger}}]}} đánh số n liên tục từ 1.
 Nhân vật chính ({protagonist}) xuất hiện ≥ 60% số chương; mọi nhân vật trong dàn phải xuất hiện ít nhất một chương. Ngôn ngữ: {lang}."""
 
@@ -202,11 +228,13 @@ def cadence_limits(dna: dict, n: int) -> tuple[int, int]:
     return first_ch, gap
 
 
-def make_outline(llm, ledger: Ledger, bible: dict, cast: dict, profiles: dict, dna: dict, n_chapters: int, lang: str, ctx=None, feedback: str = "") -> dict:
+def make_outline(llm, ledger: Ledger, bible: dict, cast: dict, profiles: dict, dna: dict, n_chapters: int, lang: str, ctx=None, feedback: str = "", readability: str = "standard", prior: dict | None = None) -> dict:
     ids = {m["character_id"] for m in cast["members"]}
     prot = next(m["character_id"] for m in cast["members"] if m["role_code"] == "protagonist")
     lo, hi = max(3, n_chapters - 2), n_chapters + 2
     first_ch, gap = cadence_limits(dna, n_chapters)
     prompt = OUTLINE_PROMPT.format(lo=lo, hi=hi, cast=cast_brief(cast, profiles), bible=json.dumps(bible, ensure_ascii=False), dna=json.dumps({k: dna[k] for k in ("reward_types", "hook_pattern", "payoff_cadence", "escalation_pattern")}, ensure_ascii=False),
-                                   first_ch=first_ch, gap=gap, protagonist=prot, lang=lang, extra=(f"SỬA CÁC LỖI SAU CỦA BẢN TRƯỚC: {feedback}\n" if feedback else ""))
+                                   first_ch=first_ch, gap=gap, protagonist=prot, lang=lang, late_from=(2 * n_chapters) // 3 + 1, rewards="; ".join(dna["reward_types"]),
+                                   voices=("TỐI ĐA 5 (độ dễ nghe cao)." if readability == "high" else "≤ 6, ưu tiên ít để dễ nghe."),
+                                   extra=((f"SỬA CÁC LỖI SAU CỦA BẢN TRƯỚC (chỉ chương liên quan; GIỮ NGUYÊN chương không lỗi, trả lại toàn bộ): {feedback}\n" + (f"BẢN TRƯỚC: {json.dumps(prior, ensure_ascii=False)}\n" if prior else "")) if feedback else ""))
     return ask_json(llm, ledger, "outline" if not feedback else "outline_repair", SYS, prompt, lambda d: SC.outline(d, ids, prot, lo, hi, SC.cast_names(cast["members"])), ctx)

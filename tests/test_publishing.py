@@ -815,7 +815,7 @@ class PublishingPipelineTest(RootCase):
         orc.run()
         self.assertEqual(orc.store.get_job(jid)["state"], P.PUBLISHED, orc.store.get_job(jid)["last_error"])
         self.assertEqual(len(seen), 1)                                                                      # một lượt đặt tên, nhận tên gốc để tránh trùng
-        self.assertEqual(seen[0][1:], ("[Full Audio][Kênh Truyện A số 999] | ", 100 - len("[Full Audio][Kênh Truyện A số 999] | ")))   # ngân sách theo mẫu kênh, dư 1 chữ số
+        self.assertEqual(seen[0][1:], ("[Full Audio][Kênh Truyện A số 999] | ", MD.TITLE_TARGET_CHARS - len("[Full Audio][Kênh Truyện A số 999] | ")))   # ngân sách theo mẫu kênh, dư 1 chữ số
         self.assertEqual(self.posts()[0]["title"], "[Full Audio][Kênh Truyện A số 27] | Đêm Mưa Ở Làng")
         thumb = (self.job_dir(jid) / "render" / "youtube" / "thumbnail.jpg").read_text(encoding="utf-8")
         self.assertIn("Đêm Mưa Ở Làng", thumb)
