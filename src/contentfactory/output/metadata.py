@@ -11,7 +11,7 @@ import copy
 import string
 
 from ..contracts import ErrorClass, StageError
-from ..ytlimits import (DESCRIPTION_MAX_BYTES, DESCRIPTION_TARGET_BYTES, PRIVACY_VALUES, PUBLISH_KEYS, TAGS_MAX_CHARS, TITLE_MAX_CHARS, TITLE_TARGET_CHARS,  # noqa: F401
+from ..ytlimits import (safe_youtube_url, DESCRIPTION_MAX_BYTES, DESCRIPTION_TARGET_BYTES, PRIVACY_VALUES, PUBLISH_KEYS, TAGS_MAX_CHARS, TITLE_MAX_CHARS, TITLE_TARGET_CHARS,  # noqa: F401
                         check_description, check_title, clean_publishing, pick_publishing, tags_cost, utf8_len)
 
 # Nguồn các giới hạn: modules/yt_uploader/internal/upload/validate.go (daemon kiểm TRƯỚC khi gọi YouTube; mỗi số có tài liệu YouTube Data API phía sau).
@@ -69,6 +69,9 @@ def normalize_channel(raw: dict | None, channel_id: str) -> dict:
     for k, typ in PUBLISHING_KEYS.items():
         if k in out["publishing"] and not isinstance(out["publishing"][k], typ):
             errs.append(f"publishing.{k} sai kiểu")
+    yu = out["publishing"].get("youtube_channel_url")
+    if yu is not None and not safe_youtube_url(yu):
+        errs.append("publishing.youtube_channel_url phải là link https tới kênh YouTube (vd https://www.youtube.com/@tenkenh)")
     if out["publishing"].get("privacy") not in (None, "private", "unlisted", "public"):
         errs.append("publishing.privacy phải là private | unlisted | public")
     else:

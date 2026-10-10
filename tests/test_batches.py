@@ -689,3 +689,35 @@ class SourceLinksAndMigrationTest(BatchCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class JobOpenLinksTest(BatchCase):
+    """Chi tiết job luôn có: mở video nguồn; đã đăng ⇒ mở video đã đăng, chưa đăng ⇒ mở kênh YouTube."""
+
+    def test_unpublished_job_offers_channel_and_published_job_offers_video(self):
+        orc, bs, _ = self.make()
+        svc = Service(orc)
+        r = svc.create_run({"input": {"value": "https://youtu.be/abcdefghijk"}, "channel": "default", "run": "story"})
+        links = svc.job_detail(r["job_id"])["links"]
+        self.assertEqual(links["source_video_url"], "https://www.youtube.com/watch?v=abcdefghijk")
+        self.assertIsNone(links["published_video_url"])
+        self.assertEqual(links["youtube_channel_url"], "https://studio.youtube.com/")                      # chưa cấu hình kênh ⇒ Studio (hợp lệ, không đoán)
+        ch = self.root / "channels" / "default"
+        ch.mkdir(parents=True, exist_ok=True)
+        (ch / "channel.json").write_text(json.dumps({"publishing": {"made_for_kids": False, "youtube_channel_url": "https://www.youtube.com/@nhopnhep"}}), encoding="utf-8")
+        self.assertEqual(svc.job_detail(r["job_id"])["links"]["youtube_channel_url"], "https://www.youtube.com/@nhopnhep")
+        (ch / "channel.json").write_text(json.dumps({"publishing": {"youtube_channel_url": "javascript:alert(1)"}}), encoding="utf-8")
+        self.assertEqual(svc.job_detail(r["job_id"])["links"]["youtube_channel_url"], "https://studio.youtube.com/")      # link kênh sai không bao giờ được mở: quay về Studio, trang job không vỡ
+        orc.run()
+        from unittest import mock
+        with mock.patch.object(Service, "output_info", return_value={"youtube_url": "https://www.youtube.com/watch?v=Na3dBlBVnBY", "project_dir": "x"}):
+            links = svc.job_detail(r["job_id"])["links"]
+        self.assertEqual(links["published_video_url"], "https://www.youtube.com/watch?v=Na3dBlBVnBY")        # đã đăng ⇒ giao diện mở video đã đăng
+
+    def test_job_built_from_another_job_keeps_that_jobs_source_video(self):
+        orc, bs, _ = self.make()
+        svc = Service(orc)
+        a = svc.create_run({"input": {"value": "https://youtu.be/abcdefghijk"}, "channel": "default", "run": "story"})["job_id"]
+        orc.run()
+        b = orc.submit(params(), mode="STORY_ONLY", from_job=a)
+        self.assertEqual(svc.job_detail(b)["links"]["source_video_url"], "https://www.youtube.com/watch?v=abcdefghijk")
+

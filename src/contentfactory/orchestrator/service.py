@@ -29,6 +29,7 @@ from ..story import mode as SM
 from ..story import presets as SP
 from ..story_remix import estimate as EST
 from ..story_scene_remix import logic as SCENE_L
+from ..ytlimits import safe_youtube_url
 from ..output import metadata as MD
 from ..tts import prosody as PRO
 from . import auto as AU
@@ -485,11 +486,7 @@ class Service:
     @staticmethod
     def _safe_yt(url) -> str | None:
         """Chỉ trả link https tới YouTube (đã được backend dựng từ id đã kiểm hoặc do uploader trả về); chuỗi lạ/javascript:/host khác => None."""
-        if not isinstance(url, str):
-            return None
-        u = urlparse(url.strip())
-        host = (u.hostname or "").lower().removeprefix("www.").removeprefix("m.")
-        return url.strip() if u.scheme == "https" and host in ("youtube.com", "youtu.be") and not u.username else None
+        return safe_youtube_url(url)
 
     def _links(self, j: dict, meta: bool = False) -> dict:
         """Link chuẩn do BACKEND giữ (D-101): video nguồn, kênh nguồn, video đã đăng. Frontend không tự đoán URL."""
@@ -505,7 +502,17 @@ class Service:
                     ch_url = DISC.channel_url(channel_id=md.get("channel_id")) or md.get("channel_url")
                     ch_title = ch_title or md.get("channel") or md.get("uploader")
                     break
-        return {"source_video_url": self._safe_yt(src.get("video_url")), "source_channel_url": self._safe_yt(ch_url), "source_channel_title": ch_title, "published_video_url": None}
+        return {"source_video_url": self._safe_yt(src.get("video_url")), "source_channel_url": self._safe_yt(ch_url), "source_channel_title": ch_title, "published_video_url": None,
+                "youtube_channel_url": self._youtube_channel_url(j) if meta else None}
+
+    def _youtube_channel_url(self, j: dict) -> str:
+        """Kênh YouTube sẽ đăng của job: `publishing.youtube_channel_url` trong Channel Config nếu có; không thì YouTube Studio (kênh đang đăng nhập) — luôn là link https YouTube hợp lệ."""
+        try:
+            ch = CH.load_channel(self.cfg, str(j["params"].get("channel") or "default"))
+            return safe_youtube_url((ch.get("publishing") or {}).get("youtube_channel_url")) or "https://studio.youtube.com/"
+        except StageError:
+            return "https://studio.youtube.com/"
+
 
     def summary(self, j: dict) -> dict:
         st = DG.ui_status(j)

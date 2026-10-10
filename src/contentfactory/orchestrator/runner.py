@@ -179,6 +179,11 @@ class Orchestrator:
         src = self._youtube_source(merged)                                               # nguồn chuẩn của job (không gọi mạng): link xem video + id dùng chống xử lý trùng
         if src and "source" not in merged:
             merged["source"] = src
+        if "source" not in merged and from_job:                                          # job dựng từ artifact của job khác: giữ link video nguồn của job đó
+            fid = from_job["job_id"] if isinstance(from_job, dict) else from_job
+            origin = self.store.get_job(fid) if isinstance(fid, str) else None
+            if origin and (origin["params"].get("source") or {}).get("video_url"):
+                merged["source"] = copy.deepcopy(origin["params"]["source"])
         source_key = source_key or (f"youtube:{src['video_id']}" if src else None)
         if "story_guidance" in merged:                                                    # đề xuất truyện riêng của job: kiểm ngay (quá dài/rỗng bị từ chối, không cắt âm thầm); inherit = không lưu gì
             g = GD.parse(merged.pop("story_guidance"))

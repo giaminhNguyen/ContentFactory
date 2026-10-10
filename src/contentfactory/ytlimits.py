@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from .contracts import ErrorClass, StageError
 
 # Nguồn các giới hạn: modules/yt_uploader/internal/upload/validate.go (daemon kiểm TRƯỚC khi gọi YouTube; mỗi số có tài liệu YouTube Data API phía sau).
@@ -120,3 +122,12 @@ def pick_publishing(params: dict, channel_pub: dict, defaults: dict) -> dict:
     for k in PUBLISH_KEYS:
         out[k] = next((s[k] for s in (params, channel_pub, {} if k == "made_for_kids" else defaults) if s.get(k) is not None), None)
     return out
+
+
+def safe_youtube_url(url) -> str | None:
+    """Chỉ trả link https tới YouTube (youtube.com / youtu.be, không user:pass); chuỗi lạ/javascript:/host khác ⇒ None. Dùng cho mọi link YouTube hiển thị/mở từ giao diện."""
+    if not isinstance(url, str):
+        return None
+    u = urlparse(url.strip())
+    host = (u.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+    return url.strip() if u.scheme == "https" and host in ("youtube.com", "youtu.be") and not u.username else None

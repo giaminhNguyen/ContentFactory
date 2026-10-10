@@ -163,7 +163,8 @@ export async function mount(root, ctx) {
   }
   // Link YouTube do backend trả (đã kiểm https + host); mở tab mới với noopener.
   function linkRow(l) {
-    const ls = [["source_video_url", "Mở video nguồn"], ["source_channel_url", "Mở kênh nguồn"], ["published_video_url", "Mở video đã đăng"]].filter(([k]) => l?.[k]);
+    // Đã đăng ⇒ mở video đã đăng; chưa đăng ⇒ mở kênh YouTube sẽ đăng (backend luôn trả link hợp lệ, frontend không tự đoán URL).
+    const ls = [["source_video_url", "Mở video nguồn"], ["source_channel_url", "Mở kênh nguồn"], l?.published_video_url ? ["published_video_url", "Mở video đã đăng"] : ["youtube_channel_url", "Mở kênh YouTube"]].filter(([k]) => l?.[k]);
     return ls.length ? h("div", { class: "row wrap" }, ...ls.map(([k, label]) => externalLink(l[k], label))) : null;
   }
   function openBtn(d) {
