@@ -242,6 +242,17 @@ class OutputPublisherTest(unittest.TestCase):
         self.assertEqual((d / "youtube" / "title.txt").read_text(encoding="utf-8"), "[Full Audio 5] | Truyện Ma\n")
         self.assertEqual((d / "story.txt").read_text(encoding="utf-8"), "Đây là truyện.")
 
+    def test_source_story_is_packaged_next_to_the_new_story_and_recorded(self):
+        src = self.entry("source/transcript_clean.txt", "Truyện gốc của kênh nguồn.".encode())
+        res = self.pub.publish(self.req(parts=1, source_story=src), self.ctx)
+        d = Path(res["project_dir"])
+        self.assertIn("story_source.txt", self.files(d))
+        self.assertEqual((d / "story_source.txt").read_text(encoding="utf-8"), "Truyện gốc của kênh nguồn.")
+        pj = json.loads((d / "project.json").read_text(encoding="utf-8"))
+        self.assertEqual(pj["source_story"]["sha256"], sha(d / "story_source.txt"))
+        self.assertIn("story_source.txt", (d / "README.txt").read_text(encoding="utf-8"))
+        self.assertTrue(self.pub.publish(self.req(parts=1, source_story=src), self.ctx)["reused"])          # chạy lại cùng nội dung: không tạo bản mới
+
     def test_project_json_points_at_the_right_artifacts(self):
         req = self.req(parts=4)
         d = Path(self.pub.publish(req, self.ctx)["project_dir"])

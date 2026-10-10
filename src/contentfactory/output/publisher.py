@@ -1,6 +1,6 @@
 """OutputPublisher thật: dựng gói output cho NGƯỜI DÙNG (HANDOFF §16-17). `workspace/` thuộc hệ thống, `output/` thuộc người dùng.
 
-  output/<ngày>_<slug>/            README.txt  project.json  story.txt
+  output/<ngày>_<slug>/            README.txt  project.json  story.txt  story_source.txt (truyện gốc)
                                    youtube/{video.mp4, thumbnail.jpg, title.txt, description.txt}
                                    tiktok/part_01.mp4 part_02.mp4 …   (đúng thứ tự part; không temp/cache/chunk)
 
@@ -82,6 +82,8 @@ class BuiltinOutputPublisher:
         if not has_yt and not parts:
             raise StageError(ErrorClass.POLICY, "NOTHING_TO_PACKAGE", "gói output cần ít nhất một video (YouTube hoặc TikTok)")
         plan = [("story.txt", "story", req["story"])] if req.get("story") else []         # job chạy từ audio có sẵn thì không có truyện
+        if req.get("source_story"):
+            plan.append(("story_source.txt", "story_source", req["source_story"]))         # truyện gốc để đối chiếu
         if has_yt:
             thumb_ext = req["youtube_thumbnail"]["path"].suffix.lower() or ".jpg"
             plan += [("youtube/video.mp4", "youtube_video", req["youtube_video"]),
@@ -139,6 +141,7 @@ class BuiltinOutputPublisher:
                 "created": datetime.now().isoformat(timespec="seconds"), "content_sig": sig,
                 "project": {k: req["project"].get(k) for k in ("id", "title", "title_source", "language", "channel_id", "channel_name", "sequence")},
                 "story": ({"file": "story.txt", "sha256": by["story.txt"]["sha256"], "bytes": by["story.txt"]["bytes"]} if "story.txt" in by else None),
+                "source_story": ({"file": "story_source.txt", "sha256": by["story_source.txt"]["sha256"], "bytes": by["story_source.txt"]["bytes"]} if "story_source.txt" in by else None),
                 "youtube": ({"video": next(f["path"] for f in yt if f["role"] == "youtube_video"),
                              "thumbnail": next(f["path"] for f in yt if f["role"] == "youtube_thumbnail"),
                              "title_file": "youtube/title.txt", "description_file": "youtube/description.txt", "title": req["youtube_title"]}
@@ -161,6 +164,7 @@ class BuiltinOutputPublisher:
                  f"Ngôn ngữ  : {p.get('language')}", f"Phiên bản : {version}" + (f"  (thay thế bản trước: {supersedes}; bản cũ được giữ nguyên)" if supersedes else ""),
                  "", "NỘI DUNG THƯ MỤC", "----------------",
                  "story.txt                : truyện đầy đủ, không đánh số chương" if "story.txt" in by else None,
+                 "story_source.txt         : truyện GỐC (transcript nguồn) để đối chiếu" if "story_source.txt" in by else None,
                  ("youtube/video.mp4        : video YouTube hoàn chỉnh (" + mb("youtube/video.mp4") + ")") if "youtube/video.mp4" in by else None,
                  "youtube/thumbnail.*      : ảnh thumbnail" if "youtube/video.mp4" in by else None,
                  "youtube/title.txt        : tiêu đề dùng khi đăng" if "youtube/title.txt" in by else None,

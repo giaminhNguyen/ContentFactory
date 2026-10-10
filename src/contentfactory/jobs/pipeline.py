@@ -123,7 +123,7 @@ STAGES: tuple[Stage, ...] = (
           ("output_package", "publish_metadata"), "output", ("output", "sequence"),
           checkpoint="gói output (dựng rồi mới rename; gói đã có không bị ghi đè — phiên bản mới nằm bên cạnh)",
           params_deps=("language", "project", "channel", "fake"), config_deps=("output", "channel_config", "publishing"),
-          deliverable=True, optional=("story_text", "story_report", "tiktok_render_report", "video_youtube", "thumbnail", "video_tiktok"),   # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
+          deliverable=True, optional=("story_text", "transcript", "story_report", "tiktok_render_report", "video_youtube", "thumbnail", "video_tiktok"),   # story_text tùy chọn: job chạy từ audio có sẵn (VIDEO_ONLY) không có truyện
           packages=(("render_youtube", ("video_youtube", "thumbnail")), ("render_tiktok", ("video_tiktok",))),
           derives=(("publish_metadata", ("metadata",)),)),
     Stage("publish", UPLOAD_READY, UPLOADING, PUBLISHED,

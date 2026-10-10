@@ -47,6 +47,7 @@ def run(ctx: StageContext, output: OutputPublisher, sequence) -> StageResult:
     pkg = output.publish({
         "job_id": ctx.job_id, "project": project, "youtube_title": pm["youtube_title"], "description": pm["description"],
         "output_root": Path(ctx.config["output_dir"]), "story": _ref_entry(ctx, ctx.inputs["story_text"][0]) if ctx.inputs.get("story_text") else None,
+        "source_story": _ref_entry(ctx, ctx.inputs["transcript"][0]) if ctx.inputs.get("transcript") else None,
         "youtube_video": _ref_entry(ctx, yt_video[0]) if yt_video else None, "youtube_thumbnail": _ref_entry(ctx, yt_thumb[0]) if yt_thumb else None,
         "tiktok_parts": parts, "warnings": pm["warnings"]}, ctx)
     receipt = ctx.stage_dir / "receipt.json"

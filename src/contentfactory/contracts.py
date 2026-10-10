@@ -381,6 +381,7 @@ class OutputRequest(TypedDict):
     description: str
     output_root: Path
     story: dict | None             # None khi job chạy từ audio có sẵn; mỗi file: {path: Path (trong workspace), source: "<đường dẫn workspace tương đối>", sha256}
+    source_story: dict | None      # truyện GỐC (transcript nguồn) để người dùng đối chiếu; None khi job không có nguồn (cùng dạng như story)
     youtube_video: dict | None     # None khi job không đóng gói nhánh YouTube (pipeline chỉ TikTok)
     youtube_thumbnail: dict | None
     tiktok_parts: list[dict]       # có thêm {index, duration_sec?}, đã sắp theo index; rỗng khi không đóng gói nhánh TikTok
