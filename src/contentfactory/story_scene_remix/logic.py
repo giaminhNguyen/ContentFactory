@@ -5,6 +5,7 @@ sửa bằng code NGAY SAU KHI sinh; chỉ lỗi về nghĩa mới cần LLM. D�
 """
 from __future__ import annotations
 
+import difflib
 import math
 import re
 import unicodedata
@@ -142,6 +143,25 @@ def global_map(scenes: list[str], per_scene: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------- kế hoạch
+def closest_in_source(phrase: str, scenes: list[str], min_ratio: float = 0.88) -> str | None:
+    """Cụm nguồn (cùng số từ ±1) giống `phrase` nhất nếu độ giống ≥ min_ratio; nếu có nhiều cụm giống ngang nhau thì không đoán. Chỉ để sửa lỗi chép sai nhẹ của LLM."""
+    n = len(phrase.split())
+    if not 1 <= n <= 8 or len(norm(phrase)) < 4:
+        return None
+    target, best, tie = norm(phrase), (0.0, None), False
+    for t in scenes:
+        words = [(m.start(), m.end()) for m in re.finditer(r"\S+", t)]
+        for size in {max(1, n - 1), n, n + 1}:
+            for i in range(0, len(words) - size + 1):
+                cand = t[words[i][0]:words[i + size - 1][1]].strip(".,;:!?\"'“”‘’()…—-")
+                r = difflib.SequenceMatcher(None, norm(cand), target).ratio()
+                if r > best[0] + 1e-9:
+                    best, tie = (r, cand), False
+                elif abs(r - best[0]) <= 1e-9 and cand and norm(cand) != norm(best[1] or ""):
+                    tie = True
+    return best[1] if best[0] >= min_ratio and not tie else None
+
+
 def check_plan(d, scenes: list[str]) -> dict:
     """Kế hoạch thay đổi toàn cục. Lỗi định dạng/nội dung ⇒ Invalid (sửa gọn một lượt); không có phương án nhẹ ⇒ StageError (Hard Stop, không viết âm thầm thành truyện khác)."""
     n = len(scenes)
@@ -176,6 +196,11 @@ def check_plan(d, scenes: list[str]) -> dict:
             raise Invalid(f"{cid}: level phải là 1 hoặc 2.")
         ids = [i for i in (norm_id(x, n) for x in (c.get("scene_ids") if isinstance(c.get("scene_ids"), list) else [c.get("scene_ids")])) if i]
         found = [sid(i) for i, t in enumerate(scenes) if contains(t, old)]
+        if not found:                                      # LLM trích sai nhẹ (chính tả/dấu/khoảng trắng): sửa về ĐÚNG cụm trong nguồn nếu giống rất sát, không đoán xa
+            fixed = closest_in_source(old, scenes)
+            if fixed:
+                old = fixed
+                found = [sid(i) for i, t in enumerate(scenes) if contains(t, old)]
         if level == 1 and not found:
             raise Invalid(f"{cid}: cụm old \"{old[:60]}\" không có trong nguồn. old phải TRÍCH NGUYÊN VĂN từ nguồn (đúng như xuất hiện trong cảnh).")
         ids = list(dict.fromkeys([*ids, *found]))          # sửa bằng code: gộp cảnh LLM nêu + mọi cảnh thật sự chứa cụm old
@@ -309,7 +334,7 @@ def estimate(source_chars: int, repair_passes: int = 1, price: dict | None = Non
     ct = 3.2                                              # ký tự/token (tiếng Việt, thô)
     scene_tok = SPLIT_TARGET * 0.8 / ct
     steps = [("source_map", groups, groups, GROUP * scene_tok + 700, GROUP * 140),
-             ("remix_plan", 1, 2, n * 150 + 900, 700),
+             ("remix_plan", 1, 2, n * scene_tok * 1.0 + n * 40 + 900, 700),
              ("scene_rewrite", 1, max(1, int(n * MAX_SPREAD)) * 2, scene_tok + 1300, scene_tok * 1.1),     # tối đa: mỗi cảnh bị ảnh hưởng + 1 lượt thử lại
              ("continuity_qa", 1, 1 + repair_passes, 3000 + n * 40, 250),
              ("repair", 0, repair_passes * 4, scene_tok * 2 + 900, scene_tok * 1.1)]

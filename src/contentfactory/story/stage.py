@@ -15,7 +15,7 @@ from ..fsutil import atomic_write_json, atomic_write_text, sha256_file
 from .assembler import assemble
 from .validate import validate_story_text
 
-ASSEMBLER_VERSION = "1"
+ASSEMBLER_VERSION = "2"        # 2: nháy đóng sau dấu câu không còn bị nuốt
 
 
 def _read_json(path: Path) -> dict | None:

@@ -32,7 +32,7 @@ MARKER = re.compile(r"^\s*(?:<!--.*?-->|\[\[.*?\]\]|\{\{.*?\}\}|TODO\b.*)\s*$", 
 END_META = re.compile(r"^\W*(?:còn tiếp|hết chương.*|hết phần.*|to be continued|未完待续|待续)\W*$", re.I)
 RECAP = re.compile(r"(?:(?:ở|trong|từ)\s+)?(?:chương|phần|tập)\s+(?:trước|vừa rồi)|nối tiếp\s+(?:chương|phần)|"
                    r"tiếp nối\s+(?:chương|phần)|previous chapter|last chapter|上一章|前文提要", re.I)
-SENT_SPLIT = re.compile(r"(?<=[.!?…。！？])[\"'”’»)\]]*\s+")
+SENT_SPLIT = re.compile(r"([.!?…。！？][\"'”’»)\]]*)\s+")           # nhóm bắt: dấu câu + nháy đóng phải GIỮ ở câu trước (trước đây nháy đóng bị nuốt)
 TERMINAL = re.compile(r"[.!?…。！？][\"'”’»)\]]*$")
 FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.S)
 MIN_DUP_CHARS, NEAR_DUP_MIN_CHARS, NEAR_WINDOW, NEAR_THRESHOLD, SHINGLE = 40, 80, 40, 0.85, 8
@@ -43,7 +43,8 @@ def _norm(s: str) -> str:
 
 
 def _sentences(par: str) -> list[str]:
-    return [s for s in SENT_SPLIT.split(par.strip()) if s]
+    parts = SENT_SPLIT.split(par.strip())
+    return [s for s in (parts[i] + (parts[i + 1] if i + 1 < len(parts) else "") for i in range(0, len(parts), 2)) if s]
 
 
 def _is_heading(line: str) -> bool:

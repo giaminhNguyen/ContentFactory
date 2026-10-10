@@ -147,6 +147,20 @@ class LogicTest(unittest.TestCase):
         self.assertIn("FORMAT", codes("Hùng cầm hộp cơm đỏ. " * 20 + "\n\nChương 3"))
         self.assertIn("EMPTY", codes("  "))
 
+    def test_plan_old_phrase_with_small_typo_is_corrected_to_the_source_text(self):
+        scenes = ["Lan ngồi chơi mạt chược với bà nội suốt buổi tối.", "Hùng đứng ngoài cửa."]
+        plan = L.check_plan({"changes": [{"id": "c1", "old": "mạt chượt", "new": "cờ tướng", "level": 1, "scene_ids": ["s001"]}]}, scenes)
+        self.assertEqual(plan["changes"][0]["old"], "mạt chược")                                    # sửa về đúng chữ trong nguồn
+        from contentfactory.story_remix.core import Invalid
+        with self.assertRaises(Invalid):
+            L.check_plan({"changes": [{"id": "c1", "old": "bóng đá", "new": "cờ tướng", "level": 1, "scene_ids": ["s001"]}]}, scenes)        # không đoán xa
+
+    def test_plan_prompt_gives_the_llm_the_source_text_to_quote(self):
+        llm = FakeSceneRemixLLM()
+        Env(self, make_source()).run(llm)
+        self.assertIn("source_scenes", llm.prompts["scene_change_plan"][0])
+        self.assertIn("chiếc bút đỏ", llm.prompts["scene_change_plan"][0])
+
     def test_plan_checks(self):
         scenes = ["Hùng cầm chiếc bút đỏ.", "Lan khóc.", "Cô giáo thấy chiếc bút."]
         ok = L.check_plan({"changes": [{"id": "c1", "old": "chiếc bút", "new": "hộp cơm", "level": 1, "scene_ids": ["s001"]}]}, scenes)
@@ -285,9 +299,10 @@ class EngineTest(unittest.TestCase):
         llm = FakeSceneRemixLLM(script={"scene_change_plan": lambda p, s: bad})
         with self.assertRaises(StageError) as cm:
             self.env.run(llm)
-        self.assertEqual(cm.exception.code, "REMIX_LLM_INVALID")
+        self.assertEqual(cm.exception.code, "REMIX_PLAN_INVALID")
         self.assertEqual(cm.exception.detail["kind"], "content")
         self.assertEqual(llm.count("scene_change_plan"), 3)
+        self.assertEqual(cm.exception.error_class, ErrorClass.POLICY)                                # không để orchestrator tự chạy lại cả bước (nhân lượt gọi)
         self.assertEqual(llm.count("scene_rewrite_"), 0)
 
     def test_level3_is_never_automatic(self):
@@ -328,7 +343,7 @@ class EngineTest(unittest.TestCase):
         llm = FakeSceneRemixLLM()
         with self.assertRaises(StageError) as cm:
             env.run(llm)
-        self.assertEqual(cm.exception.code, "REMIX_LLM_INVALID")
+        self.assertEqual(cm.exception.code, "REMIX_PLAN_INVALID")
         self.assertIn("lan sang", cm.exception.detail["reason"])
         self.assertEqual(llm.count("scene_rewrite_"), 0)                                            # chặn TRƯỚC khi tốn chi phí viết văn
 
@@ -344,6 +359,22 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(llm.count("scene_continuity_qa"), 2)                                       # QA lại một lần sau sửa, không hơn
         q = self.env.rd("continuity_qa.json")
         self.assertEqual((q["issues"], q["repair_passes"]), ([], 1))
+
+    def test_resume_keeps_a_repair_made_on_a_scene_the_plan_did_not_touch(self):
+        affected = self.env.run(FakeSceneRemixLLM()) and self.env.rd("affected_scenes.json")["ids"]
+        env = Env(self, make_source())
+        calls = {"n": 0}
+
+        def qa(prompt, step):
+            calls["n"] += 1
+            return {"issues": [{"scene_id": "s006", "problem": "Lệch mạch."}]} if calls["n"] == 1 else {"issues": []}
+        self.assertNotIn("s006", affected)
+        llm = FakeSceneRemixLLM(script={"scene_continuity_qa": qa, "scene_repair_": tweak})
+        env.run(llm)
+        n = len(llm.calls)
+        env.run(llm)                                                                                # resume: bản sửa của s006 được khôi phục ⇒ QA đã cache, 0 lượt gọi
+        self.assertEqual(len(llm.calls), n)
+        self.assertIn("Lan thở dài.", env.story())
 
     def test_unresolved_qa_blocks_story_until_review_accepted(self):
         always = lambda p, s: {"issues": [{"scene_id": "s002", "problem": "Mâu thuẫn thời gian."}]}   # noqa: E731

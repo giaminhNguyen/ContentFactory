@@ -32,12 +32,14 @@ JSON: {{"scenes":[{{"id","event","cause","effect","emotional_role","characters":
 NGUỒN (JSON):
 {data}"""
 
+PLAN_SOURCE_CAP = 150_000                                                                  # ký tự nguồn gửi kèm kế hoạch (một lần); dài hơn thì rút đều mỗi cảnh
+
 PLAN_PROMPT = """Lập MỘT kế hoạch thay đổi thống nhất cho TOÀN BỘ truyện trước khi viết lại. Mục tiêu: truyện mới cuốn như nguồn (giữ hook, nhịp cảm xúc, twist, cao trào, kết thúc) nhưng thay các chi tiết tương đương.
 CẤP 1 (mặc định): thay vật phẩm/hành động/lý do/hoàn cảnh bằng yếu tố tương đương (vd trộm bút → trộm hộp cơm). Mỗi thay đổi phải còn khớp hành động, động cơ, bằng chứng, hậu quả.
 CẤP 2 (hạn chế): chỉ khi thay chi tiết khiến cảnh không còn hợp lý; ghi why_level2 (vì sao cấp 1 không đủ).
 KHÔNG dùng cấp 3. Nếu chỉ thay được bằng cách đổi cả tuyến sự kiện, trả {{"changes":[],"needs_level3":"lý do"}}.
 QUY TẮC: thay đổi NHỎ NHẤT đủ dùng; không đổi chi tiết đang hoạt động tốt; không đổi ngôi kể/tính cách nhân vật; không làm yếu hook/cao trào/kết; không thêm tình tiết/cảnh phụ mới.
-`old` phải TRÍCH NGUYÊN VĂN một cụm có trong nguồn; liệt kê mọi scene_ids có cụm đó và cảnh phụ thuộc (đồ vật/chi tiết xuất hiện lại, hậu quả). Truyện {n} cảnh; không để thay đổi lan quá 65% số cảnh.
+`old` phải TRÍCH NGUYÊN VĂN (đúng từng chữ, đúng dấu) một cụm ngắn có trong `source_scenes` bên dưới — KHÔNG lấy từ phần tóm tắt event; liệt kê mọi scene_ids có cụm đó và cảnh phụ thuộc (đồ vật/chi tiết xuất hiện lại, hậu quả). Truyện {n} cảnh; không để thay đổi lan quá 65% số cảnh.
 JSON: {{"changes":[{{"id","old","new","level":1,"scene_ids":["s001"],"why","why_level2"}}],"global_rules":["quy tắc nhất quán chung"]}}
 BẢN ĐỒ TRUYỆN (JSON):
 {data}"""
@@ -152,9 +154,20 @@ class StorySceneRemixAdapter:
         compact = [{"id": s["id"], "event": s["event"][:160], "beat": s["beat"], "characters": s["characters"][:5], "objects": s["objects"][:5]} for s in per_scene]
         check_plan = lambda d: L.check_plan(d, scenes)                                                                  # noqa: E731
         plan_fp = fingerprint(v=VERSION, map=compact)
-        plan = steps.run("remix_plan", plan_fp, "remix_plan.json", lambda: ask_json(
-            self.llm, ledger, "scene_change_plan", SYS_PLAN, PLAN_PROMPT.format(n=n, data=json.dumps({"scenes": compact, "pov": gmap["pov"], "recurring_objects": gmap["recurring_objects"],
-                                                                                                        "hook_scene": gmap["hook_scene"], "ending_scenes": gmap["ending_scenes"]}, ensure_ascii=False)), check_plan, ctx=ctx), check_plan)
+        per = max(800, PLAN_SOURCE_CAP // n)
+        src_scenes = [{"id": L.sid(i), "text": t if len(t) <= per else t[:per // 2] + " […] " + t[-per // 2:]} for i, t in enumerate(scenes)]
+        plan_data = json.dumps({"scenes": compact, "pov": gmap["pov"], "recurring_objects": gmap["recurring_objects"], "hook_scene": gmap["hook_scene"], "ending_scenes": gmap["ending_scenes"],
+                                "source_scenes": src_scenes}, ensure_ascii=False)
+
+        def make_plan():
+            try:
+                return ask_json(self.llm, ledger, "scene_change_plan", SYS_PLAN, PLAN_PROMPT.format(n=n, data=plan_data), check_plan, ctx=ctx)
+            except StageError as e:
+                if e.code == "REMIX_LLM_INVALID" and (e.detail or {}).get("kind") == "content":
+                    # lỗi NỘI DUNG đã hết lượt sửa: không để orchestrator tự chạy lại cả bước (nhân lượt gọi); dừng, người dùng quyết định chạy tiếp
+                    raise fail("REMIX_PLAN_INVALID", e.message, {**(e.detail or {}), "hint": "Kế hoạch remix không đạt kiểm tra sau số lượt cho phép; bản đồ cảnh đã được giữ. Chạy lại để thử tiếp hoặc đổi mô hình."}) from None
+                raise
+        plan = steps.run("remix_plan", plan_fp, "remix_plan.json", make_plan, check_plan)
         changes = plan["changes"]
         affected = L.affected_scenes(scenes, changes)
         atomic_write_json(rdir / "affected_scenes.json", {"ids": [L.sid(i) for i in affected], "levels": {L.sid(i): max(c["level"] for c in L.relevant_changes(L.sid(i), scenes[i], changes) or [{"level": 1}]) for i in affected}})
@@ -184,6 +197,12 @@ class StorySceneRemixAdapter:
                 self._save(rdir, i, rec)
             recs[i] = rec
             changed[i] = rec["text"]
+
+        for i in range(n):                                                                  # cảnh KHÔNG bị ảnh hưởng nhưng đã được sửa mối nối ở lần chạy trước: khôi phục bản sửa (resume không được làm mất)
+            if i not in recs:
+                rec = self._load_any(rdir, i)
+                if rec and rec.get("repairs") and rec.get("fp") == self._fp(scenes, i, changes, st) and isinstance(rec.get("text"), str) and rec["text"].strip():
+                    recs[i], changed[i] = rec, rec["text"]
 
         # ---- 4. Continuity QA (tất định trước, LLM chỉ cho lỗi về nghĩa) + sửa có mục tiêu
         qa_state = self._qa_state(rdir, plan_fp)

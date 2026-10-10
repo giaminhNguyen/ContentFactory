@@ -100,3 +100,10 @@ class AssemblerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuoteKeepingTest(unittest.TestCase):
+    def test_closing_quotes_after_sentence_punctuation_are_kept(self):
+        text, _ = assemble(['Chú ơi, cho cháu ngủ sofa được không?" Ông chủ nhìn tôi, "Biết đánh bài không?" "Biết, thắng thì ở miễn phí." Tôi ngồi xuống bàn.'])
+        self.assertEqual(text.count('"'), 5)
+        self.assertIn('được không?" Ông chủ', text)
